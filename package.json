@@ -1,0 +1,7 @@
+{
+  "name": "penbot",
+  "private": true,
+  "scripts": {
+    "start": "npx dotenv-cli -e .env -- opencode"
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "websites": [
+    {
+      "name": "海关总署官网",
+      "url": "http://www.customs.gov.cn/customs/xwfb34/ywjj/index.html",
+      "rss": "",
+      "category": "政策公告",
+      "note": "HTTP（HTTPS返回412），全站412反爬拦截，暂不可用"
+    },
+    {
+      "name": "中国国际贸易单一窗口",
+      "url": "https://www.singlewindow.cn/#/tradingAndInvest",
+      "category": "通关系统",
+      "note": "Vue SPA，JS混淆严重、私有ACS框架，需深度逆向找API"
+    },
+    {
+      "name": "中国电子口岸",
+      "url": "https://www.chinaport.gov.cn/pages/news/news.html?_index=0",
+      "category": "通关系统",
+      "api": "https://www.chinaport.gov.cn/api/newsList?pageNum=1&pageSize=12",
+      "note": "页面JS渲染但已找到后端API接口，直接返回JSON（含title/description/releaseDate）"
+    },
+    {
+      "name": "商务部自贸区港司 / FTA 服务网",
+      "url": "http://fta.mofcom.gov.cn/",
+      "category": "自由贸易协定",
+      "note": "HTTP/HTTPS均可用，首页有最新文章列表"
+    },
+    {
+      "name": "中华人民共和国商务部",
+      "url": "https://www.mofcom.gov.cn/xwfb/index.html",
+      "rss": "",
+      "category": "政策公告",
+      "note": "HTTPS可用，新闻发布栏目包含领导人活动、部领导活动、发言人谈话等子栏目"
+    }
+  ],
+  "settings": {
+    "dateRange": 7,
+    "language": "zh-CN",
+    "maxArticlesPerSite": 10,
+    "outputFormat": "markdown"
+  }
+}

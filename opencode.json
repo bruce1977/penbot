@@ -1,0 +1,56 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "@opencode-ai/plugin"
+  ],
+  "skills": {
+    "paths": [".opencode/skills"]
+  },
+  "mcp": {
+    "playwright": {
+      "type": "local",
+      "command": ["npx", "-y", "@playwright/mcp"],
+      "enabled": true
+    },
+    "wechat-mp-mcp": {
+      "type": "local",
+      "command": ["node", "local-mcps/wechat-mp-nodejs/index.js"],
+      "environment": {
+        "PB_WECHAT_MP_AUTH_KEY": "{env:PB_WECHAT_MP_AUTH_KEY}",
+        "PB_WECHAT_MP_API_BASE": "{env:PB_WECHAT_MP_API_BASE}"
+      },
+      "enabled": true
+    },
+    "sensitive-lexicon": {
+      "type": "local",
+      "command": ["node", "local-mcps/sensitive-lexicon-nodejs/index.js"],
+      "enabled": true
+    },
+    "image-generation": {
+      "type": "remote",
+      "url": "{env:PB_IMAGE_GENERATION_URL}",
+      "headers": {
+        "Authorization": "Bearer {env:PB_MODEL_API_KEY}"
+      },
+      "timeout": 120000,
+      "enabled": true
+    },
+    "image-generation-proxy": {
+      "type": "local",
+      "command": ["node", "local-mcps/image-generation-proxy/index.js"],
+      "environment": {
+        "PB_IMAGE_GENERATION_URL": "{env:PB_IMAGE_GENERATION_URL}",
+        "PB_MODEL_API_KEY": "{env:PB_MODEL_API_KEY}"
+      },
+      "enabled": false
+    },
+    "pycorrector": {
+      "type": "local",
+      "command": ["node", "local-mcps/pycorrector-nodejs/index.js"],
+      "environment": {
+        "PYCORRECTOR_API_URL": "{env:PB_PYCORRECTOR_API_URL}"
+      },
+      "enabled": true
+    }
+  }
+}

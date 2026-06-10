@@ -1,0 +1,145 @@
+{
+  "settings": {
+    "name": "ai",
+    "days_to_filter": 3,
+    "max_articles_per_account": 3,
+    "top_n_articles": 5,
+    "topic_count": 3,
+    "similarity_threshold": 0.8,
+    "language": "zh-CN"
+  },
+  "accounts": [
+    {
+      "name": "量子位",
+      "fake_id": "MzIzNjc1NzUzMw==",
+      "category": "AI行业媒体",
+      "enabled": true
+    },
+    {
+      "name": "机器之心",
+      "fake_id": "MzA3MzI4MjgzMw==",
+      "category": "AI行业媒体",
+      "enabled": true
+    },
+    {
+      "name": "DeepTech深科技",
+      "fake_id": "MzA3NTIyODUzNA==",
+      "category": "AI前沿分析",
+      "enabled": true
+    },
+    {
+      "name": "DeepSeek",
+      "fake_id": "Mzk0OTYwNzc3NQ==",
+      "category": "AI前沿分析",
+      "enabled": true
+    },
+    {
+      "name": "智东西",
+      "fake_id": "MzA4MTQ4NjQzMw==",
+      "category": "产业深度",
+      "enabled": true
+    },
+    {
+      "name": "PaperWeekly",
+      "fake_id": "MzIwMTc4ODE0Mw==",
+      "category": "学术科研",
+      "enabled": true
+    },
+    {
+      "name": "夕小瑶科技说",
+      "fake_id": "MzIwNzc2NTk0NQ==",
+      "category": "学术科研",
+      "enabled": true
+    },
+    {
+      "name": "AI前线",
+      "fake_id": "MzU1NDA4NjU2MA==",
+      "category": "AI工程化",
+      "enabled": true
+    },
+    {
+      "name": "AI研习社",
+      "fake_id": "MzkwMDQzNjU2OQ==",
+      "category": "技术教程",
+      "enabled": true
+    },
+    {
+      "name": "深度学习与计算机视觉",
+      "fake_id": "MzU2NTUwNjQ1Mw==",
+      "category": "技术教程",
+      "enabled": true
+    },
+    {
+      "name": "阿泽学习笔记",
+      "fake_id": "MzIwMDIzNDI2Ng==",
+      "category": "技术教程",
+      "enabled": true
+    },
+    {
+      "name": "AI科技大本营",
+      "fake_id": "Mzg4NDQwNTI0OQ==",
+      "category": "AI行业媒体",
+      "enabled": true
+    },
+    {
+      "name": "DataWhale",
+      "fake_id": "MzIyNjM2MzQyNg==",
+      "category": "技术教程",
+      "enabled": true
+    },
+    {
+      "name": "王不二丶bOol",
+      "fake_id": "Mzk4ODQ3MTU0Nw==",
+      "category": "AI工程化",
+      "enabled": true
+    },
+    {
+      "name": "AIGC开放社区",
+      "fake_id": "Mzg3Mzg5MjY3Nw==",
+      "category": "AI工程化",
+      "enabled": true
+    },
+    {
+      "name": "磐创AI",
+      "fake_id": "MzAxMjMwODMyMQ==",
+      "category": "技术教程",
+      "enabled": true
+    },
+    {
+      "name": "新智元",
+      "fake_id": "MzI3MTA0MTk1MA==",
+      "category": "AI行业媒体",
+      "enabled": true
+    },
+    {
+      "name": "数字生命卡兹克",
+      "fake_id": "MzIyMzA5NjEyMA==",
+      "category": "AI热点",
+      "enabled": true
+    },
+    {
+      "name": "李继刚",
+      "fake_id": "MzkxMzc1NzM1Mw==",
+      "category": "AI应用",
+      "enabled": true
+    },
+    {
+      "name": "果壳",
+      "fake_id": "MTg1MjI3MzY2MQ==",
+      "category": "AI科普",
+      "enabled": false
+    },
+    {
+      "name": "36氪·智能涌现",
+      "fake_id": "MzkwMDQ2NDU2Nw==",
+      "category": "AI行业媒体",
+      "enabled": true
+    },
+    {
+      "name": "Cloud Native AI+",
+      "fake_id": "MzI5MDkzNTE1NQ==",
+      "category": "行业资讯",
+      "enabled": true
+    }
+  ]
+}
