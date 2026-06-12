@@ -41,7 +41,7 @@ if (analysisPath) {
       articles.push({
         aid,
         file: file ? path.relative(articlesDir, file).replace(/\\/g, "/") : null,
-        title: meta.title || "",
+        title: (meta.title || "").replace("|", "-").trim(),
         url: meta.link || meta.url || "",
         account: meta.account || meta.account_name || "",
         date,
