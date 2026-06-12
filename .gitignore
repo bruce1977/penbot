@@ -1,6 +1,7 @@
 .env
 .temp/
 output/
+configs/
 node_modules/
 .opencode/node_modules/**
 .opencode/package*.json
@@ -9,4 +10,3 @@ node_modules/
 npm-debug.log*
 package-lock.json
 **/package-lock.json
-/.playwright-mcp

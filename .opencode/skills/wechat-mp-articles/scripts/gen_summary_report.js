@@ -2,9 +2,9 @@ const fs = require("fs");
 const path = require("path");
 const Mustache = require("mustache");
 
-const [,, articlesDir, outDirArg, analysisPath, configArg, dateSuffix, articleListPath] = process.argv;
+const [,, articlesDir, outDirArg, analysisPath, configArg, dateSuffix] = process.argv;
 if (!articlesDir || !outDirArg) {
-  console.error("Usage: node gen_summary_report.js <articles_dir> <output_dir> [analysis_json] [config_path] [date_suffix] [article_list_json]");
+  console.error("Usage: node gen_summary_report.js <articles_dir> <output_dir> [analysis_json] [config_path] [date_suffix]");
   process.exit(1);
 }
 const dateTag = dateSuffix || new Date().toISOString().slice(0,10).replace(/-/g, "");
@@ -24,63 +24,36 @@ if (namePrefix) {
 const acctCategory = {};
 (config.accounts || []).forEach(a => { acctCategory[a.name] = a.category || "未分类"; });
 
-// Load article metadata from JSON (primary source)
-let articleMeta = {};
-if (articleListPath) {
-  try { articleMeta = JSON.parse(fs.readFileSync(articleListPath, "utf-8")); } catch {}
-}
+function safeRead(fp) { try { return fs.readFileSync(fp, "utf-8"); } catch { return ""; } }
 
-// Scan .md files for file list only, parse nothing
-const allFiles = [];
-function scanDir(dir) {
-  try {
-    fs.readdirSync(dir, { withFileTypes: true }).forEach(e => {
-      const fp = path.join(dir, e.name);
-      if (e.isDirectory()) scanDir(fp);
-      else if (e.isFile() && e.name.endsWith(".md") && !e.name.startsWith("~") && !e.name.startsWith("download_report_") && !e.name.startsWith("summary_")) allFiles.push(fp);
-    });
-  } catch {}
-}
-scanDir(articlesDir);
-
-// Build articles list from metadata JSON
+// Build articles list from enriched analysis JSON (metadata merged by merge_analysis_meta.js)
 const articles = [];
-Object.entries(articleMeta).forEach(([aid, meta]) => {
-  const date = meta.update_time ? new Date(meta.update_time * 1000).toISOString().slice(0, 16).replace("T", " ") : "";
-  const file = allFiles.find(f => path.basename(f).startsWith(aid + "_"));
-  articles.push({
-    aid,
-    file: file ? path.relative(articlesDir, file).replace(/\\/g, "/") : null,
-    title: meta.title || "",
-    url: meta.link || "",
-    account: meta.account_name || "",
-    date,
-    digest: meta.digest || "",
-    score: "-",
-    category: acctCategory[meta.account_name] || meta.account_category || "未分类",
-  });
-});
-articles.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-
-// Load tags from analysis JSON
 if (analysisPath) {
   try {
     const ad = JSON.parse(safeRead(analysisPath));
-    const tagMap = {};
-    (ad.articles || []).forEach(a => { if (a.link) tagMap[a.link] = (a.tags || []); });
-    articles.forEach(a => { a.tags = tagMap[a.url] || []; });
-    // Also backfill scores from enhanced analysis
-    (ad.articles || []).forEach(a => {
-      if (a.link && a.score) {
-        const match = articles.find(x => x.url === a.link);
-        if (match) match.score = a.score;
-      }
+    (ad.articles || []).forEach(meta => {
+      if (!meta.link && !meta.url) return;
+      const aid = meta.aid || "";
+      const date = meta.update_time ? new Date(meta.update_time * 1000).toISOString().slice(0, 16).replace("T", " ") : "";
+      const fname = meta.file_name || meta.file_path;
+      const file = fname && fs.existsSync(path.join(articlesDir, fname)) ? path.join(articlesDir, fname) : null;
+      articles.push({
+        aid,
+        file: file ? path.relative(articlesDir, file).replace(/\\/g, "/") : null,
+        title: meta.title || "",
+        url: meta.link || meta.url || "",
+        account: meta.account_name || "",
+        date,
+        digest: meta.digest || "",
+        score: meta.score != null ? String(meta.score) + "/5" : "-",
+        category: acctCategory[meta.account_name] || meta.account_category || "未分类",
+        tags: meta.tags || [],
+      });
     });
   } catch (e) { console.error("Failed to load analysis JSON: " + e.message); }
 }
+articles.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
 articles.forEach(a => { if (!a.tags) a.tags = []; });
-
-function safeRead(fp) { try { return fs.readFileSync(fp, "utf-8"); } catch { return ""; } }
 
 // Group by account
 const byAccount = {};

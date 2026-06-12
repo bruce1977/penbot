@@ -10,7 +10,7 @@
     "playwright": {
       "type": "local",
       "command": ["npx", "-y", "@playwright/mcp"],
-      "enabled": true
+      "enabled": false
     },
     "wechat-mp-mcp": {
       "type": "local",

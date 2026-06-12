@@ -1,23 +1,24 @@
 const fs = require("fs");
 const path = require("path");
 
-const [,, articleListPath, outPath, articlesDirArg] = process.argv;
-if (!articleListPath || !outPath) {
-  console.error("Usage: node gen_download_report.js <article_list.json> <output.json> [articles_dir]");
+const [,, articleListPath, articlesDir, failedListPath, outPath] = process.argv;
+if (!articleListPath || !articlesDir || !outPath) {
+  console.error("Usage: node gen_download_report.js <article_list.json> <articles_dir> <list_failed.txt> <output.json>");
+  console.error("  <list_failed.txt> is optional, pass '-' to skip");
   process.exit(1);
-}
-
-const articlesDir = articlesDirArg || path.dirname(outPath);
-
-// Build map of existing filenames keyed by aid (prefix before second "_")
-const existingFiles = {};
-for (const f of fs.readdirSync(articlesDir).filter(f => f.endsWith(".md"))) {
-  const idx = f.indexOf("_", f.indexOf("_") + 1);
-  if (idx > 0) existingFiles[f.substring(0, idx)] = f;
 }
 
 // Read filtered article list
 const rawArticles = Object.values(JSON.parse(fs.readFileSync(articleListPath, "utf-8")));
+
+// Read list_failed.txt (explicit param)
+const failedReasons = {};
+if (failedListPath && failedListPath !== "-" && fs.existsSync(failedListPath)) {
+  for (const line of fs.readFileSync(failedListPath, "utf-8").trim().split("\n").filter(Boolean)) {
+    const [aid, ...rest] = line.split("|");
+    failedReasons[aid] = rest.join("|") || "未知错误";
+  }
+}
 
 function fmtDate(ts) {
   const d = new Date(ts * 1000);
@@ -25,28 +26,34 @@ function fmtDate(ts) {
 }
 
 const articles = rawArticles.map(a => {
-  const existing = existingFiles[a.aid];
+  const fname = a.file_name;
+  const exists = fname ? fs.existsSync(path.join(articlesDir, fname)) : false;
+  const failed = failedReasons[a.aid];
   return {
     aid: a.aid,
     title: a.title,
     account_name: a.account_name,
     account_category: a.account_category,
-    file_path: existing || null,
+    file_path: exists ? fname : null,
     url: a.link,
+    cover: a.cover || "",
     digest: a.digest,
+    create_time: a.create_time || null,
     update_time: a.update_time,
-    exists: !!existing,
+    fake_id: a.fake_id || "",
+    exists,
+    failed,
   };
 });
 
-const successCount = articles.filter(a => a.exists).length;
-const failCount = articles.filter(a => !a.exists).length;
+const successCount = articles.filter(a => a.exists && !a.failed).length;
+const failCount = articles.length - successCount;
 
 const accountNames = [...new Set(articles.map(a => a.account_name))];
 const accountDetails = accountNames.map(name => {
   const group = articles.filter(a => a.account_name === name);
   const success = group.filter(a => a.exists).length;
-  const fail = group.filter(a => !a.exists).length;
+  const fail = group.filter(a => !a.exists || a.failed).length;
   return {
     name,
     category: group[0].account_category,
@@ -57,10 +64,10 @@ const accountDetails = accountNames.map(name => {
   };
 });
 
-const failedArticles = articles.filter(a => !a.exists).map(a => ({
+const failedArticles = articles.filter(a => !a.exists || a.failed).map(a => ({
   title: a.title,
   account_name: a.account_name,
-  reason: "文件不存在",
+  reason: a.failed || (a.exists ? "文件不存在（list_failed.txt标记）" : "文件不存在"),
   url: a.url,
 }));
 
@@ -81,9 +88,12 @@ const output = {
     account_category: a.account_category,
     file_path: a.file_path,
     url: a.url,
+    cover: a.cover || "",
     digest: a.digest,
+    create_time: a.create_time || null,
     update_time: a.update_time,
-    download_status: a.exists ? "成功" : "失败",
+    fake_id: a.fake_id || "",
+    download_status: a.failed ? "失败" : a.exists ? "成功" : "失败",
   })),
 };
 

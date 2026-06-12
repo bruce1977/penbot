@@ -6,6 +6,11 @@
 
 {{{topic_overview}}}
 
+{{#topic_reasoning}}
+> **遴选理由**：{{{topic_reasoning}}}
+
+{{/topic_reasoning}}
+
 ---
 
 ## 相关文章

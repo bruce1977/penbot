@@ -2,9 +2,13 @@ const fs = require("fs");
 const path = require("path");
 const Mustache = require("mustache");
 
-const [,, articlesDir, outDirArg, analysisPath, configArg, articleListPath] = process.argv;
-if (!articlesDir || !outDirArg || !analysisPath) {
-  console.error("Usage: node gen_topic_report.js <articles_dir> <output_dir> <analysis_json> [config_path] [article_list_json]");
+const [,, articlesDir, outDirArg, analysisPath, configArg, topicPath] = process.argv;
+if (!articlesDir || !outDirArg || !analysisPath || !topicPath) {
+  console.error("Usage: node gen_topic_report.js <articles_dir> <output_dir> <analysis_json> [config_path] <analysis_topic_json>");
+  process.exit(1);
+}
+if (!fs.existsSync(topicPath)) {
+  console.error("Error: analysis_topic.json not found: " + topicPath);
   process.exit(1);
 }
 
@@ -13,7 +17,6 @@ let config;
 try { config = JSON.parse(fs.readFileSync(configPath, "utf-8")); }
 catch { config = { accounts: [], settings: {} }; }
 
-const topicCount = (config.settings && config.settings.topic_count) || 3;
 let outDir = outDirArg;
 const namePrefix = (config.settings && config.settings.name) || "";
 if (namePrefix) {
@@ -24,42 +27,32 @@ if (namePrefix) {
 const acctCategory = {};
 (config.accounts || []).forEach(a => { acctCategory[a.name] = a.category || "未分类"; });
 
-// Load article metadata from JSON (primary source)
-let articleMeta = {};
-if (articleListPath) {
-  try { articleMeta = JSON.parse(fs.readFileSync(articleListPath, "utf-8")); } catch {}
-}
-
-// Scan .md files for existence only
-const allFiles = [];
-function scanDir(dir) {
-  try {
-    fs.readdirSync(dir, { withFileTypes: true }).forEach(e => {
-      const fp = path.join(dir, e.name);
-      if (e.isDirectory()) scanDir(fp);
-      else if (e.isFile() && e.name.endsWith(".md") && !e.name.startsWith("~") && !e.name.startsWith("download_report_") && !e.name.startsWith("summary_")) allFiles.push(fp);
-    });
-  } catch {}
-}
-scanDir(articlesDir);
-
 function safeRead(fp) { try { return fs.readFileSync(fp, "utf-8"); } catch { return ""; } }
 
-// Build articles list from metadata JSON, enriched with file existence
+// Read enriched analysis JSON (article metadata has been merged by merge_analysis_meta.js)
+const analysisRaw = safeRead(analysisPath);
+let analysisData;
+try { analysisData = JSON.parse(analysisRaw); } catch { analysisData = { articles: [] }; }
+
+// Build articles list from enriched analysis JSON
 const articles = [];
-Object.entries(articleMeta).forEach(([aid, meta]) => {
+(analysisData.articles || []).forEach(meta => {
+  if (!meta.link && !meta.url) return;
+  const aid = meta.aid || "";
   const date = meta.update_time ? new Date(meta.update_time * 1000).toISOString().slice(0, 16).replace("T", " ") : "";
-  const file = allFiles.find(f => path.basename(f).startsWith(aid + "_"));
+  const fname = meta.file_name || meta.file_path;
+  const file = fname && fs.existsSync(path.join(articlesDir, fname)) ? path.join(articlesDir, fname) : null;
   articles.push({
     aid,
     file: file ? path.relative(articlesDir, file).replace(/\\/g, "/") : null,
     title: meta.title || "",
-    url: meta.link || "",
+    url: meta.link || meta.url || "",
     account: meta.account_name || "",
     date,
     digest: meta.digest || "",
-    score: "-",
+    score: meta.score != null ? String(meta.score) + "/5" : "-",
     category: acctCategory[meta.account_name] || meta.account_category || "未分类",
+    tags: meta.tags || [],
   });
 });
 articles.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
@@ -96,50 +89,25 @@ dupGroups.forEach(g => {
 });
 console.log("Dedup: " + dupGroups.length + " group(s), " + Object.keys(dedupMap).length + " article(s) marked as duplicate");
 
-// ---- Read analysis JSON ----
-const analysisRaw = safeRead(analysisPath);
-let analysisData;
-try { analysisData = JSON.parse(analysisRaw); } catch { analysisData = null; }
-
-// Score backfill — write score into a companion JSON file instead of .md header
-let backfilled = 0;
-const scoreMap = {};
-if (analysisData) {
-  (analysisData.articles || []).forEach(a => { if (a.link) scoreMap[a.link] = String(a.score); });
-  articles.forEach(a => {
-    if (a.url && scoreMap[a.url] != null) {
-      a.score = scoreMap[a.url] + "/5";
-      backfilled++;
-    }
-  });
+// ---- Read topics from analysis_topic.json (required) ----
+const topicData = JSON.parse(fs.readFileSync(topicPath, "utf-8"));
+if (!topicData.topics || topicData.topics.length === 0) {
+  console.error("Error: analysis_topic.json has no topics defined");
+  process.exit(1);
 }
-console.log("Score backfilled: " + backfilled + " articles");
 
-// Load tags
-const articleTags = {};
-if (analysisData) (analysisData.articles || []).forEach(a => { if (a.link) articleTags[a.link] = (a.tags || []); });
-articles.forEach(a => { a.tags = articleTags[a.url] || []; });
-
-// ---- Rank tags ----
-function tagRankData(tag) {
-  const matched = articles.filter(a => (a.tags || []).includes(tag));
-  const accountCount = new Set(matched.map(a => a.account)).size;
-  const scores = matched.map(a => { const s = parseInt(a.score); return isNaN(s) ? 0 : s; });
-  const avgScore = scores.length > 0 ? scores.reduce((s, v) => s + v, 0) / scores.length : 0;
-  return { count: matched.length, accounts: accountCount, avgScore };
-}
-const tagFreq = {};
-articles.forEach(a => (a.tags || []).forEach(t => { tagFreq[t] = (tagFreq[t] || 0) + 1; }));
-const rankedTags = Object.keys(tagFreq).map(t => ({ tag: t, ...tagRankData(t) })).sort((a, b) => {
-  if (b.count !== a.count) return b.count - a.count;
-  if (b.accounts !== a.accounts) return b.accounts - a.accounts;
-  return b.avgScore - a.avgScore;
-}).slice(0, topicCount).map(x => x.tag);
-
-// Build topics
-const topics = rankedTags.map(tag => {
-  const matched = articles.filter(a => (a.tags || []).includes(tag));
-  return { tag, topicTitle: tag, articles: matched, accounts: new Set(matched.map(a => a.account)) };
+// Build topics: iterate analysis_topic entries, match articles by tag name
+const topics = topicData.topics.map(t => {
+  const matched = articles.filter(a => (a.tags || []).includes(t.name));
+  return {
+    tag: t.name,
+    topicTitle: t.name,
+    articles: matched,
+    accounts: new Set(matched.map(a => a.account)),
+    reasoning: t.reasoning || "",
+    topic_overview: t.topic_overview || "",
+    insights: t.insights || [],
+  };
 });
 
 // ---- Generate reports ----
@@ -161,11 +129,12 @@ topics.forEach((topic, ti) => {
 
   const data = {
     topic_title: topic.topicTitle,
+    topic_reasoning: topic.reasoning,
     timestamp: ts,
     heat,
     article_count: articleCount,
     account_count: accountCount,
-    topic_overview: "本主题涵盖 " + articleCount + " 篇文章，来自 " + accountsList + " 等 " + accountCount + " 个公众号，内容涉及 " + topic.topicTitle + " 领域。",
+    topic_overview: topic.topic_overview || ("本主题涵盖 " + articleCount + " 篇文章，来自 " + accountsList + " 等 " + accountCount + " 个公众号，内容涉及 " + topic.topicTitle + " 领域。"),
     articles: topic.articles.map((a, i) => ({
       index: i + 1,
       date: (a.date || "").substring(0, 10),
@@ -177,7 +146,7 @@ topics.forEach((topic, ti) => {
       relevance: "-",
     })),
     related_topics: others.map(o => ({ name: o.topicTitle, relation: "关联 " + o.articles.length + " 篇文章，来自 " + o.accounts.size + " 个公众号" })),
-    insights: [],
+    insights: topic.insights,
   };
 
   let safeName = topic.topicTitle.replace(/[\\/:*?"<>|]/g, "_");
@@ -193,7 +162,7 @@ topics.forEach((topic, ti) => {
   generated++;
 });
 
-console.error("Generated " + generated + " topic report(s) (topic_count=" + topicCount + ").");
+console.error("Generated " + generated + " topic report(s).");
 
 // Write enhanced analysis JSON
 const enhanced = {

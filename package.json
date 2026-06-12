@@ -3,5 +3,8 @@
   "private": true,
   "scripts": {
     "start": "npx dotenv-cli -e .env -- opencode"
+  },
+  "dependencies": {
+    "mustache": "^4.2.0"
   }
 }

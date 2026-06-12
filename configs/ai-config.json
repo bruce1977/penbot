@@ -140,6 +140,12 @@
       "fake_id": "MzI5MDkzNTE1NQ==",
       "category": "行业资讯",
       "enabled": true
+    },
+    {
+      "name": "沃垠AI",
+      "fake_id": "MzIwMTU5OTQ1Nw==",
+      "category": "AI行业媒体",
+      "enabled": true
     }
   ]
 }
