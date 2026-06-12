@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const Mustache = require("mustache");
+function esc(str) { return (str || "").replace(/\|/g, "\u4e28"); }
 
 const [,, articlesDir, outDirArg, analysisPath, configArg, dateSuffix] = process.argv;
 if (!articlesDir || !outDirArg) {
@@ -42,11 +43,11 @@ if (analysisPath) {
         file: file ? path.relative(articlesDir, file).replace(/\\/g, "/") : null,
         title: meta.title || "",
         url: meta.link || meta.url || "",
-        account: meta.account_name || "",
+        account: meta.account || meta.account_name || "",
         date,
         digest: meta.digest || "",
-        score: meta.score != null ? String(meta.score) + "/5" : "-",
-        category: acctCategory[meta.account_name] || meta.account_category || "未分类",
+        score: meta.score != null ? (String(meta.score).includes("/") ? String(meta.score) : String(meta.score) + "/5") : "-",
+        category: acctCategory[meta.account || meta.account_name] || meta.category || meta.account_category || "未分类",
         tags: meta.tags || [],
       });
     });
@@ -81,7 +82,7 @@ if (fs.existsSync(outDir)) {
     const heat = heatMatch ? heatMatch[1].trim() : "中";
     const overviewMatch = c.match(/## 主题概述\s*\n\s*\n(.+?)\n\s*\n---/s);
     const overview = overviewMatch ? overviewMatch[1].trim().replace(/\n/g, " ") : "";
-    topics.push({ title: titleMatch ? titleMatch[1].trim() : f.replace(/^topic_/, "").replace(/\.md$/, ""), file: f, article_count: articleCount, account_count: accounts.size, heat, overview });
+    topics.push({ title: esc(titleMatch ? titleMatch[1].trim() : f.replace(/^topic_/, "").replace(/\.md$/, "")), file: f, article_count: articleCount, account_count: accounts.size, heat, overview: esc(overview) });
   });
 }
 
@@ -105,11 +106,11 @@ const data = {
   topics,
   account_summary: Object.values(byAccount).map(acct => {
     const scores = acct.articles.map(a => parseInt(a.score)).filter(s => !isNaN(s));
-    return { name: acct.name, category: acct.category, article_count: acct.articles.length, best_score: scores.length > 0 ? Math.max(...scores) : "-" };
+    return { name: esc(acct.name), category: esc(acct.category), article_count: acct.articles.length, best_score: scores.length > 0 ? Math.max(...scores) : "-" };
   }),
-  tags_summary: Object.entries(tagFreq).sort((a, b) => b[1].count - a[1].count).slice(0, 10).map(([tag, info]) => ({ tag, count: info.count, accounts: [...info.accounts].join("、") })),
-  article_list: articles.map((a, i) => ({ index: i + 1, date: (a.date || "").substring(0, 10), account: a.account, category: a.category, title: a.title, url: a.url, digest: a.digest, score: a.score, tags: (a.tags || []).join(", ") || "-" })),
-  highlights: scored.slice(0, 5).map(h => ({ source: h.account, title: h.title, url: h.url, reason: "质量评分 " + h.score, tags: (h.tags || []).join("、") })),
+  tags_summary: Object.entries(tagFreq).sort((a, b) => b[1].count - a[1].count).slice(0, 10).map(([tag, info]) => ({ tag: esc(tag), count: info.count, accounts: esc([...info.accounts].join("、")) })),
+  article_list: articles.map((a, i) => ({ index: i + 1, date: (a.date || "").substring(0, 10), account: esc(a.account), category: esc(a.category), title: esc(a.title), url: a.url, digest: esc(a.digest), score: a.score, tags: esc((a.tags || []).join(", ")) || "-" })),
+  highlights: scored.slice(0, 5).map(h => ({ source: esc(h.account), title: esc(h.title), url: h.url, reason: "质量评分 " + h.score, tags: esc((h.tags || []).join("、")) })),
 };
 
 const tmpl = fs.readFileSync(path.join(__dirname, "..", "templates", "template_summary.md"), "utf-8");

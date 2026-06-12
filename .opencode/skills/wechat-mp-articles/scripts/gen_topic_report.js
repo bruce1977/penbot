@@ -47,11 +47,11 @@ const articles = [];
     file: file ? path.relative(articlesDir, file).replace(/\\/g, "/") : null,
     title: meta.title || "",
     url: meta.link || meta.url || "",
-    account: meta.account_name || "",
+    account: meta.account || meta.account_name || "",
     date,
     digest: meta.digest || "",
-    score: meta.score != null ? String(meta.score) + "/5" : "-",
-    category: acctCategory[meta.account_name] || meta.account_category || "未分类",
+    score: meta.score != null ? (String(meta.score).includes("/") ? String(meta.score) : String(meta.score) + "/5") : "-",
+    category: acctCategory[meta.account || meta.account_name] || meta.category || meta.account_category || "未分类",
     tags: meta.tags || [],
   });
 });
