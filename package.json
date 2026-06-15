@@ -2,7 +2,10 @@
   "name": "penbot",
   "private": true,
   "scripts": {
-    "start": "npx dotenv-cli -e .env -- opencode"
+    "start": "npx dotenv-cli -e .env -- opencode",
+    "gen-mp-ai": "npx dotenv-cli -e .env -- opencode run \"/cmd-wechat-mp-articles configs/ai-config.json\"",
+    "gen-mp-test": "npx dotenv-cli -e .env -- opencode run \"/cmd-wechat-mp-articles configs/test-config.json\"",
+    "gen-mp": "scripts\\gen-mp"
   },
   "dependencies": {
     "mustache": "^4.2.0"

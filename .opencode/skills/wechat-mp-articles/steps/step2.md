@@ -10,7 +10,7 @@
 
 | 方向 | 文件路径 | 说明 | 下游消费 |
 |------|---------|------|---------|
-| 输入 | `{config}` | 公众号配置与全局设置 | 2.1 |
+| 输入 | `{config-runtime}` | 公众号配置与全局设置（来自步骤 1） | 2.1 |
 | 输出 | `{download-articles}/*.md` | 文章 Markdown 原文（每篇一篇） | 步骤 3.1、步骤 4.1/4.2 |
 | 输出 | `{download-articles}/download_report_{yyyyMMdd}.json` | 下载结果汇总 JSON（含文章元数据） | 步骤 3.1（merge_analysis_meta） |
 
@@ -41,7 +41,7 @@ flowchart TD
 |------|------|---------|------|---------|---------|
 | 2.1.1 MCP 拉取 | 输出 | `{temp-data}/article_list_{yyyyMMdd}_original.json` | MCP 返回的原始文章数据 | — | 2.1.2 |
 | 2.1.2 prepare_article_list.js | 输入 | `{temp-data}/article_list_{yyyyMMdd}_original.json` | 原始文章数据 | 2.1.1 | — |
-| 2.1.2 prepare_article_list.js | 输入 | `{config}` | 用于补齐 account_name/category | 步骤 1 | — |
+| 2.1.2 prepare_article_list.js | 输入 | `{config-runtime}` | 用于补齐 account_name/category | 步骤 1 | — |
 | 2.1.2 prepare_article_list.js | 输出 | `{temp-data}/article_list_{yyyyMMdd}.json` | 清洗后的文章元数据（keyed by aid） | — | 步骤 2.2、步骤 2.3 |
 
 调用 `wechat-mp-mcp_get_article_list`，传入配置中所有已启用公众号的 `fake_id` 数组，工具自动完成拉取、过滤（`is_deleted`、`update_time`）和合并，且将输出JSON反序列化后**直接写入** `{temp-data}/article_list_{yyyyMMdd}_original.json` 文件：
@@ -60,7 +60,7 @@ wechat-mp-mcp_get_article_list(
 ```
 node {skill}/scripts/prepare_article_list.js \
   {temp-data}/article_list_{yyyyMMdd}_original.json \
-  {config} \
+  {config-runtime} \
   {temp-data}/article_list_{yyyyMMdd}.json
 ```
 输出格式：

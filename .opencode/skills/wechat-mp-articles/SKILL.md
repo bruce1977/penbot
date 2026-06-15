@@ -22,7 +22,7 @@ description: 从微信公众号抓取文章，经 AI 评分、标签提取、主
 
 ## 配置
 
-配置文件 `{skill}/config.json`，也支持外部路径。完整字段说明见 [step1.md](steps/step1.md)。
+用户提供的配置文件（默认 `{skill}/config.json`，支持通过命令行参数指定外部路径）。步骤 1 初始化时自动将其复制到 `{config-runtime}`（即 `{temp-data}/config.json`），后续步骤统一从 `{config-runtime}` 读取，避免 AI 推导文件名错误。完整字段说明见 [step1.md](steps/step1.md)。
 
 ```json
 {
@@ -51,7 +51,8 @@ description: 从微信公众号抓取文章，经 AI 评分、标签提取、主
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `{skill}` | `.opencode/skills/wechat-mp-articles` | 技能根目录 |
-| `{config}` | `{skill}/config.json` | 配置文件 |
+| `{config}` | `{skill}/config.json` | 原始配置文件（用户提供的路径，仅步骤 1 使用） |
+| `{config-runtime}` | `{temp-data}/config.json` | 运行时配置文件（步骤 1 从 `{config}` 复制至此，后续步骤统一读取） |
 | `{name}` | `settings.name` | 输出目录前缀 |
 | `{download-articles}` | `.temp/{name}/wechat_articles` | 下载文章存放目录 |
 | `{output}` | `output/{name}` | 报告输出目录 |
@@ -65,7 +66,7 @@ flowchart TD
     classDef phase fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#0d47a1
     classDef startend fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px,color:#1b5e20
 
-    S([开始]) --> A[**步骤 1** 读取配置<br/>加载 config.json]
+    S([开始]) --> A[**步骤 1** 读取配置<br/>复制到 {config-runtime} → 校验]
     A --> B[**步骤 2** 文章下载<br/>拉取 → 下载 → 汇总报告]
     B --> C[**步骤 3** 文章分析<br/>AI 评分/标签 → 主题遴选]
     C --> D[**步骤 4** 生成汇总报告<br/>主题报告 + 汇总报告]
@@ -80,8 +81,8 @@ flowchart TD
 
 | 步骤 | 标题 | 内容概要 | 输入 | 输出 |
 |------|------|---------|------|------|
-| [**Step 1**](steps/step1.md) | 读取配置 | 加载 config.json，解析公众号列表和全局设置 | `{config}` | `{config}`（→ Step 2/3/4） |
-| [**Step 2**](steps/step2.md) | 文章下载 | 拉取 → 下载 → 汇总报告 | `{config}`（来自 Step 1） | `*.md`（→ Step 3/4）、`download_report.json`（→ Step 3） |
+| [**Step 1**](steps/step1.md) | 读取配置 | 加载用户配置 → 复制到 `{config-runtime}` → 校验 | `{config}` | `{config-runtime}`（→ Step 2/3/4） |
+| [**Step 2**](steps/step2.md) | 文章下载 | 拉取 → 下载 → 汇总报告 | `{config-runtime}`（来自 Step 1） | `*.md`（→ Step 3/4）、`download_report.json`（→ Step 3） |
 | [**Step 3**](steps/step3.md) | 文章分析 | AI 评分 + 标签提取 → merge_analysis_meta 合并元数据 → 主题遴选 + 推理性说明 | `*.md`（来自 Step 2）、`download_report.json`（来自 Step 2） | `analysis_report.json`、`analysis_topic.json`（→ Step 4） |
 | [**Step 4**](steps/step4.md) | 生成汇总报告 | 主题报告 + 汇总报告 | `analysis_report.json`、`analysis_topic.json`（来自 Step 3）、`*.md`（来自 Step 2） | `topic_*.md` / `summary_report.md`（最终产物） |
 | [**Step 5**](steps/step5.md) | 清理临时文件 | 删除 `{temp-scripts}/` 和 `{temp-data}/` | `{temp-scripts}/`、`{temp-data}/` | 无（流程终点） |
@@ -107,5 +108,10 @@ flowchart TD
 └── ...
 
 {temp-scripts}/ ← 临时脚本输出（步骤 5 清理）
-{temp-data}/    ← 临时 JSON 数据（步骤 5 清理）
+{temp-data}/
+├── config.json                    ← 运行时配置副本（步骤 1 复制）
+├── article_list_{yyyyMMdd}.json
+├── list_pending.txt
+├── list_failed.txt
+└── ...
 ```

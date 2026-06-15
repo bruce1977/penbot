@@ -9,7 +9,7 @@
 | 输入 | `{download-articles}/` | 已下载的 `.md` 文件 | 步骤 2.2 | 4.1 扫描文件路径 |
 | 输入 | `{download-articles}/analysis_report_{yyyyMMdd}.json` | 文章元数据 + AI 评分/标签/去重信息（含合并的元数据） | 步骤 3.1 | 4.1/4.2 读取文章数据 |
 | 输入 | `{download-articles}/analysis_topic_{yyyyMMdd}.json` | AI 遴选的主题、遴选理由、概述与洞察 | 步骤 3.2 | 4.1 驱动主题报告生成 |
-| 输入 | `{config}` | 配置参数（输出目录前缀等） | 步骤 1 | 4.1/4.2 确定输出路径 |
+| 输入 | `{config-runtime}` | 配置参数（输出目录前缀等） | 步骤 1 | 4.1/4.2 确定输出路径 |
 | 输出 | `{output}/{name}/{yyyyMMdd}/topic_{标签名}.md` | 每主题一份独立分析报告 | 4.1 | 4.2 引用 + 最终产物 |
 | 输出 | `{output}/{name}/{yyyyMMdd}/summary_report_{yyyyMMdd}.md` | 汇总所有主题和文章的最终报告 | 4.2 | 最终产物 |
 
@@ -39,7 +39,7 @@ flowchart TD
 | 输入 | `{download-articles}/` | 扫描 `.md` 文件列表 | 步骤 2.2 | — |
 | 输入 | `{download-articles}/analysis_report_{yyyyMMdd}.json` | AI 评分、标签及去重信息 | 步骤 3.1 | — |
 | 输入 | `{download-articles}/analysis_topic_{yyyyMMdd}.json` | AI 遴选的主题、遴选理由、概述与洞察 | 步骤 3.2 | — |
-| 输入 | `{config}` | 配置参数 | 步骤 1 | — |
+| 输入 | `{config-runtime}` | 配置参数 | 步骤 1 | — |
 | 输出（每主题） | `{output}/{name}/{yyyyMMdd}/topic_{标签名}.md` | 主题报告 | — | 步骤 4.2 |
 
 根据 `analysis_topic_{yyyyMMdd}.json` 定义的主题列表，为每个主题生成独立分析报告。脚本自动完成去重（标题编辑距离）和评分关联：
@@ -49,7 +49,7 @@ node {skill}/scripts/gen_topic_report.js \
   {download-articles} \
   {output}/{yyyyMMdd} \
   {download-articles}/analysis_report_{yyyyMMdd}.json \
-  {config}   # 可选，传入后脚本内部将 outDir 从 {output}/{yyyyMMdd} 调整为 {output}/{name}/{yyyyMMdd}
+  {config-runtime}   # 可选，传入后脚本内部将 outDir 从 {output}/{yyyyMMdd} 调整为 {output}/{name}/{yyyyMMdd}
   {download-articles}/analysis_topic_{yyyyMMdd}.json    # 必需，AI 预选主题
 ```
 
@@ -84,7 +84,7 @@ node {skill}/scripts/gen_topic_report.js \
 |------|---------|------|---------|
 | 输入 | `{download-articles}/` | 扫描 `.md` 文件列表 | 步骤 2.2 |
 | 输入 | `{download-articles}/analysis_report_{yyyyMMdd}.json` | 文章元数据 + AI 评分数据 | 步骤 3.1 |
-| 输入 | `{config}` | 报告输出目录配置 | 步骤 1 |
+| 输入 | `{config-runtime}` | 报告输出目录配置 | 步骤 1 |
 | 输入 | `{output}/{name}/{yyyyMMdd}/topic_*.md` | 4.1 生成的主题报告（用于关联） | 步骤 4.1 |
 | 输出 | `{output}/{name}/{yyyyMMdd}/summary_report_{yyyyMMdd}.md` | 最终汇总报告 | 最终产物 |
 
@@ -95,7 +95,7 @@ node {skill}/scripts/gen_summary_report.js \
   {download-articles} \
   {output}/{yyyyMMdd} \
   {download-articles}/analysis_report_{yyyyMMdd}.json \
-  {config}   # 可选，传入后脚本内部将 outDir 从 {output}/{yyyyMMdd} 调整为 {output}/{name}/{yyyyMMdd}
+  {config-runtime}   # 可选，传入后脚本内部将 outDir 从 {output}/{yyyyMMdd} 调整为 {output}/{name}/{yyyyMMdd}
   {yyyyMMdd} # 可选，日期后缀，默认当天
 ```
 

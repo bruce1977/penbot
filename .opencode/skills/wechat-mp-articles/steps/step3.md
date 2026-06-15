@@ -103,7 +103,7 @@ node {skill}/scripts/validate.js report {download-articles}/analysis_report_{yyy
 | 方向 | 文件路径 | 说明 | 上游来源 | 下游消费 |
 |------|---------|------|---------|---------|
 | 输入 | `{download-articles}/analysis_report_{yyyyMMdd}.json` | AI 评分与标签数据 | 步骤 3.1 | — |
-| 输入 | `{config}` | 配置中的 `${topic_count}` | 步骤 1 | — |
+| 输入 | `{config-runtime}` | 配置中的 `${topic_count}` | 步骤 1 | — |
 | 输出 | `{download-articles}/analysis_topic_{yyyyMMdd}.json` | AI 遴选的主题及遴选理由 | — | 步骤 4.1 |
 
 AI 读取 `analysis_report_{yyyyMMdd}.json`，按以下算法筛选主题并撰写推理性说明：
