@@ -2,6 +2,12 @@ import { FastMCP } from "fastmcp";
 import { z } from "zod";
 import axios from "axios";
 
+const API_BASE = process.env.PYCORRECTOR_API_URL;
+if (!API_BASE) {
+  console.error("[pycorrector] Error: PYCORRECTOR_API_URL environment variable is not set");
+  process.exit(1);
+}
+
 const server = new FastMCP({
   name: "pycorrector-mcp",
   version: "1.0.0",
@@ -53,7 +59,7 @@ server.addTool({
 
       const results = await Promise.allSettled(
         sentences.map(s =>
-          axios.post(`${process.env.PYCORRECTOR_API_URL || "http://vm.openclaw:5900"}/correct`, { text: s })
+          axios.post(`${API_BASE}/correct`, { text: s })
             .then(res => res.data)
             .catch(() => ({ original: s, corrected: s, errors: [] }))
         )

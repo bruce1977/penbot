@@ -2,7 +2,15 @@
 
 > 本文档为 `SKILL.md` 的步骤详情子文档。
 
-读取 `{config}` 路径下的原始配置文件（默认 `{skill}/config.json`，支持通过命令行参数指定外部路径），复制到 `{config-runtime}`（即 `{temp-data}/config.json`），后续所有步骤统一从此路径读取。此举避免 AI 在后续步骤中推导配置文件路径或名称出错。
+> ⚠️ **`{config}` 无默认值，用户必须通过命令行参数指定路径。** 技能不提供内置配置文件。
+
+核心任务：
+1. 根据变量定义确定 `{profile}`（来自 `{config}` 的 `settings.name`）
+2. 构造 `{temp-data}` = `.temp/{profile}/~data`，确定 `{config-runtime}` = `{temp-data}/config.json`
+3. 将 `{config}` 复制到 `{config-runtime}`
+4. 校验配置字段完整性
+
+后续所有步骤统一从 `{config-runtime}` 读取，不再引用原始 `{config}`。
 
 仅处理 `enabled: true` 的公众号，`enabled: false` 的公众号直接跳过。
 
@@ -35,7 +43,7 @@
     }
   ],
   "settings": {
-    "name": "ai-daily",
+    "name": "ai-daily",    # 配置名称（必填），取自用户提供的配置文件，用于生成 `{profile}`
     "days_to_filter": 3,
     "max_articles_per_account": 5,
     "topic_count": 3
@@ -47,17 +55,32 @@
 
 ### 1.1 复制配置到运行时目录
 
-将用户提供的原始配置文件复制到标准化的运行时路径：
+`{profile}` 已在 [SKILL.md#变量定义](../SKILL.md#变量定义) 中定义（取 `{config}` 的 `settings.name`）。据此构造路径并复制：
 
-```bash
-cp "{config}" "{config-runtime}"
-```
+1. **构造路径**：`{temp-data}` = `.temp/{profile}/~data`，`{config-runtime}` = `{temp-data}/config.json`
+2. **断言 `{profile}` 非空**：若为空则报错退出
+3. **检查源文件**：确认 `{config}` 存在，不存在则报错退出
+4. **创建目标目录**：确保 `.temp/{profile}/~data/` 目录存在
+5. **复制文件**：将 `{config}` 复制到 `.temp/{profile}/~data/config.json`
+6. **交叉校验**：读取复制后的 `config.json`，确认 `settings.name` 与变量定义中 `{profile}` 一致；不一致则报错退出
 
-> 若 `{temp-data}` 目录不存在，自动创建。
+> `{config-runtime}` 固定位于 `{temp-data}/config.json`（即 `.temp/{profile}/~data/config.json`），后续所有步骤统一从此路径读取，不再引用原始 `{config}`。
 
 ### 1.2 校验配置
 
-读取 `{config-runtime}` 中的 JSON，解析公众号列表和全局设置，校验字段完整性。校验规则见下方「配置字段」和「错误处理」。
+读取 `{config-runtime}` 中的 JSON，解析公众号列表和全局设置，校验字段完整性。校验规则见下方「配置字段」和「错误处理」。重点关注：
+
+- `settings.name` **必须非空**（已在 1.0 中校验）
+- `accounts[].fake_id` 每个启用的公众号都必须填写
+- `settings.days_to_filter`、`max_articles_per_account` 等数值字段需为正整数
+
+校验通过后运行 `validate.js` 确认：
+
+```
+node {skill}/scripts/validate.js config {config-runtime}
+```
+
+校验通过输出 `Valid: config.json (N account(s))`，失败则 exit 1 并列出问题。
 
 ## 输入/输出
 

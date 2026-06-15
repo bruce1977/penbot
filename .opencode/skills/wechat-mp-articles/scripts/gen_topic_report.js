@@ -3,8 +3,8 @@ const path = require("path");
 const Mustache = require("mustache");
 
 const [,, articlesDir, outDirArg, analysisPath, configArg, topicPath] = process.argv;
-if (!articlesDir || !outDirArg || !analysisPath || !topicPath) {
-  console.error("Usage: node gen_topic_report.js <articles_dir> <output_dir> <analysis_json> [config_path] <analysis_topic_json>");
+if (!articlesDir || !outDirArg || !analysisPath || !configArg || !topicPath) {
+  console.error("Usage: node gen_topic_report.js <articles_dir> <output_dir> <analysis_json> <config_path> <analysis_topic_json>");
   process.exit(1);
 }
 if (!fs.existsSync(topicPath)) {
@@ -12,18 +12,18 @@ if (!fs.existsSync(topicPath)) {
   process.exit(1);
 }
 
-const configPath = configArg || path.join(__dirname, "..", "config.json");
-let config;
-try { config = JSON.parse(fs.readFileSync(configPath, "utf-8")); }
-catch { config = { accounts: [], settings: {} }; }
+if (!configArg) {
+  console.error("Error: config_path is required");
+  process.exit(1);
+}
+const config = JSON.parse(fs.readFileSync(configArg, "utf-8"));
+const namePrefix = (config.settings && config.settings.name) || "";
+if (!namePrefix) {
+  console.error("Error: config.settings.name is empty — cannot determine output directory prefix");
+  process.exit(1);
+}
 
 let outDir = outDirArg;
-const namePrefix = (config.settings && config.settings.name) || "";
-if (namePrefix) {
-  const pDir = path.dirname(outDirArg);
-  const bDir = path.basename(outDirArg);
-  outDir = path.join(pDir, namePrefix, bDir);
-}
 const acctCategory = {};
 (config.accounts || []).forEach(a => { acctCategory[a.name] = a.category || "未分类"; });
 

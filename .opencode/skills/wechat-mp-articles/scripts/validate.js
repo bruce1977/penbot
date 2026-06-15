@@ -48,6 +48,37 @@ const SCHEMAS = {
         }
       }
     }
+  },
+  config: {
+    filename: /^config\.json$/,
+    label: "account(s)",
+    countKey: "accounts",
+    fields: {
+      accounts: {
+        type: "array", required: true, minLength: 1,
+        item: {
+          type: "object",
+          fields: {
+            name: { type: "string", required: true, nonEmpty: true },
+            fake_id: { type: "string", required: true, nonEmpty: true },
+            category: { type: "string", required: false },
+            enabled: { type: "boolean", required: false }
+          }
+        }
+      },
+      settings: {
+        type: "object", required: true,
+        fields: {
+          name: { type: "string", required: true, nonEmpty: true },
+          days_to_filter: { type: "number", required: false, min: 1 },
+          max_articles_per_account: { type: "number", required: false, min: 1 },
+          top_n_articles: { type: "number", required: false, min: 1 },
+          topic_count: { type: "number", required: false, min: 1 },
+          similarity_threshold: { type: "number", required: false, min: 0, max: 1 },
+          language: { type: "string", required: false }
+        }
+      }
+    }
   }
 };
 
@@ -88,13 +119,13 @@ const type = process.argv[2];
 const filePath = process.argv[3];
 
 if (!type || !filePath) {
-  console.error("Usage: node validate.js <report|topic> <file.json>");
+  console.error("Usage: node validate.js <report|topic|config> <file.json>");
   process.exit(1);
 }
 
 const config = SCHEMAS[type];
 if (!config) {
-  console.error(`Unknown type: "${type}". Expected "report" or "topic".`);
+  console.error(`Unknown type: "${type}". Expected "report", "topic" or "config".`);
   process.exitCode = 1;
   process.exit(1);
 }

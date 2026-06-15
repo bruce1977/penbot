@@ -1,6 +1,6 @@
 # 步骤 4：生成汇总报告
 
-> 本文档为 [SKILL.md](../SKILL.md) 的步骤详情子文档。目录变量见 [SKILL.md#目录变量定义](../SKILL.md#目录变量定义)。
+> 本文档为 [SKILL.md](../SKILL.md) 的步骤详情子文档。变量定义见 [SKILL.md#变量定义](../SKILL.md#变量定义)。
 
 ### 整体输入/输出
 
@@ -10,8 +10,8 @@
 | 输入 | `{download-articles}/analysis_report_{yyyyMMdd}.json` | 文章元数据 + AI 评分/标签/去重信息（含合并的元数据） | 步骤 3.1 | 4.1/4.2 读取文章数据 |
 | 输入 | `{download-articles}/analysis_topic_{yyyyMMdd}.json` | AI 遴选的主题、遴选理由、概述与洞察 | 步骤 3.2 | 4.1 驱动主题报告生成 |
 | 输入 | `{config-runtime}` | 配置参数（输出目录前缀等） | 步骤 1 | 4.1/4.2 确定输出路径 |
-| 输出 | `{output}/{name}/{yyyyMMdd}/topic_{标签名}.md` | 每主题一份独立分析报告 | 4.1 | 4.2 引用 + 最终产物 |
-| 输出 | `{output}/{name}/{yyyyMMdd}/summary_report_{yyyyMMdd}.md` | 汇总所有主题和文章的最终报告 | 4.2 | 最终产物 |
+| 输出 | `{output}/{profile}/{yyyyMMdd}/topic_{标签名}.md` | 每主题一份独立分析报告 | 4.1 | 4.2 引用 + 最终产物 |
+| 输出 | `{output}/{profile}/{yyyyMMdd}/summary_report_{yyyyMMdd}.md` | 汇总所有主题和文章的最终报告 | 4.2 | 最终产物 |
 
 Step 4 全部由脚本驱动，无 AI 调用。所有 AI 产出的数据（评分、标签、主题、概述、洞察）均在 Step 3 中完成并固化到 JSON 文件。
 
@@ -40,7 +40,7 @@ flowchart TD
 | 输入 | `{download-articles}/analysis_report_{yyyyMMdd}.json` | AI 评分、标签及去重信息 | 步骤 3.1 | — |
 | 输入 | `{download-articles}/analysis_topic_{yyyyMMdd}.json` | AI 遴选的主题、遴选理由、概述与洞察 | 步骤 3.2 | — |
 | 输入 | `{config-runtime}` | 配置参数 | 步骤 1 | — |
-| 输出（每主题） | `{output}/{name}/{yyyyMMdd}/topic_{标签名}.md` | 主题报告 | — | 步骤 4.2 |
+| 输出（每主题） | `{output}/{profile}/{yyyyMMdd}/topic_{标签名}.md` | 主题报告 | — | 步骤 4.2 |
 
 根据 `analysis_topic_{yyyyMMdd}.json` 定义的主题列表，为每个主题生成独立分析报告。脚本自动完成去重（标题编辑距离）和评分关联：
 
@@ -49,11 +49,11 @@ node {skill}/scripts/gen_topic_report.js \
   {download-articles} \
   {output}/{yyyyMMdd} \
   {download-articles}/analysis_report_{yyyyMMdd}.json \
-  {config-runtime}   # 可选，传入后脚本内部将 outDir 从 {output}/{yyyyMMdd} 调整为 {output}/{name}/{yyyyMMdd}
+  {config-runtime}   # 必需，脚本从此读取 settings.name 确定最终输出路径 {output}/{profile}/{yyyyMMdd}
   {download-articles}/analysis_topic_{yyyyMMdd}.json    # 必需，AI 预选主题
 ```
 
-> 命令行中的 `{output}/{yyyyMMdd}` 为内部基准路径，最终输出到 `{output}/${name}/${yyyyMMdd}`。
+> 命令行中的 `{output}/{yyyyMMdd}` 为内部基准路径，最终输出到 `{output}/${profile}/${yyyyMMdd}`。
 
 ### 脚本逻辑
 
@@ -85,8 +85,8 @@ node {skill}/scripts/gen_topic_report.js \
 | 输入 | `{download-articles}/` | 扫描 `.md` 文件列表 | 步骤 2.2 |
 | 输入 | `{download-articles}/analysis_report_{yyyyMMdd}.json` | 文章元数据 + AI 评分数据 | 步骤 3.1 |
 | 输入 | `{config-runtime}` | 报告输出目录配置 | 步骤 1 |
-| 输入 | `{output}/{name}/{yyyyMMdd}/topic_*.md` | 4.1 生成的主题报告（用于关联） | 步骤 4.1 |
-| 输出 | `{output}/{name}/{yyyyMMdd}/summary_report_{yyyyMMdd}.md` | 最终汇总报告 | 最终产物 |
+| 输入 | `{output}/{profile}/{yyyyMMdd}/topic_*.md` | 4.1 生成的主题报告（用于关联） | 步骤 4.1 |
+| 输出 | `{output}/{profile}/{yyyyMMdd}/summary_report_{yyyyMMdd}.md` | 最终汇总报告 | 最终产物 |
 
 运行 `gen_summary_report.js` 脚本，从 `analysis_report` JSON 读取文章元数据和 AI 评分，结合主题文件，生成汇总报告：
 
@@ -95,7 +95,7 @@ node {skill}/scripts/gen_summary_report.js \
   {download-articles} \
   {output}/{yyyyMMdd} \
   {download-articles}/analysis_report_{yyyyMMdd}.json \
-  {config-runtime}   # 可选，传入后脚本内部将 outDir 从 {output}/{yyyyMMdd} 调整为 {output}/{name}/{yyyyMMdd}
+  {config-runtime}   # 必需，脚本从此读取 settings.name 确定最终输出路径 {output}/{profile}/{yyyyMMdd}
   {yyyyMMdd} # 可选，日期后缀，默认当天
 ```
 

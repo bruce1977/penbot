@@ -2,9 +2,13 @@ import { FastMCP } from "fastmcp";
 import { z } from "zod";
 import axios from "axios";
 
-const API_BASE = process.env.PB_WECHAT_MP_API_BASE || "https://mp.myehome.top/api/public/v1";
+const API_BASE = process.env.PB_WECHAT_MP_API_BASE;
 const AUTH_KEY = process.env.PB_WECHAT_MP_AUTH_KEY;
 
+if (!API_BASE) {
+  console.error("[wechat-mcp] Error: PB_WECHAT_MP_API_BASE environment variable is not set");
+  process.exit(1);
+}
 if (!AUTH_KEY) {
   console.error("[wechat-mcp] Error: PB_WECHAT_MP_AUTH_KEY environment variable is not set");
   process.exit(1);
