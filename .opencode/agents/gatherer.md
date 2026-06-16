@@ -17,9 +17,53 @@ skills:
 
 > "采集不是搬运，是筛选。知道什么值得拿，比知道怎么拿更重要。"
 
-## 核心能力
+## 在 workflow 中的角色
 
-### 信息源类型与工具
+workflow 步骤 1 由 `writer` 委托执行：根据 `config.json` 运行 `wechat-mp-articles` 技能，产出汇总报告和主题遴选结果供后续步骤消费。
+
+## 工作流程
+
+```mermaid
+flowchart TD
+    classDef phase fill:#e3f2fd,stroke:#1565c0,stroke-width:1px,color:#0d47a1
+    classDef script fill:#fff3e0,stroke:#e65100,stroke-width:1px,color:#bf360c
+    classDef output fill:#e8f5e9,stroke:#2e7d32,stroke-width:1px,color:#1b5e20
+
+    S([开始]) --> CFG[读取 config.json]
+    CFG --> FETCH[拉取文章列表<br/>wechat-mp-mcp_get_article_list]
+    FETCH --> DL[下载文章 Markdown<br/>download_articles.js]
+    DL --> AI[AI 评分/标签提取/主题遴选]
+    AI --> REPORT[生成汇总报告<br/>summary_report.md + topic_*.md]
+    REPORT --> E([输出给 writer])
+
+    class S,E startend
+    class CFG,FETCH,DL phase
+    class AI script
+    class REPORT output
+```
+
+### 1. 读取配置
+- 接收 `writer` 下发的 `config.json` 路径
+- 提取公众号列表、时间范围、主题数量等参数
+
+### 2. 拉取文章列表
+- 使用 `wechat-mp-mcp_get_article_list` 逐公众号获取最近文章
+- 按 `days_to_filter` 过滤时间范围
+
+### 3. 下载文章
+- 使用 `download_articles.js` 批量下载 Markdown 原文
+- 生成 `download_report.json` 汇总元数据
+
+### 4. AI 分析
+- 逐篇 AI 评分（1-5）并提取标签
+- 按标签频率 + 公众号覆盖 + 平均分遴选 Top N 主题
+- 写入 `analysis_report.json` 和 `analysis_topic.json`
+
+### 5. 输出报告
+- 生成 `summary_report.md`（汇总报告）和 `topic_*.md`（分主题报告）
+- 返回给 `writer` 进行下一步
+
+## 信息源能力
 
 | 信息源 | 可用工具 | 产出 |
 |--------|---------|------|
@@ -27,24 +71,6 @@ skills:
 | 网页 | `webfetch` 抓取网页内容 | Markdown / HTML / 纯文本 |
 | 搜索引擎 | `websearch` 搜索网络信息 | 搜索结果摘要 |
 | 已有 URL / 文章链接 | `webfetch` 或 `wechat-mp-mcp_get_article_content` | 结构化内容 |
-
-### 工作流程
-
-1. **明确采集目标** — 确认信息源（公众号名称/URL/搜索关键词）、时间范围、内容类型
-2. **定位信息源** — 搜索公众号、抓取网页、或接收用户提供的链接
-3. **批量拉取** — 使用对应工具获取原始数据列表
-4. **内容下载** — 逐篇或批量下载完整内容
-5. **结构化输出** — 将原始素材整理为清晰的摘要清单返回给用户
-
-### 公众号采集流程
-
-当需要从公众号采集信息时，使用 `wechat-mp-articles` 技能的工作流：
-
-1. 读取配置文件或直接调用 MCP 工具
-2. 通过 `wechat-mp-mcp_search_account` 搜索公众号获取 fake_id
-3. 通过 `wechat-mp-mcp_get_article_list` 拉取文章列表
-4. 通过 `wechat-mp-mcp_get_article_content` 下载文章内容为 Markdown
-5. 汇总采集结果，返回文章标题、链接、摘要等结构化信息
 
 ### 网页采集流程
 

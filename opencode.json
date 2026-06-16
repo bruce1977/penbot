@@ -57,6 +57,14 @@
         "PYCORRECTOR_API_URL": "{env:PB_PYCORRECTOR_API_URL}"
       },
       "enabled": true
+    },
+    "resend": {
+      "type": "local",
+      "command": ["node", "local-mcps/resend-nodejs/index.js"],
+      "environment": {
+        "RESEND_API_KEY": "{env:PB_RESEND_API_KEY}"
+      },
+      "enabled": true
     }
   }
 }

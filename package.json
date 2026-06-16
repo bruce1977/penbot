@@ -3,10 +3,27 @@
   "private": true,
   "scripts": {
     "start": "npx dotenv-cli -e .env -- opencode",
+    "start-mimo": "npx dotenv-cli -e .env -- mimo",
     "gen-mp-ai": "npx dotenv-cli -e .env -- opencode run \"/cmd-wechat-mp-articles configs/ai-config.json\"",
     "gen-mp-test": "npx dotenv-cli -e .env -- opencode run \"/cmd-wechat-mp-articles configs/test-config.json\""
   },
   "dependencies": {
-    "mustache": "^4.2.0"
-  }
+    "mustache": "^4.2.0",
+    "resend-mcp": "^2.6.1"
+  },
+  "version": "1.0.0",
+  "description": "An automated writing and information processing project built on [opencode](https://opencode.ai).",
+  "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bruce1977/penbot.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/bruce1977/penbot/issues"
+  },
+  "homepage": "https://github.com/bruce1977/penbot#readme"
 }
