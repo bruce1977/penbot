@@ -1,0 +1,112 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "skills": {
+    "paths": [".opencode/skills"]
+  },
+  "agent": {
+    "writer": {
+      "description": "全流程编排：调用评论员评价主题 → 选取主题撰写文章 → 调用校对与插图 → 发布",
+      "mode": "all",
+      "prompt": "{file:.opencode/agents/writer.md}"
+    },
+    "gatherer": {
+      "description": "按需从公众号/网页/文章采集原始信息，输出结构化素材",
+      "mode": "all",
+      "prompt": "{file:.opencode/agents/gatherer.md}"
+    },
+    "illustrator": {
+      "description": "根据公众号文章主题绘制配图",
+      "mode": "all",
+      "prompt": "{file:.opencode/agents/illustrator.md}"
+    },
+    "proofreader": {
+      "description": "错别字检测 + 敏感词审查 + 语病/标点/语法校验 + 逻辑检查",
+      "mode": "subagent",
+      "prompt": "{file:.opencode/agents/proofreader.md}"
+    },
+    "commentator-value": {
+      "description": "从商业与市场视角评价主题的变现潜力与商业价值",
+      "mode": "subagent",
+      "prompt": "{file:.opencode/agents/commentator-value.md}"
+    },
+    "commentator-tech": {
+      "description": "从技术创新与工程实现角度评价主题的技术含量",
+      "mode": "subagent",
+      "prompt": "{file:.opencode/agents/commentator-tech.md}"
+    },
+    "commentator-public": {
+      "description": "从公众关注度与传播价值角度评价主题的社会影响力",
+      "mode": "subagent",
+      "prompt": "{file:.opencode/agents/commentator-public.md}"
+    },
+    "commentator-academic": {
+      "description": "从学术研究与理论价值角度评价主题的学术含金量",
+      "mode": "subagent",
+      "prompt": "{file:.opencode/agents/commentator-academic.md}"
+    },
+    "commentator-ethics": {
+      "description": "从伦理合规与社会责任角度评价主题的风险与可持续性",
+      "mode": "subagent",
+      "prompt": "{file:.opencode/agents/commentator-ethics.md}"
+    },
+    "silent": {
+      "description": "静默执行模式，禁止提问。仅供 command 内部使用。",
+      "mode": "subagent",
+      "prompt": "{file:.opencode/agents/silent.md}",
+      "permission": {
+        "question": "deny"
+      }
+    }
+  },
+  "mcp": {
+    "playwright": {
+      "type": "local",
+      "command": ["npx", "-y", "@playwright/mcp"],
+      "enabled": false
+    },
+    "wechat-mp-mcp": {
+      "type": "local",
+      "command": ["node", "local-mcps/wechat-mp-nodejs/index.js"],
+      "environment": {
+        "PB_WECHAT_MP_AUTH_KEY": "{env:PB_WECHAT_MP_AUTH_KEY}",
+        "PB_WECHAT_MP_API_BASE": "{env:PB_WECHAT_MP_API_BASE}"
+      },
+      "enabled": true
+    },
+    "sensitive-lexicon": {
+      "type": "local",
+      "command": ["node", "local-mcps/sensitive-lexicon-nodejs/index.js"],
+      "enabled": true
+    },
+    "image-generation": {
+      "type": "remote",
+      "url": "{env:PB_IMAGE_GENERATION_URL}",
+      "headers": {
+        "Authorization": "Bearer {env:PB_MODEL_API_KEY}"
+      },
+      "timeout": 120000,
+      "enabled": true
+    },
+    "image-generation-pollinations": {
+      "type": "local",
+      "command": ["node", "local-mcps/image-pollinations-nodejs/index.js"],
+      "enabled": true
+    },
+    "pycorrector": {
+      "type": "local",
+      "command": ["node", "local-mcps/pycorrector-nodejs/index.js"],
+      "environment": {
+        "PYCORRECTOR_API_URL": "{env:PB_PYCORRECTOR_API_URL}"
+      },
+      "enabled": true
+    },
+    "resend": {
+      "type": "local",
+      "command": ["node", "local-mcps/resend-nodejs/index.js"],
+      "environment": {
+        "RESEND_API_KEY": "{env:PB_RESEND_API_KEY}"
+      },
+      "enabled": true
+    }
+  }
+}

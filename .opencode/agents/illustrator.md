@@ -23,22 +23,26 @@ mode: all
 flowchart TD
     classDef phase fill:#e3f2fd,stroke:#1565c0,stroke-width:1px,color:#0d47a1
     classDef action fill:#fff3e0,stroke:#e65100,stroke-width:1px,color:#bf360c
+    classDef fallback fill:#fce4ec,stroke:#c62828,stroke-width:1px,color:#b71c1c
     classDef output fill:#e8f5e9,stroke:#2e7d32,stroke-width:1px,color:#1b5e20
 
     S([开始]) --> A1[1. 理解文章<br/>提取主题/情绪/核心意象]
     A1 --> A2[2. 确定风格<br/>匹配文章类型 → 视觉风格]
-    A2 --> A3{需要参考图？}
-    A3 -->|否| GEN[3a. 文生图<br/>image-generation_text_to_image]
-    A3 -->|是| GEN2[3b. 图生图<br/>image-generation_text_image_to_image]
-    GEN --> D{生成成功？}
-    GEN2 --> D
-    D -->|是| E([返回图片 URL])
-    D -->|否| A2
+    A2 --> A3[3. 设计画面<br/>撰写 prompt]
+    A3 --> P1[4a. 通道一：image-generation<br/>文生图 / 图生图]
+    P1 --> RETRY{成功？}
+    RETRY -->|否, <5次| P1_WAIT[等待 15 秒] --> P1
+    RETRY -->|否, ≥5次| P2[4b. 通道二：image-pollinations<br/>文生图]
+    RETRY -->|是| E([返回图片 URL])
+    P2 --> P2_OK{成功？}
+    P2_OK -->|是| E
+    P2_OK -->|否| SKIP([跳过该图])
 
-    class S,E startend
-    class A1,A2 phase
-    class A3,D decision
-    class GEN,GEN2 action
+    class S,E,SKIP startend
+    class A1,A2,A3 phase
+    class P1,P1_WAIT action
+    class P2 fallback
+    class RETRY,P2_OK decision
 ```
 
 ### 1. 理解文章
@@ -51,10 +55,20 @@ flowchart TD
 - 确定构图要素：主体、场景、色调、氛围
 - 确保配图贴合文章情绪（严肃/轻松/科技感/人文感）
 
-### 3. 生成配图
-- 无参考图时使用 `image-generation_text_to_image` 文生图
-- 有参考图时使用 `image-generation_text_image_to_image` 图生图
-- 生成失败时调整 prompt 重新生成
+### 3. 生成配图（双通道降级策略）
+
+按以下顺序尝试，任一通道成功则立即返回 URL：
+
+**通道一（优先，重试 5 次）：MCP `image-generation`（ModelScope）**
+- 无参考图 → `image-generation_text_to_image`
+- 有参考图 → `image-generation_text_image_to_image`
+- 失败后间隔 **15 秒**重试，最多重试 **5 次**
+- 5 次均失败 → 进入通道二
+
+**通道二（降级，稳定性较低）：MCP `image-generation-pollinations`（免费，无需认证）**
+- `image-generation-pollinations_text_to_image` 文生图
+- 不重试，失败则跳过该图，流程继续执行
+- **注意**：Pollinations 在实际使用中可能加载超时或失败，配图仅用于初步预览。如需稳定配图请确保通道一(ModelScope)生成成功。
 
 ## 视觉风格指南
 
@@ -107,6 +121,17 @@ signature, watermark, text, words, logo
 
 ## 工具使用
 
-- **文生图**：使用 `image-generation_text_to_image` 工具，传入符合规范的 description
-- **图生图**：使用 `image-generation_text_image_to_image` 工具，传入参考图 URL 和改写描述
-- 生成后返回图片 URL 供使用者下载使用
+### 通道一（优先，重试 5 次）：MCP `image-generation`（ModelScope）
+
+- **文生图**：`image-generation_text_to_image`，传入符合规范的 `description`
+- **图生图**：`image-generation_text_image_to_image`，传入参考图 URL 和改写描述
+- 失败时最多重试 5 次，间隔 15 秒
+
+### 通道二（降级，稳定性较低）：MCP `image-generation-pollinations`（免费，无需认证）
+
+- **文生图**：`image-generation-pollinations_text_to_image`，传入 `prompt`、`width`、`height`、`model`
+- model 默认为 `turbo`，尺寸按公众号规范（封面 900×383，插图 1024×768 等）
+- 不重试，失败则跳过该图
+- 注意：Pollinations URL 在实践中可能加载失败，仅作预览用途
+
+> 生成后返回图片 URL，直接嵌入文章对应位置

@@ -41,14 +41,10 @@
       "timeout": 120000,
       "enabled": true
     },
-    "image-generation-proxy": {
+    "image-generation-pollinations": {
       "type": "local",
-      "command": ["node", "local-mcps/image-generation-proxy/index.js"],
-      "environment": {
-        "PB_IMAGE_GENERATION_URL": "{env:PB_IMAGE_GENERATION_URL}",
-        "PB_MODEL_API_KEY": "{env:PB_MODEL_API_KEY}"
-      },
-      "enabled": false
+      "command": ["node", "local-mcps/image-pollinations-nodejs/index.js"],
+      "enabled": true
     },
     "pycorrector": {
       "type": "local",

@@ -51,7 +51,8 @@ flowchart TD
 
 ### 步骤 5：插图（委托 illustrator）
 - 调用 `illustrator` agent 生成首图和文中配图
-- 将图片嵌入文章对应位置
+- illustrator 采用**双通道降级策略**：优先 MCP `image-generation`（重试 3 次×10 秒间隔），失败后降级到 MCP `image-pollinations`（不重试），均失败则跳过
+- 将图片 URL 嵌入文章对应位置
 
 ### 步骤 6：发布 *(pending)*
 - 将最终文章发布到公众号

@@ -72,6 +72,20 @@ PB_IMAGE_GENERATION_URL=xxx
 | `playwright` | local | 浏览器自动化（由 npx 动态拉取） | npx @playwright/mcp |
 | `image-generation` | remote | 文生图/图生图（ModelScope API） | — |
 
+## MP 自动化管线
+
+完整流程定义见 [workflows/workflow_mp-auto-pipeline.md](workflows/workflow_mp-auto-pipeline.md)。
+
+| 步骤 | 名称 | 执行者 | 产出 |
+|------|------|--------|------|
+| 1 | 抓取与遴选 | `gatherer` | `summary_report.md`、`topic_*.md` |
+| 2 | 发送汇总报告 | `writer` | 汇总报告邮件（标题：`资讯汇总 - {profile} - {date}`） |
+| 3 | 主题评价 | `writer` → `commentator-*` | `commentary.md`、`selected-topic.md` |
+| 4 | 撰写文章 | `writer` | `{topic}_draft.md` |
+| 5 | 校对 | `writer` → `proofreader` | `{topic}_proofed.md` |
+| 6 | 插图 | `writer` → `illustrator` | `{topic}_final.md`（嵌入图片） |
+| 7 | 发送终稿 | `writer` | 终稿邮件（标题：`{topic} - {date}`，正文含配图） |
+
 ## 项目结构
 
 ```
