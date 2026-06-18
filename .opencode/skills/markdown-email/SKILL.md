@@ -1,4 +1,7 @@
-# Skill: markdown-email
+---
+name: markdown-email
+description: 将 Markdown 文件转为 HTML 并通过 Resend API 发送邮件。适用于：通讯稿发送、邮件简报、Markdown 转邮件通知。
+---
 
 # Markdown 邮件发送 Skill
 
@@ -27,34 +30,26 @@
 
 读取指定的 `.md` 文件内容。
 
-### 步骤 2：Markdown → HTML 转换
+### 步骤 2：安装依赖（首次使用）
+
+首次运行需安装 Node.js 依赖：
+
+```
+cd {skill} && npm install
+```
+
+### 步骤 3：Markdown → HTML 转换
 
 运行转换脚本：
 
 ```
-node {skill}/convert.js {input.md} {output.html}
+node {skill}/convert.js {input.md} [{output.html}]
 ```
 
-该脚本自动完成所有 Markdown 元素的转换：
+- `{output.html}` 可选，默认值为 `{input.md}` 对应文件名 + `.html`（如 `doc.md` → `doc.html`）
+- 转换引擎使用 [markdown-it](https://github.com/markdown-it/markdown-it)（支持 typographer、linkify、表格、代码块等完整 Markdown 语法）
 
-| Markdown | HTML |
-|----------|------|
-| `# title` | `<h1>title</h1>` |
-| `## title` | `<h2>title</h2>` |
-| `### title` | `<h3>title</h3>` |
-| `**bold**` | `<strong>bold</strong>` |
-| `*italic*` | `<em>italic</em>` |
-| `` `code` `` | `<code>code</code>` |
-| `[text](url)` | `<a href="url">text</a>` |
-| `![alt](src)` | `<img src="src" alt="alt" style="max-width:100%">` |
-| `- item` | `<li>item</li>` 包裹 `<ul>` |
-| `1. item` | `<li>item</li>` 包裹 `<ol>` |
-| `> quote` | `<blockquote><p>quote</p></blockquote>` |
-| `---` | `<hr>` |
-| 表格 | `<table><thead><tr><th>...</th></tr></thead><tbody>...</tbody></table>` |
-| 空行分隔段落 | `<p>...</p>` |
-
-### 步骤 3：发送邮件
+### 步骤 4：发送邮件
 
 调用 `resend_send_email` 发送：
 
@@ -62,7 +57,7 @@ node {skill}/convert.js {input.md} {output.html}
 |------|-----|
 | `to` | 收件人邮箱（用户提供） |
 | `subject` | 邮件标题（用户提供或从文件名提取） |
-| `html` | 步骤 2 生成的完整 HTML |
+| `html` | 步骤 3 生成的完整 HTML |
 | `from` | `公众号汇集小能手 <{env:PB_RESEND_FROM}>` |
 
 ## 输出

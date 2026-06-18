@@ -44,14 +44,15 @@ flowchart TD
 ### 步骤 3：撰写文章
 - 对选中的主题，通过 `web-search` 搜索补充素材
 - 结合已下载的公众号文章，编写公众号文章
+- **配图原则**：除封面首图外，文中插图严格控制在 1-2 张。仅在关键位置（如数据对比、流程示意、核心观点可视化）插入 `[图：图片说明]` 标记，避免无关配图
 
 ### 步骤 4：校对（委托 proofreader）
 - 调用 `proofreader` agent 进行敏感词检查、错别字修正、语法和逻辑复核
 - 根据校对意见修正文章
 
 ### 步骤 5：插图（委托 illustrator）
-- 调用 `illustrator` agent 生成首图和文中配图
-- illustrator 采用**双通道降级策略**：优先 MCP `image-generation`（重试 3 次×10 秒间隔），失败后降级到 MCP `image-pollinations`（不重试），均失败则跳过
+- 调用 `illustrator` agent 生成封面首图和 1-2 张文中配图
+- illustrator 采用**双通道降级策略**：优先 MCP `image-generation-modelscope`（重试 5 次×15 秒间隔），失败后降级到 MCP `image-pollinations`（不重试），均失败则跳过
 - 将图片 URL 嵌入文章对应位置
 
 ### 步骤 6：发布 *(pending)*

@@ -47,13 +47,11 @@ flowchart TD
 ```
 node {skill}/scripts/gen_topic_report.js \
   {download-articles} \
-  {output}/{yyyyMMdd} \
+  {output}/{profile}/{yyyyMMdd} \
   {download-articles}/analysis_report_{yyyyMMdd}.json \
-  {config-runtime}   # 必需，脚本从此读取 settings.name 确定最终输出路径 {output}/{profile}/{yyyyMMdd}
+  {config-runtime} \
   {download-articles}/analysis_topic_{yyyyMMdd}.json    # 必需，AI 预选主题
 ```
-
-> 命令行中的 `{output}/{yyyyMMdd}` 为内部基准路径，最终输出到 `{output}/${profile}/${yyyyMMdd}`。
 
 ### 脚本逻辑
 
@@ -93,9 +91,9 @@ node {skill}/scripts/gen_topic_report.js \
 ```
 node {skill}/scripts/gen_summary_report.js \
   {download-articles} \
-  {output}/{yyyyMMdd} \
+  {output}/{profile}/{yyyyMMdd} \
   {download-articles}/analysis_report_{yyyyMMdd}.json \
-  {config-runtime}   # 必需，脚本从此读取 settings.name 确定最终输出路径 {output}/{profile}/{yyyyMMdd}
+  {config-runtime} \
   {yyyyMMdd} # 可选，日期后缀，默认当天
 ```
 

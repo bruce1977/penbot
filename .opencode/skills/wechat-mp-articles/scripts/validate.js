@@ -75,7 +75,8 @@ const SCHEMAS = {
           top_n_articles: { type: "number", required: false, min: 1 },
           topic_count: { type: "number", required: false, min: 1 },
           similarity_threshold: { type: "number", required: false, min: 0, max: 1 },
-          language: { type: "string", required: false }
+          language: { type: "string", required: false },
+          max_accounts: { type: "number", required: false, min: 1 }
         }
       }
     }

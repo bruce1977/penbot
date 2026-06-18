@@ -7,7 +7,14 @@
     "cmd-wechat-mp-articles": {
       "template": "根据$1抓取微信公众号文章",
       "description": "根据配置文件抓取微信公众号文章并生成汇总报告"
+    },
+    "cmd-mp-auto-pipeline": {
+      "template": "根据$1执行MP自动化管线",
+      "description": "从抓取公众号文章到撰写、校对、插图、发送的完整自动化管线"
     }
+  },
+  "permission": {
+    "read": { ".env": "allow", "**/.env": "allow", ".env.*": "allow", "**/.env.*": "allow" }
   },
   "skills": {
     "paths": [".opencode/skills"]
@@ -37,6 +44,15 @@
       "url": "{env:PB_IMAGE_GENERATION_URL}",
       "headers": {
         "Authorization": "Bearer {env:PB_MODEL_API_KEY}"
+      },
+      "timeout": 120000,
+      "enabled": true
+    },
+    "image-generation-modelscope": {
+      "type": "local",
+      "command": ["node", "local-mcps/image-generation-modelscope/index.js"],
+      "environment": {
+        "PB_MODEL_API_KEY": "{env:PB_MODEL_API_KEY}"
       },
       "timeout": 120000,
       "enabled": true

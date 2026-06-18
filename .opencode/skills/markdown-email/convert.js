@@ -1,144 +1,28 @@
 const fs = require('fs');
 const path = require('path');
+const MarkdownIt = require('markdown-it');
+const highlightjs = require('markdown-it-highlightjs');
 
-function escapeHtml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const md = new MarkdownIt({
+  html: true,
+  linkify: true,
+  typographer: true,
+});
+md.use(highlightjs);
+
+// Main
+const [,, inputPath, outputPath] = process.argv;
+
+if (!inputPath) {
+  console.error('Usage: node convert.js <input.md> [output.html]');
+  process.exit(1);
 }
 
-function mdToHtml(md) {
-  let lines = md.split('\n');
-  let html = [];
-  let i = 0;
+const src = fs.readFileSync(inputPath, 'utf-8');
+const bodyHtml = md.render(src);
+const out = outputPath || inputPath.replace(/\.md$/i, '') + '.html';
 
-  while (i < lines.length) {
-    let line = lines[i];
-    let trimmed = line.trim();
-
-    if (trimmed === '') {
-      html.push('');
-      i++;
-      continue;
-    }
-
-    // Horizontal rule
-    if (/^---+\s*$/.test(trimmed)) {
-      html.push('<hr>');
-      i++;
-      continue;
-    }
-
-    // Blockquote
-    if (trimmed.startsWith('> ')) {
-      let quoteLines = [];
-      while (i < lines.length && lines[i].trim().startsWith('> ')) {
-        quoteLines.push(lines[i].trim().replace(/^> /, ''));
-        i++;
-      }
-      html.push('<blockquote><p>' + processInline(quoteLines.join('<br>')) + '</p></blockquote>');
-      continue;
-    }
-
-    // Headers
-    let hMatch = trimmed.match(/^(#{1,3})\s+(.+)$/);
-    if (hMatch) {
-      let level = hMatch[1].length;
-      html.push(`<h${level}>${processInline(hMatch[2])}</h${level}>`);
-      i++;
-      continue;
-    }
-
-    // Table
-    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
-      let tableRows = [];
-      let headerRow = null;
-      let separatorHandled = false;
-
-      while (i < lines.length) {
-        let l = lines[i].trim();
-        if (!l.startsWith('|') || !l.endsWith('|')) break;
-
-        let cells = l.split('|').filter((_, idx, arr) => idx > 0 && idx < arr.length - 1);
-        cells = cells.map(c => c.trim());
-
-        // Skip separator rows like |---|---| or |:---|---:|
-        let isSep = cells.every(c => /^:?-+:?$/.test(c));
-        if (isSep) {
-          separatorHandled = true;
-          i++;
-          continue;
-        }
-
-        cells = cells.map(c => processInline(c));
-
-        if (!separatorHandled && headerRow === null) {
-          headerRow = cells;
-        } else {
-          tableRows.push(cells);
-        }
-        i++;
-      }
-
-      html.push('<table>');
-      if (headerRow) {
-        html.push('<thead><tr>' + headerRow.map(c => `<th>${c}</th>`).join('') + '</tr></thead>');
-      }
-      if (tableRows.length > 0) {
-        html.push('<tbody>' + tableRows.map(row => '<tr>' + row.map(c => `<td>${c}</td>`).join('') + '</tr>').join('') + '</tbody>');
-      }
-      html.push('</table>');
-      continue;
-    }
-
-    // Unordered list
-    if (/^[-*+]\s/.test(trimmed)) {
-      let items = [];
-      while (i < lines.length && /^[-*+]\s/.test(lines[i].trim())) {
-        items.push('<li>' + processInline(lines[i].trim().replace(/^[-*+]\s/, '')) + '</li>');
-        i++;
-      }
-      html.push('<ul>' + items.join('') + '</ul>');
-      continue;
-    }
-
-    // Ordered list
-    if (/^\d+\.\s/.test(trimmed)) {
-      let items = [];
-      while (i < lines.length && /^\d+\.\s/.test(lines[i].trim())) {
-        items.push('<li>' + processInline(lines[i].trim().replace(/^\d+\.\s/, '')) + '</li>');
-        i++;
-      }
-      html.push('<ol>' + items.join('') + '</ol>');
-      continue;
-    }
-
-    // Paragraph
-    html.push('<p>' + processInline(trimmed) + '</p>');
-    i++;
-  }
-
-  return html.join('\n');
-}
-
-function processInline(text) {
-  // Images first - handle URLs with parentheses
-  text = text.replace(/!\[([^\]]*)\]\(((?:[^()]+|\((?:[^()]+|\([^()]*\))*\))*)\)/g, (match, alt, url) => {
-    return `<img src="${url}" alt="${alt}" style="max-width:100%;border-radius:6px;margin:16px 0;">`;
-  });
-  // Bold
-  text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  // Italic
-  text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-  // Inline code
-  text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
-  // Links - handle URLs with parentheses
-  text = text.replace(/\[([^\]]+)\]\(((?:[^()]+|\((?:[^()]+|\([^()]*\))*\))*)\)/g, (match, linkText, url) => {
-    return `<a href="${url}">${linkText}</a>`;
-  });
-  return text;
-}
-
-function wrapHtml(bodyHtml) {
-  return `<!DOCTYPE html>
+const fullHtml = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -152,8 +36,26 @@ function wrapHtml(bodyHtml) {
     img { max-width: 100%; height: auto; border-radius: 6px; margin: 16px 0; }
     a { color: #1a73e8; }
     blockquote { border-left: 4px solid #1a73e8; margin: 16px 0; padding: 8px 16px; color: #555; background: #f0f6ff; border-radius: 0 6px 6px 0; }
-    pre { background: #f5f5f5; padding: 14px; border-radius: 6px; overflow-x: auto; }
-    code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 14px; }
+    pre { background: #2d2d2d; padding: 14px; border-radius: 6px; overflow-x: auto; }
+    code { padding: 2px 6px; border-radius: 3px; font-size: 14px; }
+    pre code { background: none; padding: 0; }
+    .hljs { display: block; overflow-x: auto; color: #ccc; background: none; }
+    .hljs-keyword { color: #c792ea; }
+    .hljs-string { color: #c3e88d; }
+    .hljs-number { color: #f78c6c; }
+    .hljs-comment { color: #676e95; font-style: italic; }
+    .hljs-built_in { color: #82aaff; }
+    .hljs-attr { color: #f07178; }
+    .hljs-literal { color: #ff5370; }
+    .hljs-title { color: #82aaff; }
+    .hljs-params { color: #f07178; }
+    .hljs-selector-tag { color: #c792ea; }
+    .hljs-meta { color: #89ddff; }
+    .hljs-section { color: #82aaff; }
+    .hljs-link { color: #c3e88d; }
+    .hljs-symbol { color: #f78c6c; }
+    .hljs-deletion { color: #ff5370; }
+    .hljs-addition { color: #c3e88d; }
     hr { border: none; border-top: 1px solid #e0e0e0; margin: 28px 0; }
     ul, ol { padding-left: 24px; margin: 14px 0; }
     li { margin: 6px 0; }
@@ -167,23 +69,6 @@ function wrapHtml(bodyHtml) {
 ${bodyHtml}
 </body>
 </html>`;
-}
 
-// Main
-const [,, inputPath, outputPath] = process.argv;
-
-if (!inputPath) {
-  console.error('Usage: node convert.js <input.md> [output.html]');
-  process.exit(1);
-}
-
-const md = fs.readFileSync(inputPath, 'utf-8');
-const bodyHtml = mdToHtml(md);
-const fullHtml = wrapHtml(bodyHtml);
-
-if (outputPath) {
-  fs.writeFileSync(outputPath, fullHtml, 'utf-8');
-  console.log('Converted: ' + path.basename(inputPath) + ' -> ' + path.basename(outputPath));
-} else {
-  console.log(fullHtml);
-}
+fs.writeFileSync(out, fullHtml, 'utf-8');
+console.log('Converted: ' + path.basename(inputPath) + ' -> ' + path.basename(out));

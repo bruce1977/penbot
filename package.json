@@ -5,9 +5,15 @@
     "start": "npx dotenv-cli -e .env -- opencode",
     "start-mimo": "npx dotenv-cli -e .env -- mimo",
     "gen-mp-ai": "npx dotenv-cli -e .env -- opencode run \"/cmd-wechat-mp-articles configs/ai-config.json\"",
-    "gen-mp-test": "npx dotenv-cli -e .env -- opencode run \"/cmd-wechat-mp-articles configs/test-config.json\""
+    "gen-mp-meihua": "npx dotenv-cli -e .env -- opencode run \"/cmd-wechat-mp-articles configs/meihua-config.json\"",
+    "gen-mp-test": "npx dotenv-cli -e .env -- opencode run \"/cmd-wechat-mp-articles configs/test-config.json\"",
+    "mp-ai": "npx dotenv-cli -e .env -- opencode run \"/cmd-mp-auto-pipeline configs/ai-config.json\"",
+    "mp-meihua": "npx dotenv-cli -e .env -- opencode run \"/cmd-mp-auto-pipeline configs/meihua-config.json\"",
+    "mp-test": "npx dotenv-cli -e .env -- opencode run \"/cmd-mp-auto-pipeline configs/test-config.json\""
   },
   "dependencies": {
+    "markdown-it": "^14.2.0",
+    "markdown-it-highlightjs": "^4.3.0",
     "mustache": "^4.2.0",
     "resend-mcp": "^2.6.1"
   },

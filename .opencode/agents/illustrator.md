@@ -29,7 +29,7 @@ flowchart TD
     S([开始]) --> A1[1. 理解文章<br/>提取主题/情绪/核心意象]
     A1 --> A2[2. 确定风格<br/>匹配文章类型 → 视觉风格]
     A2 --> A3[3. 设计画面<br/>撰写 prompt]
-    A3 --> P1[4a. 通道一：image-generation<br/>文生图 / 图生图]
+    A3 -->     P1[4a. 通道一：image-generation-modelscope<br/>文生图 / 图生图]
     P1 --> RETRY{成功？}
     RETRY -->|否, <5次| P1_WAIT[等待 15 秒] --> P1
     RETRY -->|否, ≥5次| P2[4b. 通道二：image-pollinations<br/>文生图]
@@ -49,6 +49,7 @@ flowchart TD
 - 通读全文，提取主题、情绪基调、核心意象
 - 判断文章类型：新闻资讯 / 技术教程 / 行业分析 / 文化随笔 / 产品推广
 - 确定合适的视觉风格方向
+- **配图数量**：一篇文章含 1 张封面首图 + 最多 2 张文中插图，精心选择最有表现力的画面，避免冗余
 
 ### 2. 设计画面
 - 根据文章类型选择对应的视觉风格
@@ -59,9 +60,9 @@ flowchart TD
 
 按以下顺序尝试，任一通道成功则立即返回 URL：
 
-**通道一（优先，重试 5 次）：MCP `image-generation`（ModelScope）**
-- 无参考图 → `image-generation_text_to_image`
-- 有参考图 → `image-generation_text_image_to_image`
+**通道一（优先，重试 5 次）：MCP `image-generation-modelscope`（ModelScope）**
+- 无参考图 → `image-generation-modelscope_text_to_image`
+- 有参考图 → `image-generation-modelscope_text_image_to_image`
 - 失败后间隔 **15 秒**重试，最多重试 **5 次**
 - 5 次均失败 → 进入通道二
 
@@ -121,10 +122,10 @@ signature, watermark, text, words, logo
 
 ## 工具使用
 
-### 通道一（优先，重试 5 次）：MCP `image-generation`（ModelScope）
+### 通道一（优先，重试 5 次）：MCP `image-generation-modelscope`（ModelScope）
 
-- **文生图**：`image-generation_text_to_image`，传入符合规范的 `description`
-- **图生图**：`image-generation_text_image_to_image`，传入参考图 URL 和改写描述
+- **文生图**：`image-generation-modelscope_text_to_image`，传入符合规范的 `description`
+- **图生图**：`image-generation-modelscope_text_image_to_image`，传入参考图 URL 和改写描述
 - 失败时最多重试 5 次，间隔 15 秒
 
 ### 通道二（降级，稳定性较低）：MCP `image-generation-pollinations`（免费，无需认证）
