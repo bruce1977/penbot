@@ -59,20 +59,6 @@
     }
   },
   "mcp": {
-    "wechat-mp-generation": {
-      "type": "local",
-      "command": ["node", "local-mcps/wechat-mp-nodejs/index.js"],
-      "environment": {
-        "PB_WECHAT_MP_AUTH_KEY": "{env:PB_WECHAT_MP_AUTH_KEY}",
-        "PB_WECHAT_MP_API_BASE": "{env:PB_WECHAT_MP_API_BASE}"
-      },
-      "enabled": true
-    },
-    "word-sensitive": {
-      "type": "local",
-      "command": ["node", "local-mcps/sensitive-lexicon-nodejs/index.js"],
-      "enabled": true
-    },
     "image-generation": {
       "type": "local",
       "command": ["node", "local-mcps/image-generation-modelscope/index.js"],
@@ -92,12 +78,26 @@
     },
     "image-generation-pollinations": {
       "type": "local",
-      "command": ["node", "local-mcps/image-pollinations-nodejs/index.js"],
+      "command": ["node", "local-mcps/image-generation-pollinations/index.js"],
       "enabled": false
+    },
+    "wechat-mp-generation": {
+      "type": "local",
+      "command": ["node", "local-mcps/wechat-mp-generation/index.js"],
+      "environment": {
+        "PB_WECHAT_MP_AUTH_KEY": "{env:PB_WECHAT_MP_AUTH_KEY}",
+        "PB_WECHAT_MP_API_BASE": "{env:PB_WECHAT_MP_API_BASE}"
+      },
+      "enabled": true
+    },
+    "word-sensitive": {
+      "type": "local",
+      "command": ["node", "local-mcps/word-sensitive/index.js"],
+      "enabled": true
     },
     "word-corrector": {
       "type": "local",
-      "command": ["node", "local-mcps/pycorrector-nodejs/index.js"],
+      "command": ["node", "local-mcps/word-corrector/index.js"],
       "environment": {
         "PB_PYCORRECTOR_API_URL": "{env:PB_PYCORRECTOR_API_URL}",
         "PB_PYCORRECTOR_AUTH_KEY": "{env:PB_PYCORRECTOR_AUTH_KEY}"
