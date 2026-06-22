@@ -79,7 +79,7 @@
     "image-generation-pollinations": {
       "type": "local",
       "command": ["node", "local-mcps/image-generation-pollinations/index.js"],
-      "enabled": false
+      "enabled": true
     },
     "wechat-mp-generation": {
       "type": "local",
