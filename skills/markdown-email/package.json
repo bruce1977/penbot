@@ -1,0 +1,9 @@
+{
+  "name": "markdown-email",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "markdown-it": "^14.0.0",
+    "markdown-it-highlightjs": "^4.2.0"
+  }
+}

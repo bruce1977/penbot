@@ -1,17 +1,16 @@
-# Weather MCP Server (Node.js)
+# Pycorrector MCP Server (Node.js)
 
-A simple MCP (Model Context Protocol) server built with fastmcp that provides weather information.
+A simple MCP (Model Context Protocol) server built with fastmcp that provides Chinese text error correction.
 
 ## Features
 
-- `get_current_weather`: Get the current weather for your location (based on IP).
-- `get_weather_by_city`: Get the current weather for a specified city.
+- `get_correct`: Detect and correct Chinese text typos, supporting phonetic and shape-similar error detection.
 
 ## Installation
 
 1. Navigate to the project directory:
    ```bash
-   cd weather-mcp-nodejs
+   cd pycorrector-nodejs
    ```
 
 2. Install dependencies:
@@ -30,11 +29,11 @@ The server will start and listen for MCP requests.
 
 ## API Details
 
-- Uses wttr.in for weather data (free, no API key required).
-- Returns weather information including temperature, description, humidity, and wind speed.
+- Calls a remote pycorrector API endpoint for text correction.
+- Returns original text, corrected text, and a list of detected errors including wrong/right pairs.
 
 ## Troubleshooting
 
-- Ensure Node.js is installed (version 14+ recommended).
-- Check internet connection for API calls.
+- Ensure Node.js is installed (version 18+ recommended).
+- Ensure `PB_PYCORRECTOR_API_URL` and `PB_PYCORRECTOR_AUTH_KEY` environment variables are set.
 - If the server fails to start, verify dependencies are installed correctly.

@@ -9,7 +9,7 @@ description: 用于从指定行业网站抓取文章并生成新闻通讯稿。�
 
 ## 配置说明
 
-网站列表存储在配置文件中：`.opencode/skills/industry-news-digest/config.json`
+网站列表存储在配置文件中：`skills/industry-news-digest/config.json`
 
 如果配置文件不存在，提示用户创建并提供以下信息：
 1. **目标网站列表**：行业网站URL或RSS订阅地址

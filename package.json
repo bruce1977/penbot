@@ -9,7 +9,8 @@
     "gen-mp-test": "npx dotenv-cli -e .env -- opencode run \"/cmd-wechat-mp-articles configs/test-config.json\"",
     "mp-ai": "npx dotenv-cli -e .env -- opencode run \"/cmd-mp-auto-pipeline configs/ai-config.json\"",
     "mp-meihua": "npx dotenv-cli -e .env -- opencode run \"/cmd-mp-auto-pipeline configs/meihua-config.json\"",
-    "mp-test": "npx dotenv-cli -e .env -- opencode run \"/cmd-mp-auto-pipeline configs/test-config.json\""
+    "mp-test": "npx dotenv-cli -e .env -- opencode run \"/cmd-mp-auto-pipeline configs/test-config.json\"",
+    "mp-mi-test": "npx dotenv-cli -e .env -- mimo --prompt \"根据configs/test-config.json执行MP自动化管线\""
   },
   "dependencies": {
     "markdown-it": "^14.2.0",

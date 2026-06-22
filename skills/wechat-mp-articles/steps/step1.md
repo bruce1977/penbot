@@ -84,56 +84,12 @@ node {skill}/scripts/validate.js config {config-runtime}
 
 校验通过输出 `Valid: config.json (N account(s))`，失败则 exit 1 并列出问题。
 
-### 1.3 选取当天公众号
-
-运行 `select_accounts.js` 脚本，从已启用的公众号中按日期轮换算法选取至多 `max_accounts` 个，结果写入 `{temp-data}/selected_accounts.json`：
-
-```
-node {skill}/scripts/select_accounts.js {config-runtime} {date} {temp-data}/selected_accounts.json
-```
-
-其中 `{date}` 为当天日期，格式 `YYYY-MM-DD`（如 `2026-06-18`）。
-
-**算法说明：**
-
-采用**分组分片 + 逐周期洗牌**策略，保证 `ceil(N/M)` 天内每个账号恰好被拉到一次，同时跨周期重新分组避免固定搭配：
-
-1. 过滤出 `enabled: true` 的公众号，按 `name` 字典序排序
-2. 分组数 `numGroups = ceil(total / maxAccounts)`，每组大小 = `maxAccounts`
-3. 定义纪元 `2020-01-01`，计算天数 `daysSinceEpoch`
-4. 周期索引 `cycleIndex = floor(daysSinceEpoch / numGroups)`，组索引 `groupIndex = daysSinceEpoch % numGroups`
-5. **首周期**（cycleIndex=0）使用字典序排列；**后续周期**按 `cycleIndex` 种子执行 Fisher-Yates 确定性洗牌，确保同一周期内每天结果一致，跨周期分组重新排列
-6. 取 `ordered[groupIndex * maxAccounts .. groupIndex * maxAccounts + maxAccounts - 1]`
-
-**特性：**
-- ✅ **全覆盖**：`ceil(total / maxAccounts)` 天内所有公众号各被拉到恰好一次（如 20 个号 `max_accounts=5` → 4 天全覆盖）
-- ✅ **确定性**：同一天始终返回相同结果
-- ✅ **跨周期变化**：相邻周期分组不同，避免账号固定搭配
-- ✅ **可测试**：日期参数可手动指定，便于回测
-
-输出 `{temp-data}/selected_accounts.json` 结构：
-
-```json
-{
-  "date": "2026-06-18",
-  "max_accounts": 5,
-  "total_enabled": 20,
-  "selected_count": 5,
-  "accounts": [
-    { "name": "AI前线", "fake_id": "MzU1NDA4NjU2MA==", "category": "AI工程化", "enabled": true },
-    ...
-  ]
-}
-```
-
-脚本不会修改 `{config-runtime}`。后续步骤通过 `selected_accounts.json` 获取当天待抓取的公众号列表。
-
 ## 输入/输出
 
 | 方向 | 文件路径 | 说明 | 下游消费 |
 |------|---------|------|---------|
 | 输入 | `{config}` | 原始配置文件（JSON，用户提供的任意路径） | — |
-| 输出 | `{config-runtime}` | 标准化后的运行时配置副本 | 步骤 2.1/2.3/3.2/4.1/4.2 |
+| 输出 | `{config-runtime}` | 标准化后的运行时配置副本 | 步骤 2.1/3.2/4.1/4.2 |
 
 > 本步骤输出 `{config-runtime}`（固定为 `{temp-data}/config.json`），后续步骤统一读取此路径，不再引用原始 `{config}`。
 

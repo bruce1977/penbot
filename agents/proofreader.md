@@ -17,13 +17,13 @@ flowchart TD
     classDef manual fill:#fff3e0,stroke:#e65100,stroke-width:1px,color:#bf360c
     classDef output fill:#e8f5e9,stroke:#2e7d32,stroke-width:1px,color:#1b5e20
 
-    S([开始]) --> T1[1. 敏感词检查<br/>sensitive-check 技能]
+    S([开始]) --> T1[1. 敏感词检查<br/>word-sensitive-check 技能]
     T1 --> D1{发现问题？}
     D1 -->|是| F1[修正敏感词]
     D1 -->|否| T2
     F1 --> T2
 
-    T2[2. 拼写与语法修正<br/>pycorrector-check 技能]
+    T2[2. 拼写与语法修正<br/>word-corrector-check 技能]
     T2 --> D2{发现问题？}
     D2 -->|是| F2[修正错别字/语法]
     D2 -->|否| M1
@@ -49,8 +49,8 @@ flowchart TD
     class F1,F2,F3,F4 output
 ```
 
-1. **敏感词检查** — 使用技能 `sensitive-check` 对全文进行敏感词审查，标记命中内容并按建议处理
-2. **拼写与语法修正** — 使用技能 `pycorrector-check` 进行错别字检测和语法修正
+1. **敏感词检查** — 使用技能 `word-sensitive-check` 对全文进行敏感词审查，标记命中内容并按建议处理
+2. **拼写与语法修正** — 使用技能 `word-corrector-check` 进行错别字检测和语法修正
 3. **语法检查与修正** — 人工复核句式结构、搭配、成分完整性，修复语病
 4. **逻辑检查与修正** — 检查段落衔接、论点与论据的一致性、数据与结论的因果关系
 

@@ -44,7 +44,7 @@ flowchart TD
 | 方向 | 文件路径 | 说明 | 上游来源 | 下游消费 |
 |------|---------|------|---------|---------|
 | 输入 | `{download-articles}/*.md` | 每篇文章的 Markdown 原文（供 AI 阅读） | 步骤 2.2 | — |
-| 输入 | `{download-articles}/download_report_{yyyyMMdd}.json` | 文章元数据（aid、标题、时间等） | 步骤 2.3 | — |
+| 输入 | `{download-articles}/download_report_{yyyyMMdd}.json` | 文章元数据（aid、标题、时间等） | 步骤 2.2 | — |
 | 输出 | `{download-articles}/analysis_report_{yyyyMMdd}.json` | AI 评分与标签结果 | — | 步骤 3.2、步骤 4.1/4.2 |
 
 读取每篇文章的内容，由 AI 逐篇进行质量评分（1-5 分）和标签提取（2-5 个关键词/标签）。

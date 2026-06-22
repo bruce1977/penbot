@@ -4,6 +4,7 @@ import axios from "axios";
 
 const API_BASE = process.env.PB_WECHAT_MP_API_BASE;
 const AUTH_KEY = process.env.PB_WECHAT_MP_AUTH_KEY;
+const API_PATH = "/api/public/v1";
 
 if (!API_BASE) {
   console.error("[wechat-mcp] Error: PB_WECHAT_MP_API_BASE environment variable is not set");
@@ -15,7 +16,7 @@ if (!AUTH_KEY) {
 }
 
 const apiClient = axios.create({
-  baseURL: API_BASE,
+  baseURL: `${API_BASE}${API_PATH}`,
   headers: { "X-Auth-Key": AUTH_KEY },
 });
 

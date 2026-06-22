@@ -9,8 +9,8 @@ description: 从微信公众号抓取文章，经 AI 评分、标签提取、主
 
 ## 前置依赖
 
-- `wechat-mp-mcp_get_article_list` — 根据 fake_ids 批量获取文章列表
-- `download_articles.js` — 通过 HTTP API (`{PB_WECHAT_MP_API_BASE}/download`) 批量下载文章 Markdown 内容（替代 MCP 下载通道）
+- `fetch_and_prepare.js` — 通过 HTTP API (`{PB_WECHAT_MP_API_BASE}/api/public/v1/article`) 批量拉取文章列表，自动完成字段精简和文件名生成（替代 MCP 拉取通道 + prepare_article_list.js）
+- `download_articles.js` — 通过 HTTP API (`{PB_WECHAT_MP_API_BASE}/api/public/v1/download`) 批量下载文章 Markdown 内容，自动完成清单初始化、下载校验和汇总报告生成（替代 MCP 下载通道 + gen_download_list.js + gen_download_report.js）
 
 ## 核心概念
 
@@ -34,7 +34,7 @@ description: 从微信公众号抓取文章，经 AI 评分、标签提取、主
 | 变量 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `{profile}` | 值 | `settings.name` | 配置名称（从 `{config}` 中提取），用于路径前缀 |
-| `{skill}` | 目录 | `.opencode/skills/wechat-mp-articles` | 技能根目录 |
+| `{skill}` | 目录 | `skills/wechat-mp-articles` | 技能根目录 |
 | `{download-articles}` | 目录 | `.temp/{profile}/wechat_articles` | 下载文章存放目录 |
 | `{output}` | 目录 | `output/{profile}` | 报告输出目录 |
 | `{temp-scripts}` | 目录 | `.temp/{profile}/~scripts` | 临时脚本输出 |
@@ -88,7 +88,7 @@ flowchart TD
 
 {download-articles}/
 ├── {aid}_{yyyyMMdd}_{公众号名称}_{title}.md  # 已下载的文章（步骤 2.2）
-├── download_report_{yyyyMMdd}.json          # 下载汇总报告（步骤 2.3）
+├── download_report_{yyyyMMdd}.json          # 下载汇总报告（步骤 2.2）
 ├── analysis_report_{yyyyMMdd}.json          # AI 评分与标签（步骤 3.1）
 ├── analysis_topic_{yyyyMMdd}.json           # AI 遴选主题及推理性说明（步骤 3.2）
 └── ...

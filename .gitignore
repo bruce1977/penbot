@@ -1,5 +1,7 @@
 .env
 .temp/
+.mimocode/
+.opencode/
 output/
 configs/
 node_modules/

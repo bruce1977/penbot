@@ -1,0 +1,9 @@
+{
+  "name": "wechat-mp-articles",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "axios": "^1.7.0",
+    "mustache": "^4.2.0"
+  }
+}

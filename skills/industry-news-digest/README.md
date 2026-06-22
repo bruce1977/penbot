@@ -82,19 +82,19 @@ industry-news-digest/
 
 ```bash
 # 抓取并清理网页正文
-python .opencode/skills/industry-news-digest/fetch_web.py --url "https://example.com"
+python skills/industry-news-digest/fetch_web.py --url "https://example.com"
 
 # 自动检测编码（国内政务网站自动使用GBK）
-python .opencode/skills/industry-news-digest/fetch_web.py --url "http://fta.mofcom.gov.cn/"
+python skills/industry-news-digest/fetch_web.py --url "http://fta.mofcom.gov.cn/"
 
 # 提取文章列表（标题+日期+链接）
-python .opencode/skills/industry-news-digest/fetch_web.py --url "https://example.com/news" --mode articles
+python skills/industry-news-digest/fetch_web.py --url "https://example.com/news" --mode articles
 
 # 强制指定编码（出现乱码时）
-python .opencode/skills/industry-news-digest/fetch_web.py --url "http://example.com" --encoding gbk
+python skills/industry-news-digest/fetch_web.py --url "http://example.com" --encoding gbk
 
 # 批量抓取
-python .opencode/skills/industry-news-digest/fetch_web.py --file urls.txt
+python skills/industry-news-digest/fetch_web.py --file urls.txt
 ```
 
 支持以下模式：

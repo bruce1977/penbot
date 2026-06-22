@@ -6,10 +6,10 @@
 
 ```bash
 # 转换 Markdown → HTML
-node .opencode/skills/markdown-email/convert.js input.md output.html
+node skills/markdown-email/convert.js input.md output.html
 
 # 省略输出路径时自动取 input.md → input.html
-node .opencode/skills/markdown-email/convert.js input.md
+node skills/markdown-email/convert.js input.md
 ```
 
 ## 文件结构

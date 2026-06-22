@@ -30,7 +30,7 @@ flowchart TD
     classDef output fill:#e8f5e9,stroke:#2e7d32,stroke-width:1px,color:#1b5e20
 
     S([开始]) --> CFG[读取 config.json]
-    CFG --> FETCH[拉取文章列表<br/>wechat-mp-mcp_get_article_list]
+    CFG --> FETCH[拉取文章列表<br/>wechat-mp-generation_get_article_list]
     FETCH --> DL[下载文章 Markdown<br/>download_articles.js]
     DL --> AI[AI 评分/标签提取/主题遴选]
     AI --> REPORT[生成汇总报告<br/>summary_report.md + topic_*.md]
@@ -47,7 +47,7 @@ flowchart TD
 - 提取公众号列表、时间范围、主题数量等参数
 
 ### 2. 拉取文章列表
-- 使用 `wechat-mp-mcp_get_article_list` 逐公众号获取最近文章
+- 使用 `wechat-mp-generation_get_article_list` 逐公众号获取最近文章
 - 按 `days_to_filter` 过滤时间范围
 
 ### 3. 下载文章
@@ -67,10 +67,10 @@ flowchart TD
 
 | 信息源 | 可用工具 | 产出 |
 |--------|---------|------|
-| 微信公众号 | `wechat-mp-mcp_search_account` 搜索公众号<br>`wechat-mp-mcp_get_article_list` 获取文章列表<br>`wechat-mp-mcp_get_article_content` 下载文章内容 | 文章列表 JSON + Markdown 文件 |
+| 微信公众号 | `wechat-mp-generation_search_account` 搜索公众号<br>`wechat-mp-generation_get_article_list` 获取文章列表<br>`wechat-mp-generation_get_article_content` 下载文章内容 | 文章列表 JSON + Markdown 文件 |
 | 网页 | `webfetch` 抓取网页内容 | Markdown / HTML / 纯文本 |
 | 搜索引擎 | `websearch` 搜索网络信息 | 搜索结果摘要 |
-| 已有 URL / 文章链接 | `webfetch` 或 `wechat-mp-mcp_get_article_content` | 结构化内容 |
+| 已有 URL / 文章链接 | `webfetch` 或 `wechat-mp-generation_get_article_content` | 结构化内容 |
 
 ### 网页采集流程
 
