@@ -16,9 +16,10 @@
 
 ## 今日遴选主题
 
-| 主题标签 | 摘要 | 文章数 | 公众号数 | 热度 |
-|---------|------|--------|---------|------|
-{{#topics}}| **{{{title}}}** | {{{overview}}} | {{{article_count}}} | {{{account_count}}} | {{{heat}}} [详情]({{{file}}}) |
+{{#topics}}
+- **{{{title}}}**（公众号数：{{{account_count}}}，文章数：{{{article_count}}}，热度：{{{heat}}}）  
+  {{{overview}}}
+
 {{/topics}}
 {{^topics}}
 （暂无遴选主题）
@@ -32,6 +33,7 @@
 |--------|----------|--------|----------|
 {{#account_summary}}| {{{name}}} | {{{category}}} | {{{article_count}}} | {{{best_score}}} |
 {{/account_summary}}
+{{^account_summary}}（暂无公众号数据）{{/account_summary}}
 
 ---
 
@@ -41,6 +43,7 @@
 |---|------|--------|------|------|------|------|
 {{#article_list}}| {{{index}}} | {{{date}}} | {{{account}}} | {{{category}}} | [{{{title}}}]({{{url}}}) | {{{score}}} | {{{tags}}} |
 {{/article_list}}
+{{^article_list}}（暂无文章数据）{{/article_list}}
 
 ---
 

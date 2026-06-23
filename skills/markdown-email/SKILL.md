@@ -49,9 +49,9 @@ node {skill}/convert.js {input.md} [{output.html}]
 - `{output.html}` 可选，默认值为 `{input.md}` 对应文件名 + `.html`（如 `doc.md` → `doc.html`）
 - 转换引擎使用 [markdown-it](https://github.com/markdown-it/markdown-it)（支持 typographer、linkify、表格、代码块等完整 Markdown 语法）
 
-### 步骤 4：发送邮件
+### 步骤 4：发送邮件（带重试）
 
-调用 `resend_send_email` 发送：
+调用 `resend_send_email` 发送，最多尝试 2 次：
 
 | 参数 | 值 |
 |------|-----|
@@ -60,7 +60,15 @@ node {skill}/convert.js {input.md} [{output.html}]
 | `html` | 步骤 3 生成的完整 HTML |
 | `from` | `公众号汇集小能手 <{env:PB_RESEND_FROM}>` |
 
+**重试逻辑**（最多发送 3 次，允许 2 次失败）：
+
+| 尝试 | 失败后的处理 |
+|------|-------------|
+| 第 1 次失败 | 记录错误信息，分析失败原因（如网络错误、收件地址格式、API 密钥、HTML 内容过大等），修复后立即重试 |
+| 第 2 次失败 | 记录错误信息，再次分析原因并修复，修复后重试 |
+| 第 3 次失败 | 记录最终错误信息，终止流程并返回错误详情供用户排查 |
+
 ## 输出
 
 - 成功：`{"success": true, "id": "<resend-message-id>"}`
-- 失败：返回错误信息供用户排查
+- 失败：返回最终错误信息

@@ -11,6 +11,10 @@
     "cmd-mp-auto-pipeline": {
       "template": "根据$1执行MP自动化管线",
       "description": "从抓取公众号文章到撰写、校对、插图、发送的完整自动化管线"
+    },
+    "cmd-mp-digest": {
+      "template": "根据$1执行MP采集简报管线 (`workflows/workflow_mp-digest.md`)",
+      "description": "采集公众号文章并发送汇总报告邮件，不含撰写等后续步骤"
     }
   },
   "permission": {

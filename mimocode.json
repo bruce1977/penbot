@@ -1,5 +1,22 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "command": {
+    "cmd-wechat-mp-articles": {
+      "template": "根据$1抓取微信公众号文章",
+      "description": "根据配置文件抓取微信公众号文章并生成汇总报告"
+    },
+    "cmd-mp-auto-pipeline": {
+      "template": "根据$1执行MP自动化管线",
+      "description": "从抓取公众号文章到撰写、校对、插图、发送的完整自动化管线"
+    },
+    "cmd-mp-digest": {
+      "template": "根据$1执行MP采集简报管线",
+      "description": "采集公众号文章并发送汇总报告邮件，不含撰写等后续步骤"
+    }
+  },
+  "permission": {
+    "read": { ".env": "allow", "**/.env": "allow", ".env.*": "allow", "**/.env.*": "allow" }
+  },
   "skills": {
     "paths": ["skills"]
   },
