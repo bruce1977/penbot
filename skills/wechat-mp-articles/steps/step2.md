@@ -12,7 +12,7 @@
 |------|---------|------|---------|
 | 输入 | `{config-runtime}` | 公众号配置与全局设置（来自步骤 1） | 2.1 |
 | 输出 | `{download-articles}/*.md` | 文章 Markdown 原文（每篇一篇） | 步骤 3.1、步骤 4.1/4.2 |
-| 输出 | `{download-articles}/download_report_{yyyyMMdd}.json` | 下载结果汇总 JSON（含文章元数据） | 步骤 3.1（merge_analysis_meta） |
+| 输出 | `{download-articles}/download_report_{yyyyMMdd}.json` | 下载结果汇总 JSON（含文章元数据，含失败记录） | 步骤 3.1（merge_analysis_meta） |
 
 ### 子流程
 
@@ -155,12 +155,26 @@ node {skill}/scripts/download_articles.js \
       "digest": "...",
       "update_time": 1780916109,
       "download_status": "成功"
+    },
+    {
+      "index": 2,
+      "aid": "2247502768_1",
+      "title": "下载失败的文章示例",
+      "account_name": "某公众号",
+      "account_category": "科技",
+      "file_path": null,
+      "url": "https://mp.weixin.qq.com/s/...",
+      "digest": "...",
+      "update_time": 1780916109,
+      "download_status": "失败"
     }
   ]
 }
 ```
 
 `download_articles.js` 从 `list_failed.txt` 读取失败原因合并到报告，同时扫描 `{download-articles}/` 目录下的 `.md` 文件进行双重校验。
+
+> 下载失败的文章仍然会出现在 `download_report` 的 `articles` 数组中（`"download_status": "失败"`），以便步骤 3 将其注入 `analysis_report` 并最终显示在汇总报告中（无评分、无标签）。
 
 ## 错误处理
 

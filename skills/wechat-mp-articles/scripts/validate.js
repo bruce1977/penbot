@@ -15,7 +15,7 @@ const SCHEMAS = {
           fields: {
             link: { type: "string", required: true, pattern: /^https?:\/\// },
             score: { type: "number", required: false, nullable: true, min: 1, max: 5 },
-            tags: { type: "array", required: true, minLength: 1, item: { type: "string", nonEmpty: true } }
+            tags: { type: "array", required: true, minLength: 0, item: { type: "string", nonEmpty: true } }
           }
         }
       }

@@ -46,7 +46,7 @@ cd {skill} && npm install
 node {skill}/convert.js {input.md} [{output.html}]
 ```
 
-- `{output.html}` 可选，默认值为 `{input.md}` 对应文件名 + `.html`（如 `doc.md` → `doc.html`）
+- `{output.html}` 可选，默认值为 `{input.md}` 对应文件名 + `.html`，**且与输入文件保持在同一目录**下（如 `path/to/doc.md` → `path/to/doc.html`）
 - 转换引擎使用 [markdown-it](https://github.com/markdown-it/markdown-it)（支持 typographer、linkify、表格、代码块等完整 Markdown 语法）
 
 ### 步骤 4：发送邮件（带重试）

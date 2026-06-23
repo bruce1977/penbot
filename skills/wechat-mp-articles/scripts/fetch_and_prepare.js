@@ -34,6 +34,11 @@ const apiClient = axios.create({
   headers: { "X-Auth-Key": process.env.PB_WECHAT_MP_AUTH_KEY || "" },
 });
 
+function cleanTitle(raw) {
+  const firstLine = (raw || "").split("\n")[0].trim();
+  return firstLine.slice(0, 120).trim();
+}
+
 function sanitizeForFilename(s) {
   const chinesePunct = {
     "，": ",", "。": ".", "！": "!", "？": "?", "：": ":", "；": ";",
@@ -123,6 +128,7 @@ async function fetchSingleAccount(fakeid, name, category) {
   }
   return articles.map(a => {
     const enriched = { ...a, fake_id: fakeid, account_name: name, account_category: category };
+    enriched.title = cleanTitle(enriched.title);
     const cleaned = {};
     for (const k of KEEP) {
       if (k in enriched) cleaned[k] = enriched[k];

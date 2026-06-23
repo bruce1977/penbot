@@ -9,8 +9,8 @@
 | 方向 | 文件路径 | 说明 | 下游消费 |
 |------|---------|------|---------|
 | 输入 | `{download-articles}/*.md` | 文章 Markdown 原文（每篇一篇） | 3.1 |
-| 输入 | `{download-articles}/download_report_{yyyyMMdd}.json` | 下载结果汇总 JSON（含文章元数据） | 3.1（merge_analysis_meta） |
-| 输出 | `{download-articles}/analysis_report_{yyyyMMdd}.json` | AI 评分与标签 | 步骤 3.2、步骤 4.1/4.2 |
+| 输入 | `{download-articles}/download_report_{yyyyMMdd}.json` | 下载结果汇总 JSON（含文章元数据，含失败记录） | 3.1（merge_analysis_meta） |
+| 输出 | `{download-articles}/analysis_report_{yyyyMMdd}.json` | AI 评分与标签 + 下载失败文章（score: null, tags: []） | 步骤 3.2、步骤 4.1/4.2 |
 | 输出 | `{download-articles}/analysis_topic_{yyyyMMdd}.json` | AI 遴选的主题及推理性说明 | 步骤 4.1 |
 
 ### 子流程
@@ -22,7 +22,7 @@ flowchart TD
     classDef decision fill:#f3e5f5,stroke:#7b1fa2,stroke-width:1px,color:#4a148c
 
     S([开始]) --> AI1[3.1 AI 评分与标签提取<br/>逐篇评分 1-5 + 提取 2-5 标签]
-    AI1 --> MERGE[merge_analysis_meta.js<br/>合并文章元数据]
+    AI1 --> MERGE[merge_analysis_meta.js<br/>合并元数据 + 注入失败文章]
     MERGE --> VAL1{validate.js report<br/>校验通过？}
     VAL1 -->|是| AI2[3.2 主题遴选<br/>AI 综合标签频率/公众号数/评分<br/>遴选 Top N 主题 + 撰写说明]
     VAL1 -->|否 · exit 1| ERR1([报错退出])
@@ -65,7 +65,10 @@ flowchart TD
 
 AI 处理完成后，将结果写入 `{download-articles}/analysis_report_{yyyyMMdd}.json`。
 
-然后运行 `merge_analysis_meta.js`，将 `download_report` 中的文章元数据合并到 `analysis_report`，使其成为自包含的数据源供后续步骤使用：
+然后运行 `merge_analysis_meta.js`，该脚本完成两件事：
+
+1. **合并元数据**：将 `download_report` 中已评分文章的元数据（标题、公众号名、分类等）合并到 `analysis_report`
+2. **注入失败文章**：将 `download_report` 中下载失败的文章也追加到 `analysis_report`，标记 `"score": null`、`"tags": []`、`"download_status": "失败"`，使其能在步骤 4 的汇总报告中出现（无评分、无标签）
 
 ```
 node {skill}/scripts/merge_analysis_meta.js \
@@ -81,7 +84,7 @@ node {skill}/scripts/validate.js report {download-articles}/analysis_report_{yyy
 
 校验通过输出 `Valid: analysis_report_{yyyyMMdd}.json (N article(s))`，失败 exit 1 并列出具体问题。
 
-最终 `analysis_report` 每篇文章包含字段：`link`、`score`（1-5 或 null）、`tags`，以及合并的元数据 `title`、`account_name`、`account_category`、`digest`、`update_time`、`file_path`、`aid`。示例：
+最终 `analysis_report` 每篇文章包含字段：`link`、`score`（1-5 或 null）、`tags`，以及合并的元数据 `title`、`account_name`、`account_category`、`digest`、`update_time`、`file_path`、`aid`。下载失败的文章额外包含 `"download_status": "失败"`，且 `score` 为 null、`tags` 为空数组。示例：
 
 ```json
 {
@@ -90,7 +93,27 @@ node {skill}/scripts/validate.js report {download-articles}/analysis_report_{yyy
     {
       "link": "https://mp.weixin.qq.com/s/xxx",
       "score": 4,
-      "tags": ["大模型", "开源", "MoE"]
+      "tags": ["大模型", "开源", "MoE"],
+      "title": "某篇文章标题",
+      "account_name": "某公众号",
+      "account_category": "科技",
+      "digest": "文章摘要...",
+      "update_time": 1780916109,
+      "file_path": "aid_xxx_20260608_某公众号_某篇文章标题.md",
+      "aid": "xxx_1"
+    },
+    {
+      "link": "https://mp.weixin.qq.com/s/yyy",
+      "score": null,
+      "tags": [],
+      "download_status": "失败",
+      "title": "下载失败的文章标题",
+      "account_name": "某公众号",
+      "account_category": "科技",
+      "digest": "摘要...",
+      "update_time": 1780916109,
+      "file_path": null,
+      "aid": "yyy_1"
     }
   ]
 }
@@ -142,4 +165,5 @@ node {skill}/scripts/validate.js topic {download-articles}/analysis_topic_{yyyyM
 ## 错误处理
 
 - **AI 评分失败**：单篇文章评分超时或 API 异常时，跳过该篇评分，在 `analysis_report.json` 中标记 `"score": null`
+- **文章下载失败**：由 `merge_analysis_meta.js` 自动注入到 `analysis_report.json`，标记 `"score": null`、`"tags": []`、`"download_status": "失败"`，汇总报告中原样显示（评分显示为 "-"）
 - **标签数量不足**：当有效标签数少于 `${topic_count}` 时，以实际标签数作为主题数，不填充空主题

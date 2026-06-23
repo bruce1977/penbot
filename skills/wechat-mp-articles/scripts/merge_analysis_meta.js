@@ -33,10 +33,40 @@ function mergeMetadata(analysis, metaMap) {
       FIELDS_TO_MERGE.forEach(field => {
         if (!a[field] && meta[field] != null) a[field] = meta[field];
       });
+      // carry over download_status if present
+      if (meta.download_status) a.download_status = meta.download_status;
       merged++;
     }
   });
   return merged;
+}
+
+function injectFailedArticles(downloadReport, analysis) {
+  const existingUrls = new Set(analysis.articles.map(a => a.link || a.url).filter(Boolean));
+  let injected = 0;
+
+  (downloadReport.articles || []).forEach(dl => {
+    const url = dl.url || dl.link;
+    if (!url || existingUrls.has(url)) return;
+
+    const newArticle = {
+      link: url,
+      score: null,
+      tags: [],
+      download_status: "失败",
+      title: dl.title || "",
+      account_name: dl.account_name || "",
+      account_category: dl.account_category || "",
+      digest: dl.digest || "",
+      update_time: dl.update_time || null,
+      file_path: null,
+      aid: dl.aid || "",
+    };
+    analysis.articles.push(newArticle);
+    injected++;
+  });
+
+  return injected;
 }
 
 function main() {
@@ -46,9 +76,11 @@ function main() {
   const metaMap = buildMetaMap(downloadReport);
   // Step 3: merge download metadata into analysis articles
   const merged = mergeMetadata(analysis, metaMap);
-  // Step 4: write enriched analysis JSON
+  // Step 4: inject failed-download articles not already in analysis
+  const injected = injectFailedArticles(downloadReport, analysis);
+  // Step 5: write enriched analysis JSON
   fs.writeFileSync(analysisPath, JSON.stringify(analysis, null, 2), "utf-8");
-  console.log(`Merged metadata for ${merged} articles -> ${analysisPath}`);
+  console.log(`Merged metadata for ${merged} articles, injected ${injected} failed articles -> ${analysisPath}`);
 }
 
 main();

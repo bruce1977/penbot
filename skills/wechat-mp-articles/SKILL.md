@@ -63,7 +63,7 @@ flowchart TD
 |------|------|---------|------|------|
 | [**Step 1**](steps/step1.md) | 读取配置 | 加载用户配置 → 复制到 `{config-runtime}` → 校验 | `{config}` | `{config-runtime}`（→ Step 2/3/4） |
 | [**Step 2**](steps/step2.md) | 文章下载 | 拉取 → 下载 → 汇总报告 | `{config-runtime}`（来自 Step 1） | `*.md`（→ Step 3/4）、`download_report.json`（→ Step 3） |
-| [**Step 3**](steps/step3.md) | 文章分析 | AI 评分 + 标签提取 → merge_analysis_meta 合并元数据 → 主题遴选 + 推理性说明 | `*.md`（来自 Step 2）、`download_report.json`（来自 Step 2） | `analysis_report.json`、`analysis_topic.json`（→ Step 4） |
+| [**Step 3**](steps/step3.md) | 文章分析 | AI 评分 + 标签提取 → merge_analysis_meta 合并元数据并注入失败文章 → 主题遴选 + 推理性说明 | `*.md`（来自 Step 2）、`download_report.json`（来自 Step 2） | `analysis_report.json`（含失败文章，score: null）、`analysis_topic.json`（→ Step 4） |
 | [**Step 4**](steps/step4.md) | 生成汇总报告 | 主题报告 + 汇总报告 | `analysis_report.json`、`analysis_topic.json`（来自 Step 3）、`*.md`（来自 Step 2） | `topic_*.md` / `summary_report.md`（最终产物） |
 | [**Step 5**](steps/step5.md) | 清理临时文件 | 删除 `{temp-scripts}/` 和 `{temp-data}/` | `{temp-scripts}/`、`{temp-data}/` | 无（流程终点） |
 
