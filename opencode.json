@@ -132,5 +132,15 @@
       },
       "enabled": true
     }
+  },
+  "tui": {
+    "todo_indent_width": 4,
+    "todo_group_separator": true,
+    "todo_status_color": {
+      "done": "#4ade80",
+      "running": "#facc15",
+      "todo": "#9ca3af"
+    },
+    "conceal_markdown_symbols": false
   }
 }

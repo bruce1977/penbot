@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
+const { NodeHtmlMarkdown } = require("node-html-markdown");
 
 const [,, articleListPath, articlesDir, outDir] = process.argv;
 
@@ -8,8 +9,15 @@ const CONCURRENCY = 5;
 const API_PATH = "/api/public/v1";
 const MAX_RETRIES_IO = 3;
 const MAX_RETRIES_INVALID = 2;
+const MAX_RETRIES_FALLBACK = 2;
 const IO_RETRY_DELAY_MS = 10000;
 const DOWNLOAD_TIMEOUT_MS = 30000;
+
+const USER_AGENTS = [
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+];
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
@@ -85,6 +93,32 @@ async function downloadOne(apiBase, aid, link, fpath) {
   console.log(`  Written ${fpath} (${cleaned.length} bytes)`);
 }
 
+async function fallbackDownload(link, fpath) {
+  const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+  console.log(`  FALLBACK GET ${link}`);
+  const resp = await axios.get(link, {
+    responseType: "text",
+    timeout: DOWNLOAD_TIMEOUT_MS,
+    headers: {
+      "User-Agent": ua,
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    },
+    maxRedirects: 5,
+  });
+  const html = resp.data;
+  if (!html || typeof html !== "string" || html.length < 100) {
+    throw new Error(`Fallback HTML too short or empty: ${(html || "").length} chars`);
+  }
+  const md = NodeHtmlMarkdown.translate(html, { useInlineLinks: false });
+  const withCover = "![cover_image]\n\n" + md;
+  const cleaned = cleanContent(withCover);
+  const dir = path.dirname(fpath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(fpath, cleaned, "utf-8");
+  console.log(`  Written (fallback) ${fpath} (${cleaned.length} bytes)`);
+}
+
 function checkArticle(articles, articlesDir, aid) {
   const article = articles[aid];
   if (!article) return { code: 1, reason: "UNKNOWN" };
@@ -113,7 +147,7 @@ async function processOne(apiBase, articlesDir, articles, aid) {
   }
 
   let attempts = 0;
-  async function attemptDownload() {
+  async function attemptApiDownload() {
     attempts++;
     for (let ioRetry = 1; ioRetry <= MAX_RETRIES_IO; ioRetry++) {
       try {
@@ -124,7 +158,7 @@ async function processOne(apiBase, articlesDir, articles, aid) {
         if (result.code === 2 && attempts < MAX_RETRIES_INVALID) {
           console.log(`  INVALID_CONTENT, retry ${attempts}/${MAX_RETRIES_INVALID}...`);
           if (fs.existsSync(fpath)) fs.unlinkSync(fpath);
-          return attemptDownload();
+          return attemptApiDownload();
         }
         return false;
       } catch (err) {
@@ -135,7 +169,27 @@ async function processOne(apiBase, articlesDir, articles, aid) {
     return false;
   }
 
-  return { ok: await attemptDownload(), reason: null };
+  // Try 1: download via API
+  const apiOk = await attemptApiDownload();
+  if (apiOk) return { ok: true, reason: null };
+
+  // Try 2: fallback — fetch HTML directly and convert to Markdown
+  console.log(`  API failed for ${aid}, trying fallback HTML fetch...`);
+  for (let retry = 1; retry <= MAX_RETRIES_FALLBACK; retry++) {
+    try {
+      if (fs.existsSync(fpath)) fs.unlinkSync(fpath);
+      await fallbackDownload(link, fpath);
+      const result = checkArticle(articles, articlesDir, aid);
+      if (result.code === 0) return { ok: true, reason: null };
+      if (fs.existsSync(fpath)) fs.unlinkSync(fpath);
+      console.log(`  FALLBACK_INVALID, retry ${retry}/${MAX_RETRIES_FALLBACK}...`);
+    } catch (err) {
+      console.error(`  FALLBACK_ERROR (attempt ${retry}/${MAX_RETRIES_FALLBACK}): ${err.message}`);
+      if (retry < MAX_RETRIES_FALLBACK) await sleep(IO_RETRY_DELAY_MS);
+    }
+  }
+
+  return { ok: false, reason: "API+Fallback均失败" };
 }
 
 async function downloadAll(apiBase, articlesDir, articles, pendingPath, failedPath) {

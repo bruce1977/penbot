@@ -10,19 +10,19 @@ const md = new MarkdownIt({
 });
 md.use(highlightjs);
 
-// Main
-const [,, inputPath, outputPath] = process.argv;
+function main() {
+  const [,, inputPath, outputPath] = process.argv;
 
-if (!inputPath) {
-  console.error('Usage: node convert.js <input.md> [output.html]');
-  process.exit(1);
-}
+  if (!inputPath) {
+    console.error('Usage: node convert.js <input.md> [output.html]');
+    process.exit(1);
+  }
 
-const src = fs.readFileSync(inputPath, 'utf-8');
-const bodyHtml = md.render(src);
-const out = outputPath || inputPath.replace(/\.md$/i, '') + '.html';
+  const src = fs.readFileSync(inputPath, 'utf-8');
+  const bodyHtml = md.render(src);
+  const out = outputPath || inputPath.replace(/\.md$/i, '') + '.html';
 
-const fullHtml = `<!DOCTYPE html>
+  const fullHtml = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -70,5 +70,8 @@ ${bodyHtml}
 </body>
 </html>`;
 
-fs.writeFileSync(out, fullHtml, 'utf-8');
-console.log('Converted: ' + path.basename(inputPath) + ' -> ' + path.basename(out));
+  fs.writeFileSync(out, fullHtml, 'utf-8');
+  console.log('Converted: ' + path.basename(inputPath) + ' -> ' + path.basename(out));
+}
+
+main();

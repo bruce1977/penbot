@@ -6,10 +6,13 @@
 
 ```bash
 # 转换 Markdown → HTML
-node skills/markdown-email/convert.js input.md output.html
+node skills/markdown-email/scripts/convert.js input.md output.html
 
 # 省略输出路径时自动取 input.md → input.html
-node skills/markdown-email/convert.js input.md
+node skills/markdown-email/scripts/convert.js input.md
+
+# 发送邮件
+node skills/markdown-email/scripts/send.js "to@example.com" "邮件标题" output.html
 ```
 
 ## 文件结构
@@ -17,9 +20,11 @@ node skills/markdown-email/convert.js input.md
 ```
 markdown-email/
 ├── SKILL.md        # 技能定义和工作流
-├── convert.js      # Markdown → HTML 转换脚本（markdown-it）
 ├── package.json    # Node.js 依赖声明
-└── README.md       # 本文件
+├── README.md       # 本文件
+└── scripts/
+    ├── convert.js  # Markdown → HTML 转换脚本（markdown-it）
+    └── send.js     # 发送邮件脚本（Resend API 直调）
 ```
 
 ## 功能特性
