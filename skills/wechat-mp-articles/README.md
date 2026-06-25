@@ -49,7 +49,7 @@ flowchart TD
 |------|------|-----------|------|
 | 1 | 复制 config → `{config-runtime}`，校验字段完整性 | `validate.js` | `{config-runtime}` |
 | 2 | 选取当天公众号 → 拉取文章列表 → 下载 Markdown → 生成汇总报告 | `fetch_and_prepare.js` + `download_articles.js` | `*.md` / `download_report.json` |
-| 3 | AI 评分、标签提取与主题遴选 | LLM + `merge_analysis_meta.js` | `analysis_report.json` / `analysis_topic.json` |
+| 3 | AI 增量评分（跳过有 `.meta.json` 缓存的文章）、标签提取与主题遴选 | LLM + `merge_scored_articles.js` | `*.meta.json` / `analysis_report.json` / `analysis_topic.json` |
 | 4 | 生成主题报告与汇总报告 | `gen_topic_report.js` + `gen_summary_report.js` | `topic_*.md` / `summary_report.md` |
 | 5 | 清理临时文件 | `clean_dirs.js` | — |
 

@@ -17,8 +17,8 @@ description: 从微信公众号抓取文章，经 AI 评分、标签提取、主
 | 概念 | 来源 | 说明 |
 |------|------|------|
 | **分类** `Category` | 用户在配置文件中手工指定 | 公众号的组织标签，与最终主题无关 |
-| **标签** `Tag` | AI 逐篇提取（步骤 3.1） | 每篇文章 2-5 个关键词 |
-| **主题** `Topic` | AI 按算法遴选（步骤 3.2） | 综合标签频率 + 公众号覆盖数 + 平均评分，取 Top N |
+| **标签** `Tag` | AI 逐篇提取（步骤 3.2） | 每篇文章 2-5 个关键词 |
+| **主题** `Topic` | AI 按算法遴选（步骤 3.3） | 综合标签频率 + 公众号覆盖数 + 平均评分，取 Top N |
 
 ## 配置
 
@@ -37,7 +37,7 @@ description: 从微信公众号抓取文章，经 AI 评分、标签提取、主
 | `{skill}` | 目录 | `skills/wechat-mp-articles` | 技能根目录 |
 | `{download-articles}` | 目录 | `.temp/{profile}/wechat_articles` | 下载文章存放目录 |
 | `{output}` | 目录 | `output/{profile}` | 报告输出目录 |
-| `{temp-scripts}` | 目录 | `.temp/{profile}/~scripts` | 临时脚本输出 |
+| `{temp-scripts}` | 目录 | `.temp/{profile}/~scripts` | 管线运行期间 AI 动态创建的临时脚本存放处，避免在项目其他目录生成文件 |
 | `{temp-data}` | 目录 | `.temp/{profile}/~data` | 临时 JSON 数据 |
 | `{config}` | 文件路径 | **无默认值，用户必须在命令行参数中指定** | 原始配置文件，仅步骤 1 使用 |
 | `{config-runtime}` | 文件路径 | `{temp-data}/config.json` | 运行时配置副本，步骤 1 从 `{config}` 复制至此，后续步骤统一读取 |
@@ -63,7 +63,7 @@ flowchart TD
 |------|------|---------|------|------|
 | [**Step 1**](steps/step1.md) | 读取配置 | 加载用户配置 → 复制到 `{config-runtime}` → 校验 | `{config}` | `{config-runtime}`（→ Step 2/3/4） |
 | [**Step 2**](steps/step2.md) | 文章下载 | 拉取 → 下载 → 汇总报告 | `{config-runtime}`（来自 Step 1） | `*.md`（→ Step 3/4）、`download_report.json`（→ Step 3） |
-| [**Step 3**](steps/step3.md) | 文章分析 | AI 评分 + 标签提取 → merge_analysis_meta 合并元数据并注入失败文章 → 主题遴选 + 推理性说明 | `*.md`（来自 Step 2）、`download_report.json`（来自 Step 2） | `analysis_report.json`（含失败文章，score: null）、`analysis_topic.json`（→ Step 4） |
+| [**Step 3**](steps/step3.md) | 文章分析 | `check_cached_scores.js` 拆分已/未评分文章（3.1）→ AI 对无缓存文章增量打分（3.2） → `merge_scored_articles.js` 汇总评分与元数据 → 主题遴选 + 推理性说明（3.3） | `*.md`、`download_report_{yyyyMMdd}.json`（均来自 Step 2） | `{temp-data}/articles_to_score_{yyyyMMdd}.json`、`*.meta.json`、`analysis_report_{yyyyMMdd}.json`、`analysis_topic_{yyyyMMdd}.json` |
 | [**Step 4**](steps/step4.md) | 生成汇总报告 | 主题报告 + 汇总报告 | `analysis_report.json`、`analysis_topic.json`（来自 Step 3）、`*.md`（来自 Step 2） | `topic_*.md` / `summary_report.md`（最终产物） |
 | [**Step 5**](steps/step5.md) | 清理临时文件 | 删除 `{temp-scripts}/` 和 `{temp-data}/` | `{temp-scripts}/`、`{temp-data}/` | 无（流程终点） |
 
@@ -87,9 +87,18 @@ flowchart TD
         └── topic_{标签名3}.md               # 数量由 topic_count 控制
 
 {download-articles}/
-├── {aid}_{yyyyMMdd}_{公众号名称}_{title}.md  # 已下载的文章（步骤 2.2）
-├── download_report_{yyyyMMdd}.json          # 下载汇总报告（步骤 2.2）
-├── analysis_report_{yyyyMMdd}.json          # AI 评分与标签（步骤 3.1）
-├── analysis_topic_{yyyyMMdd}.json           # AI 遴选主题及推理性说明（步骤 3.2）
+├── {aid}_{yyyyMMdd}_{公众号名称}_{title}.md              # 已下载的文章（步骤 2.2）
+├── {aid}_{yyyyMMdd}_{公众号名称}_{title}.meta.json        # 文章评分缓存（score + tags + summary）（步骤 3.1 检查/3.2 写入）
+├── download_report_{yyyyMMdd}.json                     # 下载汇总报告（步骤 2.2）
+├── analysis_report_{yyyyMMdd}.json                     # AI 评分、标签与摘要（步骤 3.2）
+├── analysis_topic_{yyyyMMdd}.json                      # AI 遴选主题及推理性说明（步骤 3.3）
+└── ...
+
+{temp-data}/
+├── config.json                                         # 运行时配置（步骤 1）
+├── article_list_{yyyyMMdd}.json                        # 清洗后的文章元数据（步骤 2.1）
+├── articles_to_score_{yyyyMMdd}.json                   # 待 AI 评分的新文章清单（步骤 3.1）
+├── list_pending.txt                                    # 内部状态：待下载 aid（步骤 2.2）
+├── list_failed.txt                                     # 内部状态：下载失败记录（步骤 2.2）
 └── ...
 ```

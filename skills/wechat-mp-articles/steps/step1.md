@@ -27,6 +27,7 @@
 | `settings.max_articles_per_account` | int | `5` | 每号最多拉取文章数 |
 | `settings.top_n_articles` | int | `5` | 热门文章榜数量 |
 | `settings.topic_count` | int | `3` | 遴选主题数量 |
+| `settings.topic_selection_guidance` | string | 无 | 主题遴选指导说明，会合并到 `analysis_report.json`，供 AI 在遴选主题时参考。例如：`"侧重国产替代和开源生态方向"` |
 | `settings.similarity_threshold` | float | `0.8` | 去重阈值（编辑距离，0-1） |
 | `settings.language` | string | `zh-CN` | 输出语言 |
 | `settings.max_accounts` | int | `5` | 每次最多抓取的公众号数量（用于日期轮换算法） |

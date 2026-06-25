@@ -15,7 +15,8 @@ const SCHEMAS = {
           fields: {
             link: { type: "string", required: true, pattern: /^https?:\/\// },
             score: { type: "number", required: false, nullable: true, min: 1, max: 5 },
-            tags: { type: "array", required: true, minLength: 0, item: { type: "string", nonEmpty: true } }
+            tags: { type: "array", required: true, minLength: 0, item: { type: "string", nonEmpty: true } },
+            summary: { type: "string", required: false, nullable: true }
           }
         }
       }
@@ -74,6 +75,7 @@ const SCHEMAS = {
           max_articles_per_account: { type: "number", required: false, min: 1 },
           top_n_articles: { type: "number", required: false, min: 1 },
           topic_count: { type: "number", required: false, min: 1 },
+          topic_selection_guidance: { type: "string", required: false },
           similarity_threshold: { type: "number", required: false, min: 0, max: 1 },
           language: { type: "string", required: false },
           max_accounts: { type: "number", required: false, min: 1 }

@@ -12,7 +12,7 @@
 |------|---------|------|---------|
 | 输入 | `{config-runtime}` | 公众号配置与全局设置（来自步骤 1） | 2.1 |
 | 输出 | `{download-articles}/*.md` | 文章 Markdown 原文（每篇一篇） | 步骤 3.1、步骤 4.1/4.2 |
-| 输出 | `{download-articles}/download_report_{yyyyMMdd}.json` | 下载结果汇总 JSON（含文章元数据，含失败记录） | 步骤 3.1（merge_analysis_meta） |
+| 输出 | `{download-articles}/download_report_{yyyyMMdd}.json` | 下载结果汇总 JSON（含文章元数据，含失败记录） | 步骤 3.1（check_cached_scores） |
 
 ### 子流程
 
@@ -85,7 +85,7 @@ node {skill}/scripts/fetch_and_prepare.js \
 | 输出 | `{temp-data}/list_pending.txt` | 内部状态：待下载 aid，逐篇移除 | — | — |
 | 输出 | `{temp-data}/list_failed.txt` | 内部状态：下载失败记录 | — | — |
 | 输出（每篇） | `{download-articles}/{file_name}` | 下载的 Markdown 原文 | — | 步骤 3.1、步骤 4.1/4.2 |
-| 输出 | `{download-articles}/download_report_{yyyyMMdd}.json` | 下载结果汇总 JSON | — | 步骤 3.1（merge_analysis_meta） |
+| 输出 | `{download-articles}/download_report_{yyyyMMdd}.json` | 下载结果汇总 JSON | — | 步骤 3.1（check_cached_scores） |
 
 运行 `download_articles.js` 脚本，单次完成清单初始化、批量下载和汇总报告生成：
 

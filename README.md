@@ -105,7 +105,7 @@ config.json + date
     │  *.md + download_report.json
 ┌─ 步骤 3 ──────────────────────────┐
 │  AI 评分 & 标签提取                 │
-│  merge_analysis_meta.js  合并元数据 │
+│  merge_scored_articles.js  汇总评分缓存 │
 │  AI 主题遴选                       │
 └────────────────────────────────────┘
     │  analysis_report.json + analysis_topic.json

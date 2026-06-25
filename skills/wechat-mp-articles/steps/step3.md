@@ -9,8 +9,8 @@
 | 方向 | 文件路径 | 说明 | 下游消费 |
 |------|---------|------|---------|
 | 输入 | `{download-articles}/*.md` | 文章 Markdown 原文（每篇一篇） | 3.1 |
-| 输入 | `{download-articles}/download_report_{yyyyMMdd}.json` | 下载结果汇总 JSON（含文章元数据，含失败记录） | 3.1（merge_analysis_meta） |
-| 输出 | `{download-articles}/analysis_report_{yyyyMMdd}.json` | AI 评分与标签 + 下载失败文章（score: null, tags: []） | 步骤 3.2、步骤 4.1/4.2 |
+| 输入 | `{download-articles}/download_report_{yyyyMMdd}.json` | 下载结果汇总 JSON（含文章元数据，含失败记录） | 3.1 |
+| 输出 | `{download-articles}/analysis_report_{yyyyMMdd}.json` | 完整评分结果（含本地缓存 + 新增评分 + 失败文章） | 步骤 3.3、步骤 4.1/4.2 |
 | 输出 | `{download-articles}/analysis_topic_{yyyyMMdd}.json` | AI 遴选的主题及推理性说明 | 步骤 4.1 |
 
 ### 子流程
@@ -21,10 +21,11 @@ flowchart TD
     classDef substep fill:#fff,stroke:#90a4ae,stroke-width:1px,color:#37474f
     classDef decision fill:#f3e5f5,stroke:#7b1fa2,stroke-width:1px,color:#4a148c
 
-    S([开始]) --> AI1[3.1 AI 评分与标签提取<br/>逐篇评分 1-5 + 提取 2-5 标签]
-    AI1 --> MERGE[merge_analysis_meta.js<br/>合并元数据 + 注入失败文章]
+    S([开始]) --> CACHE[3.1 识别已缓存文章<br/>check_cached_scores.js<br/>扫描 .meta.json → 待评分列表]
+    CACHE --> AI1[3.2 AI 评分/标签/摘要<br/>读取 articles_to_score.json 仅对新文章评分<br/>写入 .meta.json（含 score + tags + summary）]
+    AI1 --> MERGE[merge_scored_articles.js<br/>汇总 .meta.json + 下载报告元数据<br/>生成 analysis_report.json]
     MERGE --> VAL1{validate.js report<br/>校验通过？}
-    VAL1 -->|是| AI2[3.2 主题遴选<br/>AI 综合标签频率/公众号数/评分<br/>遴选 Top N 主题 + 撰写说明]
+    VAL1 -->|是| AI2[3.3 主题遴选<br/>AI 读取 analysis_report（含评分/标签/摘要）<br/>综合排序遴选 Top N + 撰写说明]
     VAL1 -->|否 · exit 1| ERR1([报错退出])
     AI2 --> VAL2{validate.js topic<br/>校验通过？}
     VAL2 -->|是| E([结束])
@@ -37,17 +38,67 @@ flowchart TD
     class ERR1,ERR2 error
 ```
 
-## 3.1 AI 评分与标签提取
+## 3.1 识别已缓存文章
+
+### 输入/输出
+
+| 方向 | 文件路径 | 说明 | 上游来源 | 下游消费 |
+|------|---------|------|---------|---------|
+| 输入 | `{download-articles}/download_report_{yyyyMMdd}.json` | 下载结果汇总 | 步骤 2.2 | — |
+| 输出 | `{temp-data}/articles_to_score_{yyyyMMdd}.json` | **仅无 `.meta.json` 的文章** | — | 步骤 3.2（AI 评分） |
+
+运行 `check_cached_scores.js`，读取 `download_report` 后逐篇比对 `.meta.json` 是否存在，拆分输出：
+
+```
+node {skill}/scripts/check_cached_scores.js \
+  {download-articles}/download_report_{yyyyMMdd}.json \
+  {download-articles} \
+  {temp-data}
+```
+
+**映射规则**：将 `file_path` 中的 `.md` 后缀替换为 `.meta.json`，目录不变。例如：
+
+| `.md` 文件 | 对应 `.meta.json` |
+|------------|------------------|
+| `2652708759_1_20260624_新智元_今天,Claude入职了!.md` | `2652708759_1_20260624_新智元_今天,Claude入职了!.meta.json` |
+
+**拆分逻辑**：
+
+- **有 `.meta.json`** → 已有评分缓存，跳过（无需输出）
+- **无 `.meta.json`** → 写入 `articles_to_score_{yyyyMMdd}.json`，供 AI 评分
+
+输出示例：
+
+`articles_to_score_{yyyyMMdd}.json`：
+```json
+{
+  "articles": [
+    {
+      "index": 1,
+      "aid": "2247502767_1",
+      "title": "...",
+      "file_path": "2247502767_1_...md",
+      "download_status": "成功",
+      "url": "https://..."
+    }
+  ]
+}
+```
+
+## 3.2 AI 评分、标签提取与摘要（增量打分）
 
 ### 输入/输出
 
 | 方向 | 文件路径 | 说明 | 上游来源 | 下游消费 |
 |------|---------|------|---------|---------|
 | 输入 | `{download-articles}/*.md` | 每篇文章的 Markdown 原文（供 AI 阅读） | 步骤 2.2 | — |
-| 输入 | `{download-articles}/download_report_{yyyyMMdd}.json` | 文章元数据（aid、标题、时间等） | 步骤 2.2 | — |
-| 输出 | `{download-articles}/analysis_report_{yyyyMMdd}.json` | AI 评分与标签结果 | — | 步骤 3.2、步骤 4.1/4.2 |
+| 输入 | `{temp-data}/articles_to_score_{yyyyMMdd}.json` | 待 AI 评分的新文章清单 | 步骤 3.1 | — |
+| 输出（每篇） | `{download-articles}/{file_name.stem}.meta.json` | 新增评分文章的本地缓存（含 score + tags + summary） | — | 步骤 3.2（merge_scored_articles 汇总） |
+| 输出 | `{download-articles}/analysis_report_{yyyyMMdd}.json` | 汇总后的完整评分数据 | — | 步骤 3.3、步骤 4.1/4.2 |
 
-读取每篇文章的内容，由 AI 逐篇进行质量评分（1-5 分）和标签提取（2-5 个关键词/标签）。
+### 防重复打分机制
+
+`articles_to_score_{yyyyMMdd}.json` **仅包含无 `.meta.json` 缓存的新文章**，已有缓存的文章被 `check_cached_scores.js` 自动跳过。AI 只需对此文件中的文章逐篇评分。评分完成后 `merge_scored_articles.js` 直接从目录扫描所有 `.meta.json` 文件汇总，无需中间缓存文件。
 
 ### 质量评分维度
 
@@ -63,37 +114,61 @@ flowchart TD
 
 从每篇文章中提取 2-5 个有意义的主题标签（如 `大模型`、`Agent`、`融资`、`芯片`、`开源`）。
 
-AI 处理完成后，将结果写入 `{download-articles}/analysis_report_{yyyyMMdd}.json`。
+### 核心摘要提取
 
-然后运行 `merge_analysis_meta.js`，该脚本完成两件事：
+为每篇文章生成 1-2 句核心摘要，概括文章的核心结论或关键信息。该摘要将存入 `.meta.json` 的 `summary` 字段，供后续主题遴选 AI 参考，使其能基于文章具体内容撰写更扎实的遴选理由和主题概述。
 
-1. **合并元数据**：将 `download_report` 中已评分文章的元数据（标题、公众号名、分类等）合并到 `analysis_report`
-2. **注入失败文章**：将 `download_report` 中下载失败的文章也追加到 `analysis_report`，标记 `"score": null`、`"tags": []`、`"download_status": "失败"`，使其能在步骤 4 的汇总报告中出现（无评分、无标签）
+### 操作步骤
+
+1. **读取待评分清单**：加载 `articles_to_score_{yyyyMMdd}.json`，其中的文章均无 `.meta.json` 缓存
+2. **对新文章评分**：逐篇读取 `.md` 原文，调用 LLM 评分 + 提取标签 + 提取核心摘要
+3. **写入本地缓存**：每篇评分完成后，在与 `.md` 同目录下创建 `.meta.json` 文件：
+
+```json
+{
+  "score": 4,
+  "tags": ["大模型", "开源", "MoE"],
+  "summary": "MoE架构通过稀疏激活在同等算力下实现更大模型容量，成为主流大模型的核心选择。"
+}
+```
+
+4. **运行合并脚本**：AI 评分完毕后，执行 `merge_scored_articles.js` 直接扫描 `{download-articles}` 目录下的所有 `.meta.json` 文件进行汇总：
 
 ```
-node {skill}/scripts/merge_analysis_meta.js \
+node {skill}/scripts/merge_scored_articles.js \
   {download-articles}/download_report_{yyyyMMdd}.json \
-  {download-articles}/analysis_report_{yyyyMMdd}.json
+  {download-articles} \
+  {download-articles}/analysis_report_{yyyyMMdd}.json \
+  {config-runtime}   # 可选，传入后 topic_selection_guidance 合并到 analysis_report 顶层
 ```
 
-合并后运行 `validate.js` 校验文件名与数据结构：
+该脚本完成：
+   - 遍历 `download_report` 的所有文章
+   - 扫描同目录下的 `.meta.json` 文件获取 `score`、`tags`、`summary`
+   - 无 `.meta.json` 或下载失败的文章标记 `score: null`、`tags: []`、`summary: null`、`download_status: "失败"`
+   - 合并元数据（标题、公众号名、分类等）生成完整的 `analysis_report`
+
+5. **校验输出**：
 
 ```
 node {skill}/scripts/validate.js report {download-articles}/analysis_report_{yyyyMMdd}.json
 ```
 
-校验通过输出 `Valid: analysis_report_{yyyyMMdd}.json (N article(s))`，失败 exit 1 并列出具体问题。
+校验通过输出 `Valid: analysis_report_{yyyyMMdd}.json (N article(s))`，失败 exit 1。
 
-最终 `analysis_report` 每篇文章包含字段：`link`、`score`（1-5 或 null）、`tags`，以及合并的元数据 `title`、`account_name`、`account_category`、`digest`、`update_time`、`file_path`、`aid`。下载失败的文章额外包含 `"download_status": "失败"`，且 `score` 为 null、`tags` 为空数组。示例：
+### 输出示例
 
 ```json
 {
   "timestamp": "2026-06-09 15:10",
+  "topic_count": 3,
+  "topic_selection_guidance": "侧重国产替代和开源生态方向",
   "articles": [
     {
       "link": "https://mp.weixin.qq.com/s/xxx",
       "score": 4,
       "tags": ["大模型", "开源", "MoE"],
+      "summary": "MoE架构通过稀疏激活在同等算力下实现更大模型容量，成为主流大模型的核心选择。",
       "title": "某篇文章标题",
       "account_name": "某公众号",
       "account_category": "科技",
@@ -106,6 +181,7 @@ node {skill}/scripts/validate.js report {download-articles}/analysis_report_{yyy
       "link": "https://mp.weixin.qq.com/s/yyy",
       "score": null,
       "tags": [],
+      "summary": null,
       "download_status": "失败",
       "title": "下载失败的文章标题",
       "account_name": "某公众号",
@@ -119,21 +195,23 @@ node {skill}/scripts/validate.js report {download-articles}/analysis_report_{yyy
 }
 ```
 
-## 3.2 主题遴选
+## 3.3 主题遴选
 
 ### 输入/输出
 
 | 方向 | 文件路径 | 说明 | 上游来源 | 下游消费 |
 |------|---------|------|---------|---------|
-| 输入 | `{download-articles}/analysis_report_{yyyyMMdd}.json` | AI 评分与标签数据 | 步骤 3.1 | — |
-| 输入 | `{config-runtime}` | 配置中的 `${topic_count}` | 步骤 1 | — |
+| 输入 | `{download-articles}/analysis_report_{yyyyMMdd}.json` | AI 评分、标签、摘要、`topic_count`、`topic_selection_guidance`（若配置） | 步骤 3.2 | — |
 | 输出 | `{download-articles}/analysis_topic_{yyyyMMdd}.json` | AI 遴选的主题及遴选理由 | — | 步骤 4.1 |
 
-AI 读取 `analysis_report_{yyyyMMdd}.json`，按以下算法筛选主题并撰写推理性说明：
+AI 读取 `analysis_report_{yyyyMMdd}.json`（含每篇文章的评分、标签和核心摘要），按以下算法筛选主题并撰写推理性说明：
+
+若 `analysis_report.json` 顶层包含 `topic_selection_guidance` 字段（来自配置 `settings.topic_selection_guidance`），AI 应将其作为遴选方向的额外依据，优先关注指导中指定的领域。
 
 1. **标签排名**：对每个标签计算综合得分 `文章数×1 + 覆盖公众号数×2 + 平均质量评分×1`，公众号多样性权重最高
-2. **遴选 Top N**：按得分降序取前 `${topic_count}` 个标签作为最终主题。主题名直接使用标签名
-3. **撰写遴选理由**：对每个选中的主题，结合文章内容、覆盖面、评分等信息，用一段推理文字说明为何该方向值得作为独立主题
+2. **遴选 Top N**：按得分降序取前 `topic_count` 个标签作为最终主题（值来自 `analysis_report.json` 顶层）。主题名直接使用标签名
+3. **撰写遴选理由**：对每个选中的主题，结合文章的核心摘要、覆盖面、评分等信息，用一段推理文字说明为何该方向值得作为独立主题
+4. **撰写主题概述与洞察**：基于各篇文章的 `summary` 内容，为主题撰写更丰富的 `topic_overview` 和 `insights`，避免泛泛而谈。字数约束：`topic_overview` 80-200 字，`reasoning` 50-150 字，每条 `insight` 的 `detail` 100-300 字
 
 输出格式：
 
@@ -143,7 +221,7 @@ AI 读取 `analysis_report_{yyyyMMdd}.json`，按以下算法筛选主题并撰�
     {
       "name": "大模型",
       "reasoning": "本周3篇文章聚焦大模型开源生态（Claude新版本、Llama 4发布），覆盖2个不同公众号，平均评分4.3，信息密度高且时效性强",
-      "topic_overview": "可选，AI 撰写的主题概述段落，比自动生成的更丰富",
+      "topic_overview": "可选，80-200 字，AI 撰写的主题概述段落，比自动生成的更丰富",
       "insights": [
         { "title": "可选，洞察标题", "detail": "可选，洞察详细内容" }
       ]
@@ -164,6 +242,7 @@ node {skill}/scripts/validate.js topic {download-articles}/analysis_topic_{yyyyM
 
 ## 错误处理
 
-- **AI 评分失败**：单篇文章评分超时或 API 异常时，跳过该篇评分，在 `analysis_report.json` 中标记 `"score": null`
-- **文章下载失败**：由 `merge_analysis_meta.js` 自动注入到 `analysis_report.json`，标记 `"score": null`、`"tags": []`、`"download_status": "失败"`，汇总报告中原样显示（评分显示为 "-"）
+- **AI 评分失败**：单篇文章评分超时或 API 异常时，跳过该篇评分，不写入 `.meta.json`；`merge_scored_articles.js` 会将其标记为 `score: null`
+- **文章下载失败**：由 `merge_scored_articles.js` 自动识别并标记 `score: null`、`tags: []`、`download_status: "失败"`，汇总报告中原样显示（评分显示为 "-"）
 - **标签数量不足**：当有效标签数少于 `${topic_count}` 时，以实际标签数作为主题数，不填充空主题
+- **已有缓存的新文章被重新下载**：若某篇文章因内容更新被重新下载，其 `.meta.json` 仍然存在，`check_cached_scores.js` 会跳过该篇，不会触发重复评分。如需强制刷新评分，删除对应的 `.meta.json` 文件即可

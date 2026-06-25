@@ -7,13 +7,15 @@
 | 方向 | 文件路径 | 说明 | 上游来源 | 下游消费 |
 |------|---------|------|---------|---------|
 | 输入 | `{download-articles}/` | 已下载的 `.md` 文件 | 步骤 2.2 | 4.1 扫描文件路径 |
-| 输入 | `{download-articles}/analysis_report_{yyyyMMdd}.json` | 文章元数据 + AI 评分/标签/去重信息（含合并的元数据） | 步骤 3.1 | 4.1/4.2 读取文章数据 |
-| 输入 | `{download-articles}/analysis_topic_{yyyyMMdd}.json` | AI 遴选的主题、遴选理由、概述与洞察 | 步骤 3.2 | 4.1 驱动主题报告生成 |
+| 输入 | `{download-articles}/analysis_report_{yyyyMMdd}.json` | 文章元数据 + AI 评分/标签/去重信息（含合并的元数据） | 步骤 3.2 | 4.1/4.2 读取文章数据 |
+| 输入 | `{download-articles}/analysis_topic_{yyyyMMdd}.json` | AI 遴选的主题、遴选理由、概述与洞察 | 步骤 3.3 | 4.1 驱动主题报告生成 |
 | 输入 | `{config-runtime}` | 配置参数（输出目录前缀等） | 步骤 1 | 4.1/4.2 确定输出路径 |
 | 输出 | `{output}/{profile}/{yyyyMMdd}/topic_{标签名}.md` | 每主题一份独立分析报告 | 4.1 | 4.2 引用 + 最终产物 |
 | 输出 | `{output}/{profile}/{yyyyMMdd}/summary_report_{yyyyMMdd}.md` | 汇总所有主题和文章的最终报告 | 4.2 | 最终产物 |
 
 Step 4 全部由脚本驱动，无 AI 调用。所有 AI 产出的数据（评分、标签、主题、概述、洞察）均在 Step 3 中完成并固化到 JSON 文件。
+
+> 输出文件为覆盖写入，脚本不会因目标文件已存在而中断或询问。管线每次执行都从最新数据重新生成报告，无需人工确认。
 
 ### 子流程
 
@@ -37,8 +39,8 @@ flowchart TD
 | 方向 | 文件路径 | 说明 | 上游来源 | 下游消费 |
 |------|---------|------|---------|---------|
 | 输入 | `{download-articles}/` | 扫描 `.md` 文件列表 | 步骤 2.2 | — |
-| 输入 | `{download-articles}/analysis_report_{yyyyMMdd}.json` | AI 评分、标签及去重信息 | 步骤 3.1 | — |
-| 输入 | `{download-articles}/analysis_topic_{yyyyMMdd}.json` | AI 遴选的主题、遴选理由、概述与洞察 | 步骤 3.2 | — |
+| 输入 | `{download-articles}/analysis_report_{yyyyMMdd}.json` | AI 评分、标签及去重信息 | 步骤 3.2 | — |
+| 输入 | `{download-articles}/analysis_topic_{yyyyMMdd}.json` | AI 遴选的主题、遴选理由、概述与洞察 | 步骤 3.3 | — |
 | 输入 | `{config-runtime}` | 配置参数 | 步骤 1 | — |
 | 输出（每主题） | `{output}/{profile}/{yyyyMMdd}/topic_{标签名}.md` | 主题报告 | — | 步骤 4.2 |
 
