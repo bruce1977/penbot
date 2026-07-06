@@ -46,13 +46,19 @@ PB_RESEND_API_KEY=xxx
 
 ## Agents
 
-| Agent | 代号 | 描述 |
-|-------|------|------|
-| `writer` | 墨言 | 主理人，编排全流程并撰写文章 |
-| `gatherer` | 拾遗 | 采集公众号文章，运行 wechat-mp-articles 产出报告与主题 |
-| `illustrator` | 画眉 | 根据公众号文章主题绘制配图 |
-| `proofreader` | — | 错别字检测 + 敏感词审查 + 语病/标点/语法校验 |
-| `silent` | — | 静默执行模式，禁止提问，仅供 command 内部使用 |
+| Agent | 代号 | 模式 | 描述 |
+|-------|------|------|------|
+| `coordinator` | 司南 | `all` | 总调度，编排全流程：采集→评价→撰写→配图→发布 |
+| `gatherer` | 拾遗 | `all` | 采集公众号文章，运行 wechat-mp-articles 技能产出报告与主题 |
+| `writer` | 墨言 | `all` | 专注撰写，接收素材后独立成文，内部调用 proofreader 完成校对迭代 |
+| `illustrator` | 画眉 | `all` | 根据文章主题用 `image-generation-*` MCP 工具绘制配图 |
+| `proofreader` | — | `subagent` | writer 的子流程，检查敏感词、错别字、语法/逻辑，与 writer 直接闭环 |
+| `silent` | — | `subagent` | 静默执行模式，禁止提问，仅供 command 内部使用 |
+| `commentator-value` | 金算盘 | `subagent` | 商业与市场视角评价主题 |
+| `commentator-tech` | 解码器 | `subagent` | 技术与工程视角评价主题 |
+| `commentator-public` | 风向标 | `subagent` | 公众传播视角评价主题 |
+| `commentator-academic` | 溯源者 | `subagent` | 学术研究视角评价主题 |
+| `commentator-ethics` | 权衡者 | `subagent` | 伦理合规视角评价主题 |
 
 ## Skills
 
@@ -79,9 +85,9 @@ PB_RESEND_API_KEY=xxx
 
 > **注意**：`wechat-mp-generation` MCP 目前仅用于搜索公众号（获取 `fake_id`）。文章拉取和下载均通过 wechat-mp-articles 技能内的 Node 脚本直连 HTTP API，不走 MCP 通道。
 
-## wechat-mp-articles 技能工作流
+## wechat-mp-articles 技能内部流程
 
-完整流程定义见 [workflows/workflow_mp-auto-pipeline.md](workflows/workflow_mp-auto-pipeline.md)。
+该技能的完整脚本驱动流程如下（与 pipeline 步骤 1 对应）：
 
 ```
 config.json + date
@@ -121,22 +127,30 @@ config.json + date
 
 ### 管线（完整流程）
 
+完整流程定义见 [workflows/workflow_mp-auto-pipeline.md](workflows/workflow_mp-auto-pipeline.md)。
+
 | 步骤 | 名称 | 执行者 | 产出 |
 |------|------|--------|------|
-| 1 | 抓取与遴选 | `gatherer` | `summary_report.md`、`topic_*.md` |
-| 2 | 发送汇总报告 | `writer` | 汇总报告邮件（标题：`资讯汇总 - {profile} - {date}`） |
-| 3 | 主题评价 | `writer` → `commentator-*` | `commentary.md`、`selected-topic.md` |
-| 4 | 撰写文章 | `writer` | `{topic}_draft.md` |
-| 5 | 校对 | `writer` → `proofreader` | `{topic}_proofed.md` |
-| 6 | 插图 | `writer` → `illustrator` | `{topic}_final.md`（嵌入图片） |
-| 7 | 发送终稿 | `writer` | 终稿邮件（标题：`{topic} - {date}`，正文含配图） |
+| 1 | 抓取与遴选 | `coordinator` → `gatherer` | `summary_report.md`、`topic_*.md` |
+| 2 | 发送汇总报告 | `coordinator` | 汇总报告邮件（标题：`资讯汇总 - {profile} - {date}`） |
+| 3 | 主题评价 | `coordinator` → `commentator-*` | `commentary.md`、`selected-topic.md` |
+| 4 | 撰写与校对 | `coordinator` → `writer`（内部调用 `proofreader`） | `{topic}_proofed.md` |
+| 5 | 配图 | `coordinator` → `illustrator` | `{topic}_modelscope_final.md` + `{topic}_pollinations_final.md` |
+| 6 | 发送终稿 | `coordinator` | 终稿邮件（标题：`{topic} - {date}`，择优发送 ModelScope/Pollinations 版） |
 
 ## 项目结构
 
 ```
 ├── .opencode/                 # opencode 运行时配置
 │   └── package.json           # opencode 插件依赖
-├── agents/                    # 自定义 Agent（10 个）
+├── agents/                    # 自定义 Agent（11 个）
+│   ├── coordinator.md         # 总调度
+│   ├── writer.md              # 撰写
+│   ├── gatherer.md            # 采集
+│   ├── illustrator.md         # 配图
+│   ├── proofreader.md         # 校对
+│   ├── commentator-*.md       # 5 位主题评论员
+│   └── silent.md              # 静默执行
 ├── skills/                    # 自定义 Skill（5 个）
 │   ├── wechat-mp-articles/
 │   │   ├── scripts/           # Node.js 驱动脚本
@@ -148,14 +162,15 @@ config.json + date
 │   ├── word-corrector-check/
 │   └── word-sensitive-check/
 ├── local-mcps/                # 本地 MCP 服务器（6 个）
-│   ├── wechat-mp-nodejs/
-│   ├── sensitive-lexicon-nodejs/
-│   ├── pycorrector-nodejs/
 │   ├── image-generation-modelscope/
-│   ├── image-pollinations-nodejs/
+│   ├── image-generation-pollinations/
+│   ├── wechat-mp-generation/
+│   ├── word-corrector/
+│   ├── word-sensitive/
 │   └── resend-nodejs/
-├── workflows/                 # 工作流定义
-│   └── workflow_mp-auto-pipeline.md
+├── workflows/                 # 工作流定义（2 个）
+│   ├── workflow_mp-auto-pipeline.md  # 完整管线
+│   └── workflow_mp-digest.md         # 采集简报管线
 ├── configs/                   # 配置文件（公众号配置等）
 ├── templates/                 # 管线模板
 ├── docs/                      # 文档
