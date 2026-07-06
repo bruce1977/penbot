@@ -24,8 +24,13 @@
     "paths": ["skills"]
   },
   "agent": {
+    "coordinator": {
+      "description": "全流程编排：调用 gatherer 采集 → 调用 commentator 评价主题 → 委托 writer 撰写 → 委托 illustrator 配图 → 发邮件",
+      "mode": "all",
+      "prompt": "{file:agents/coordinator.md}"
+    },
     "writer": {
-      "description": "全流程编排：调用评论员评价主题 → 选取主题撰写文章 → 调用校对与插图 → 发布",
+      "description": "根据主题与素材撰写公众号文章，内部调用 proofreader 完成文字校验循环",
       "mode": "all",
       "prompt": "{file:agents/writer.md}"
     },
@@ -86,7 +91,7 @@
         "Authorization": "Bearer {env:PB_MODEL_API_KEY}"
       },
       "timeout": 120000,
-      "enabled": true
+      "enabled": false
     },
     "image-generation-modelscope": {
       "type": "local",

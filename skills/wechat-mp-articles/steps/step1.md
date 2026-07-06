@@ -31,6 +31,9 @@
 | `settings.similarity_threshold` | float | `0.8` | 去重阈值（编辑距离，0-1） |
 | `settings.language` | string | `zh-CN` | 输出语言 |
 | `settings.max_accounts` | int | `5` | 每次最多抓取的公众号数量（用于日期轮换算法） |
+| `settings.email` | string | 无 | 收件邮箱地址，供工作流发送邮件 |
+| `settings.email_summary_enabled` | bool | `true` | 汇总报告邮件开关。设为 `false` 时跳过汇总报告发送（步骤 2） |
+| `settings.email_final_enabled` | bool | `true` | 终稿邮件开关。设为 `false` 时跳过终稿发送（步骤 7） |
 
 ### 配置示例
 
@@ -49,7 +52,10 @@
     "days_to_filter": 3,
     "max_articles_per_account": 5,
     "max_accounts": 5,
-    "topic_count": 3
+    "topic_count": 3,
+    "email": "user@example.com",
+    "email_summary_enabled": true,
+    "email_final_enabled": true
   }
 }
 ```

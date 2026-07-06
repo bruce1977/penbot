@@ -78,7 +78,10 @@ const SCHEMAS = {
           topic_selection_guidance: { type: "string", required: false },
           similarity_threshold: { type: "number", required: false, min: 0, max: 1 },
           language: { type: "string", required: false },
-          max_accounts: { type: "number", required: false, min: 1 }
+          max_accounts: { type: "number", required: false, min: 1 },
+          email: { type: "string", required: false },
+          email_summary_enabled: { type: "boolean", required: false },
+          email_final_enabled: { type: "boolean", required: false }
         }
       }
     }

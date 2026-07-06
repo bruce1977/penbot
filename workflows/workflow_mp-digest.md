@@ -14,13 +14,17 @@ description: "从公众号抓取文章 → 汇总报告发送（仅信息采集�
 | `{output}` | 输出根目录 | `output/{profile}/{date}` |
 | `{config-runtime}` | 运行时配置 | `.temp/{profile}/~data/config.json` | 步骤 1 从原始 config 复制至此，后续统一读取（含 email 字段） |
 | `{email}` | 收件地址 | `{config-runtime}` → `settings.email` | 步骤 2 发送汇总报告的目标邮箱 |
+| `{email_summary_enabled}` | 汇总邮件开关 | `{config-runtime}` → `settings.email_summary_enabled`，默认 `true` | 设为 `false` 时跳过步骤 2（汇总报告发送） |
 
 ## 流程图
 
 ```mermaid
 flowchart TD
     S([开始]) --> S1[步骤1 信息采集]
-    S1 --> S2[步骤2 发送汇总报告]
+    S1 --> E2{email_summary_enabled?}
+    E2 -- true --> S2[步骤2 发送汇总报告]
+    E2 -- false --> F
+    S2 --> F([结束])
 ```
 
 ## 步骤详情
@@ -29,8 +33,8 @@ flowchart TD
 
 | | |
 |------|------|
-| **执行者** | `gatherer` |
-| **说明** | 根据 `config.json` 使用技能 `wechat-mp-articles` 抓取公众号文章，生成汇总报告和 AI 遴选主题 |
+| **执行者** | `coordinator` → `gatherer` |
+| **说明** | coordinator 调用 gatherer，gatherer 根据 `config.json` 使用技能 `wechat-mp-articles` 抓取公众号文章，生成汇总报告和 AI 遴选主题 |
 | **输入** | `config.json` |
 | **输出 (1)** | `{output}/summary_report.md` |
 | **输出 (2)** | `{output}/topic_*.md` |
@@ -39,7 +43,7 @@ flowchart TD
 
 | | |
 |------|------|
-| **执行者** | `writer` |
-| **说明** | 使用技能 `markdown-email` 将 `{output}/summary_report.md` 发送到 `{email}`，邮件标题为 `资讯汇总 - {profile} - {date}` |
+| **执行者** | `coordinator` |
+| **说明** | 先检查 `{email_summary_enabled}`：若为 `false` 则直接跳过本步骤，不发送任何邮件。若为 `true`，使用技能 `markdown-email` 将 `{output}/summary_report.md` 发送到 `{email}`，邮件标题为 `资讯汇总 - {profile} - {date}` |
 | **输入** | `{output}/summary_report.md` |
-| **输出** | 已发送的汇总报告邮件（标题：`资讯汇总 - {profile} - {date}`） |
+| **输出** | 已发送的汇总报告邮件（标题：`资讯汇总 - {profile} - {date}`）；若跳过则无输出 |

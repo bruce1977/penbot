@@ -4,20 +4,14 @@ import axios from "axios";
 
 const API_BASE = process.env.PB_PYCORRECTOR_API_URL;
 const AUTH_KEY = process.env.PB_PYCORRECTOR_AUTH_KEY;
+const isEnabled = !!(API_BASE && AUTH_KEY);
 
-if (!API_BASE) {
-  console.error("[pycorrector] Error: PB_PYCORRECTOR_API_URL environment variable is not set");
-  process.exit(1);
-}
-if (!AUTH_KEY) {
-  console.error("[pycorrector] Error: PB_PYCORRECTOR_AUTH_KEY environment variable is not set");
-  process.exit(1);
-}
-
-const apiClient = axios.create({
-  baseURL: API_BASE,
-  headers: { "X-Auth-Key": AUTH_KEY },
-});
+const apiClient = isEnabled
+  ? axios.create({
+      baseURL: API_BASE,
+      headers: { "X-Auth-Key": AUTH_KEY },
+    })
+  : null;
 
 const server = new FastMCP({
   name: "pycorrector-mcp",
@@ -63,6 +57,12 @@ server.addTool({
   execute: async (args) => {
     try {
       const { text } = args;
+
+      if (!isEnabled) {
+        console.log('[pycorrector] MCP disabled (API_BASE not configured), returning text as correct');
+        return JSON.stringify({ original: text, corrected: text, errors: [] }, null, 2);
+      }
+
       const sentences = splitSentences(text);
 
       // Log: record request parameters

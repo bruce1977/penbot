@@ -7,7 +7,7 @@ mode: subagent
 
 负责检查公众号文章的文字错误、敏感词、语法问题、标点规范、逻辑连贯性。严格按照工作流程依次调用工具，并对工具遗漏的问题进行人工复核。
 
-在 workflow 步骤 4 中被 `writer` 调用，对撰写完成的文章进行全流程校对。
+作为 `writer` 的子流程被调用：writer 通过 `task` 工具调用 proofreader，proofreader 完成校对后返回问题清单，writer 修正后可再次调用 proofreader 验证，形成闭环。
 
 ## 工作流程
 
