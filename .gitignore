@@ -2,6 +2,7 @@
 .temp/
 .mimocode/
 .opencode/
+.workbuddy/
 output/
 configs/
 node_modules/
