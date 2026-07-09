@@ -10,7 +10,7 @@
 
 | 模式 | 触发命令 | 映射步骤 | 产出终点 |
 |------|---------|---------|---------|
-| **完整管线** | `cmd-mp-auto-pipeline` | 步骤 1 → 2 → 3 → 4 → 5 → 6 | 终稿邮件 |
+| **完整管线** | `cmd-mp-auto-pipeline` | 步骤 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 | 终稿邮件 + 公众号草稿 |
 | **采集简报** | `cmd-mp-digest` | 步骤 1 → 2 | 汇总报告邮件——发送即结束，**不做**步骤 3-7 |
 | **仅采集** | `cmd-wechat-mp-articles` | 步骤 1（不含步骤 2 邮件发送） | `summary_report.md` + `topic_*.md`——不发送邮件 |
 
@@ -23,6 +23,7 @@
 | `/cmd-mp-auto-pipeline` | 根据$1执行MP自动化管线 | [workflows/workflow_mp-auto-pipeline.md](workflows/workflow_mp-auto-pipeline.md) |
 | `/cmd-mp-digest` | 根据$1执行MP采集简报管线 | [workflows/workflow_mp-digest.md](workflows/workflow_mp-digest.md) |
 | `/cmd-wechat-mp-articles` | 根据$1抓取微信公众号文章 | [skills/wechat-mp-articles/SKILL.md](skills/wechat-mp-articles/SKILL.md) |
+| `/cmd-wechat-mp-publish-drafts` | 将微信公众号草稿箱内的草稿发布为已发表文章（需微信认证开通权限） | [skills/wechat-mp-wenyan/SKILL.md](skills/wechat-mp-wenyan/SKILL.md) |
 
 > 示例：`/cmd-mp-digest configs/ai-config.json` 触发采集简报管线，发送汇总报告邮件后结束。
 

@@ -1,6 +1,6 @@
 ---
 name: mp-auto-pipeline
-description: "从公众号抓取文章 → 汇总报告发送 → 多视角主题评价 → 撰写+校对（writer 内闭环）→ 插图 → 终稿发送"
+description: "从公众号抓取文章 → 汇总报告发送 → 多视角主题评价 → 撰写+校对（writer 内闭环）→ 插图 → 选图 → 终稿发送 → 发布草稿箱"
 ---
 
 # MP 自动化管线
@@ -18,7 +18,9 @@ description: "从公众号抓取文章 → 汇总报告发送 → 多视角主�
 | `{config-runtime}` | 运行时配置 | `{temp-data}/config.json` | 步骤 1 从原始 config 复制至此，后续统一读取（含 email 字段） |
 | `{email}` | 收件地址 | `{config-runtime}` → `settings.email` | coordinator 在步骤 2 和 6 发送邮件时使用 |
 | `{email_summary_enabled}` | 汇总邮件开关 | `{config-runtime}` → `settings.email_summary_enabled`，默认 `true` | 设为 `false` 时 coordinator 跳过步骤 2 |
-| `{email_final_enabled}` | 终稿邮件开关 | `{config-runtime}` → `settings.email_final_enabled`，默认 `true` | 设为 `false` 时 coordinator 跳过步骤 6 |
+| `{email_final_enabled}` | 终稿邮件开关 | `{config-runtime}` → `settings.email_final_enabled`，默认 `true` | 设为 `false` 时 coordinator 跳过步骤 7 |
+| `{wenyan_publish_enabled}` | 发布草稿开关 | `{config-runtime}` → `settings.wenyan_publish_enabled`，默认 `true` | 设为 `false` 时 coordinator 跳过步骤 8 |
+| `{wenyan_publish_result}` | 发布结果文件 | `{output}/wenyan-publish-result.json` | 步骤 8 执行结果（成功/失败）写入此文件 |
 
 ## 流程图
 
@@ -35,14 +37,16 @@ flowchart TD
     G3 --> D{coordinator<br/>等权加总评分<br/>取最高分主题}
     D --> G4[步骤4 coordinator → writer<br/>writer 内部 → proofreader 校对循环]
     G4 --> G5[步骤5 coordinator → illustrator<br/>双管线并行配图]
-    G5 --> E2{email_final_enabled?}
-    E2 -- true --> G6[步骤6 coordinator → markdown-email 技能<br/>发送终稿]
-    E2 -- false --> F
-    G6 --> F([结束])
+    G5 --> G6[步骤6 coordinator → commentator-*<br/>选图评选]
+    G6 --> E2{email_final_enabled?}
+    E2 -- true --> G7[步骤7 coordinator → markdown-email 技能<br/>发送终稿]
+    E2 -- false --> G8
+    G7 --> G8[步骤8 coordinator → wechat-mp-wenyan 技能<br/>发布到公众号草稿箱]
+    G8 --> F([结束])
 
     class S,F startend
-    class G1,G3,G4,G5 delegate
-    class G2,G6 direct
+    class G1,G3,G4,G5,G6,G8 delegate
+    class G2,G7 direct
     class D,E2 decision
 ```
 
@@ -95,15 +99,33 @@ flowchart TD
 | **执行者** | `coordinator` → `illustrator` |
 | **说明** | coordinator 将 `{topic}_proofed.md` 传递给 illustrator，委托其根据 `[图：图片说明]` 标记生成配图。illustrator 同时启动两条独立管线：管线 A 使用 `image-generation-modelscope`，管线 B 使用 `image-generation-pollinations`，互不等待。每条管线独立生成封面首图与 **1-2 张**文中配图并嵌入文章，输出两份完整的独立稿件。ModelScope 管线失败时保留无图占位，不影响 Pollinations 管线继续执行。完成后两份稿件返回给 coordinator |
 | **输入** | `{output}/{topic}_proofed.md` |
-| **输出 (1)** | `{output}/{topic}_modelscope_final.md` — ModelScope 管线产出 |
-| **输出 (2)** | `{output}/{topic}_pollinations_final.md` — Pollinations 管线产出 |
+| **输出 (1)** | `{output}/{topic}_modelscope_pending.md` — ModelScope 管线产出 |
+| **输出 (2)** | `{output}/{topic}_pollinations_pending.md` — Pollinations 管线产出 |
 
-### 步骤 6：发送终稿
+### 步骤 6：选图评选
+
+| | |
+|------|------|
+| **执行者** | `coordinator` → `commentator-*`（5 位评论员独立评选 → coordinator 汇总） |
+| **说明** | coordinator 从两份 pending 稿件中解析每个位置的配图候选（封面首图 + 文中 1-2 张插图的 modelscope 版与 pollinations 版），将每个位置的两张候选图分发给 5 位评论员（`commentator-value`、`commentator-tech`、`commentator-public`、`commentator-academic`、`commentator-ethics`）。每位评论员从各自视角对每个位置的两张候选图进行评选投票。coordinator 收集评选结果，对每个位置取**得票最多的配图**，合并替换到文章中。若某位置两张候选图得票相同时由 coordinator 随机选择（须记录选择理由）。最终产出单份终稿供步骤 7 发送 |
+| **输入 (1)** | `{output}/{topic}_modelscope_pending.md` |
+| **输入 (2)** | `{output}/{topic}_pollinations_pending.md` |
+| **输出** | `{output}/{topic}_final.md` — 各位置最佳配图合并后的终稿 |
+
+### 步骤 7：发送终稿
 
 | | |
 |------|------|
 | **执行者** | `coordinator`（直接使用 `markdown-email` 技能） |
-| **说明** | 先检查 `{email_final_enabled}`：若为 `false` 则直接跳过。若为 `true`，coordinator 从两份终稿中**选择 1 篇**发送：优先使用 `{topic}_modelscope_final.md`（检查其中是否存在 `![图](http` 或 `[图](http` 标记来判断是否包含成功生成的配图）；若 modelscope 版无配图则降级使用 `{topic}_pollinations_final.md`；若两份均无配图则任选一篇。选定后使用 `markdown-email` 技能发送，邮件标题 `{topic} - {date}` |
-| **输入 (1)** | `{output}/{topic}_modelscope_final.md` |
-| **输入 (2)** | `{output}/{topic}_pollinations_final.md` |
+| **说明** | 先检查 `{email_final_enabled}`：若为 `false` 则直接跳过。若为 `true`，coordinator 将步骤 6 产出的 `{topic}_final.md` 使用 `markdown-email` 技能发送，邮件标题 `{topic} - {date}` |
+| **输入** | `{output}/{topic}_final.md` |
 | **输出** | 已发送的终稿邮件；若跳过则无输出 |
+
+### 步骤 8：发布到公众号草稿箱
+
+| | |
+|------|------|
+| **执行者** | `coordinator` → `wenyan-publish` 技能 |
+| **说明** | 先检查 `{wenyan_publish_enabled}`：若为 `false` 则直接跳过。若为 `true`，coordinator 使用技能 `wenyan-publish` 将 `{output}/{topic}_final.md` 发布到微信公众号草稿箱。执行结果（成功/失败）写入 `{output}/wenyan-publish-result.json`（脚本通过 `{output.result}` 参数接收），不阻塞管线结束 |
+| **输入** | `{output}/{topic}_final.md` |
+| **输出** | `{wenyan_publish_result}` — 执行结果（成功/失败）；若跳过则无输出 |

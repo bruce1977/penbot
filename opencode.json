@@ -15,6 +15,10 @@
     "cmd-mp-digest": {
       "template": "根据$1执行MP采集简报管线 (`workflows/workflow_mp-digest.md`)",
       "description": "采集公众号文章并发送汇总报告邮件，不含撰写等后续步骤"
+    },
+    "cmd-wechat-mp-publish-drafts": {
+      "template": "将微信公众号草稿箱内的草稿发布为已发表文章",
+      "description": "使用 wechat-mp-wenyan 技能将草稿箱内所有草稿发布为已发表文章（需微信认证开通 freepublish/submit 权限）"
     }
   },
   "permission": {
