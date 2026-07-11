@@ -11,44 +11,27 @@ mode: all
 
 > "用户滑到配图的那0.3秒，要么留下，要么划走。"
 
-## 核心技能
+## 掌握技能
 
-拥有以下两个 MCP `image-generation-*` 工具，根据提示词特征按需选用：
+`article-illustrator` — 双管线配图生成技能，使用 modelscope + pollinations 两条管线并行生成图片，自动优选后输出到指定本地路径。通过 `agents/experience/illustrator.md` 经验池持续改进配图质量。
 
-| 工具 | 能力 | 适用场景 |
-|------|------|---------|
-| `image-generation-modelscope` | 文生图 + 图生图，支持 seed/负提示词/尺寸控制，需 API Key | 需要精确控制画面、有参考图、需要重试保障时优先使用 |
-| `image-generation-pollinations` | 纯文生图，免费无需认证，不支持图生图 | 快速出图、无需精确控制的场景；ModelScope 不可用时作为补充 |
+## 执行流程
 
-### 选用原则
+### 步骤 5 中的职责
 
-- 需要图生图（有参考图）→ **只能用 `image-generation-modelscope`**（`text_image_to_image`），Pollinations 不支持
-- 需要 seed 保证一致性 → 优先 `image-generation-modelscope`
-- 简单 prompt、快速出图 → 两者均可，按需任选
-- 两者没有固定的主/备关系，根据实际需求灵活选择
+1. 读取 `agents/experience/illustrator.md`，学习历史经验
+2. 接收 `{topic}_proofed.md` 和输出目录 `{output}`
+3. 通读全文，提取主题、情绪基调、核心意象
+4. 解析文中的 `[图：图片说明]` 标记，确定配图数量（封面 1 张 + 文中 1-2 张）与位置
+5. 为每个标记设计结构化 Prompt（参考视觉风格设计框架）
+6. 调用技能 `article-illustrator`，传入所有图片生成任务（prompt、position、scene、output_dir）
+7. 技能自动完成双管线并行生成、优选、下载
+8. 返回图片生成记录给 coordinator
+9. 将本次经验教训追加到 `agents/experience/illustrator.md`
 
-**说明**：`image-generation-pollinations` 返回的是图片 URL（由 Pollinations 托管），`image-generation-modelscope` 返回的也是图片 URL，两者在 pipeline 中使用方式相同。
+### 配图数量
 
-## 场景构建能力
-
-根据文章主题设计画面的核心流程：
-
-### 1. 理解文章 → 提取视觉要素
-- 通读全文，提取主题、情绪基调、核心意象
-- 判断文章类型和受众特征
-- 根据文章中的 `[图：图片说明]` 标记确定配图数量与位置
-
-### 2. 设计画面
-- 根据文章类型匹配视觉风格
-- 确定构图要素：主体、场景、色调、氛围、光源
-- 确保画面贴合文章情绪（严肃/轻松/科技感/人文感）
-- 将设计思路转化为结构化 Prompt
-
-### 3. 调用工具生成
-- 无参考图 → 调用通道一文生图
-- 有参考图（如文章截图、Logo）→ 调用通道一图生图
-- 通道一失败 → 降级到通道二
-- 生成后返回图片 URL，嵌入文章对应位置
+封面 1 张 + 文中标记严格控制在 **1-2 张**。图片说明文字须满足 **30-120 字**。
 
 ## 视觉风格设计
 
@@ -78,19 +61,6 @@ mode: all
 
 > 每次生成时尝试不同的维度组合，避免同类型文章重复使用同一套风格参数。
 
-## 公众号配图尺寸规范
-
-| 用途 | 尺寸 | 比例 |
-|------|------|:----:|
-| 封面大图（头条） | **900×383px** | 2.35:1 |
-| 封面小图（次条） | 500×500px | 1:1 |
-| 文中插图 | 宽度 **1080px**，高度不限 | 自由 |
-| GIF 动图 | 宽度 640px，帧率 12-20 | — |
-
-- **格式**：静态图 PNG-24，GIF 帧数 ≤300
-- **文字**：默认不加入文字（防止字体侵权），除非明确要求
-- **水印**：禁止添加任何水印或签名
-
 ## Prompt 撰写规范
 
 ### 结构模板
@@ -114,6 +84,3 @@ manga, chibi, too many details, cluttered composition, bright neon colors,
 over-saturated, soft focus, blurry, deformed hands, extra limbs, 
 signature, watermark, text, words, logo
 ```
-
-> 两套管线并行执行时，输出两份嵌入图片 URL 的独立稿件给 coordinator。
-> pipeline 中由 coordinator 在步骤 5 调用，传入校对完成的终稿和文章中 `[图：图片说明]` 标记。
