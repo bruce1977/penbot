@@ -8,11 +8,15 @@ const KEEP = [
 ];
 const API_PATH = "/api/public/v1";
 
-const [,, configPath, dateStr, outputPath] = process.argv;
-if (!configPath || !dateStr || !outputPath) {
-  console.error("Usage: node fetch_and_prepare.js <config.json> <date YYYY-MM-DD> <output.json>");
+const [,, configPath, outputPath] = process.argv;
+if (!configPath || !outputPath) {
+  console.error("Usage: node fetch_and_prepare.js <config.json> <output.json>");
   process.exit(1);
 }
+
+// generate today's date parts (yyyyMMdd)
+const _now = new Date();
+const y = String(_now.getFullYear()), m = String(_now.getMonth() + 1).padStart(2, "0"), d0 = String(_now.getDate()).padStart(2, "0");
 
 const apiBase = process.env.PB_WECHAT_MP_API_BASE;
 if (!apiBase) {
@@ -60,7 +64,7 @@ function targetFilename(aid, updateTime, accountName, title) {
   return `${aid}_${dateStr}_${sanitizeForFilename(accountName)}_${sanitizeForFilename(title)}.md`;
 }
 
-function selectAccounts(config, dateStr) {
+function selectAccounts(config) {
   const maxAccounts = config.settings.max_accounts || 10;
   const accounts = (config.accounts || []).filter(a => a.enabled !== false);
 
@@ -70,13 +74,7 @@ function selectAccounts(config, dateStr) {
     process.exit(1);
   }
 
-  const date = new Date(dateStr);
-  if (isNaN(date.getTime())) {
-    console.error(`Invalid date: "${dateStr}". Expected format: YYYY-MM-DD`);
-    process.exit(1);
-  }
-
-  const day = date.getDate();
+  const day = parseInt(d0, 10);
   const lastDigit = day % 10;
   const isOdd = day % 2 === 1;
 
@@ -107,7 +105,7 @@ function selectAccounts(config, dateStr) {
     }
   }
 
-  console.log(`Selected ${selected.length}/${total} accounts for ${dateStr}`);
+  console.log(`Selected ${selected.length}/${total} accounts for ${y}${m}${d0}`);
   return selected;
 }
 
@@ -139,10 +137,10 @@ async function fetchSingleAccount(fakeid, name, category) {
 }
 
 async function main() {
-  const selectedAccounts = selectAccounts(config, dateStr);
+  const selectedAccounts = selectAccounts(config);
   console.log(`[Step 1] Selected ${selectedAccounts.length} accounts`);
 
-  const batchSize = settings.max_accounts_per_batch || 10;
+  const batchSize = settings.max_accounts || 5;
   console.log(`[Step 2] Fetching articles (batch size: ${batchSize})...`);
   const allArticles = [];
   const chunks = chunkArray(selectedAccounts, batchSize);

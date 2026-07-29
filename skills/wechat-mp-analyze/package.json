@@ -1,0 +1,8 @@
+{
+  "name": "wechat-mp-analyze",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "mustache": "^4.2.0"
+  }
+}

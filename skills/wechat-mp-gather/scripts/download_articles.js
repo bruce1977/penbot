@@ -29,11 +29,6 @@ function cleanContent(text) {
   return text;
 }
 
-function fmtDate(ts) {
-  const d = new Date(ts * 1000);
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
-}
-
 function parseArgs() {
   if (!articleListPath || !articlesDir || !outDir) {
     console.error("Usage: node download_articles.js <article_list.json> <articles_dir> <out_dir>");
@@ -222,55 +217,32 @@ async function downloadAll(apiBase, articlesDir, articles, pendingPath, failedPa
   return { successCount, failCount, failedReasons };
 }
 
-function generateReport(articles, articlesDir, failedReasons) {
+function generateDownloadList(articles, articlesDir, outDir, failedReasons) {
   const rawArticles = Object.values(articles);
-  const reportArticles = rawArticles.map(a => {
+  const filesList = [];
+
+  for (const a of rawArticles) {
     const fname = a.file_name;
-    const exists = fname ? fs.existsSync(path.join(articlesDir, fname)) : false;
-    const failed = failedReasons[a.aid];
-    return {
-      aid: a.aid, title: a.title, account_name: a.account_name, account_category: a.account_category,
-      file_path: exists ? fname : null, url: a.link, cover: a.cover || "", digest: a.digest,
-      create_time: a.create_time || null, update_time: a.update_time, fake_id: a.fake_id || "",
-      exists, failed,
-    };
-  });
-
-  const realSuccessCount = reportArticles.filter(a => a.exists && !a.failed).length;
-  const realFailCount = reportArticles.length - realSuccessCount;
-
-  const accountNames = [...new Set(reportArticles.map(a => a.account_name))];
-  const accountDetails = accountNames.map(name => {
-    const group = reportArticles.filter(a => a.account_name === name);
-    const success = group.filter(a => a.exists).length;
-    const fail = group.filter(a => !a.exists || a.failed).length;
-    return { name, category: group[0].account_category, qualifying_count: group.length, success_count: success, fail_count: fail, status: fail === 0 ? "正常" : success === 0 ? "全部失败" : "部分失败" };
-  });
-
-  const failedArticles = reportArticles.filter(a => !a.exists || a.failed).map(a => ({
-    title: a.title, account_name: a.account_name, reason: a.failed || (a.exists ? "文件不存在（list_failed.txt标记）" : "文件不存在"), url: a.url,
-  }));
-
-  const output = {
-    timestamp: fmtDate(Math.floor(Date.now() / 1000)),
-    summary: { accounts: accountNames.length, qualifying_articles: reportArticles.length, success_count: realSuccessCount, fail_count: realFailCount },
-    account_details: accountDetails,
-    articles: reportArticles.map((a, i) => ({
-      index: i + 1, aid: a.aid, title: a.title, account_name: a.account_name, account_category: a.account_category,
-      file_path: a.file_path, url: a.url, cover: a.cover || "", digest: a.digest,
-      create_time: a.create_time || null, update_time: a.update_time, fake_id: a.fake_id || "",
-      download_status: a.failed ? "失败" : a.exists ? "成功" : "失败",
-    })),
-  };
-
-  if (failedArticles.length > 0) {
-    output.failed = [{ type: "文章下载失败", account: "", articles: failedArticles }];
+    const fpath = fname ? path.join(articlesDir, fname) : null;
+    const exists = fpath ? fs.existsSync(fpath) : false;
+    const err = failedReasons[a.aid];
+    if (exists && !err) {
+      filesList.push(fname);
+    }
   }
 
-  const reportPath = path.join(articlesDir, `download_report_${new Date().toISOString().slice(0,10).replace(/-/g,"")}.json`);
-  if (!fs.existsSync(articlesDir)) fs.mkdirSync(articlesDir, { recursive: true });
-  fs.writeFileSync(reportPath, JSON.stringify(output, null, 2), "utf-8");
-  console.log(`Report generated: ${reportPath}`);
+  const list = {
+    base_path: path.resolve(articlesDir),
+    files: filesList,
+  };
+
+  if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+  const listPath = path.join(outDir, "download_list.json");
+  fs.writeFileSync(listPath, JSON.stringify(list, null, 2), "utf-8");
+  console.log(`Download list generated: ${listPath}`);
+  if (filesList.length < rawArticles.length) {
+    console.log(`Warning: ${rawArticles.length - filesList.length} articles failed to download`);
+  }
 }
 
 async function main() {
@@ -281,8 +253,8 @@ async function main() {
   const { pendingPath, failedPath } = initLists(outDir, articles);
   // 步骤 3: 批量下载文章（含重试）
   const { failCount, failedReasons } = await downloadAll(apiBase, articlesDir, articles, pendingPath, failedPath);
-  // 步骤 4: 生成下载报告
-  generateReport(articles, articlesDir, failedReasons);
+  // 步骤 4: 生成下载清单
+  generateDownloadList(articles, articlesDir, outDir, failedReasons);
   process.exit(failCount > 0 ? 1 : 0);
 }
 

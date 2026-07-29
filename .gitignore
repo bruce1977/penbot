@@ -3,6 +3,7 @@
 .mimocode/
 .opencode/
 .workbuddy/
+.knowledge/
 output/
 configs/
 node_modules/

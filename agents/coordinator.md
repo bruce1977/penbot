@@ -21,7 +21,7 @@ mode: all
 
 | Agent | 职责 |
 |-------|------|
-| `gatherer` | 信息采集，运行 `wechat-mp-articles` 或 `industry-news-digest` 等采集技能 |
+| `gatherer` | 信息采集，运行 `wechat-mp-gather`（抓取）、`wechat-mp-analyze`（选题）或 `industry-news-digest` 等采集技能 |
 | `commentator-*` | 5 位独立评论员，对主题从商业/技术/公众/学术/伦理五个维度打分 |
 | `writer` | 根据主题与素材撰写文章，内部自行完成 proofreader 校对闭环 |
 | `illustrator` | 根据文章内容用 MCP `image-generation-*` 工具绘制配图 |

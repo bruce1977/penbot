@@ -1,6 +1,6 @@
 ---
 name: mp-auto-pipeline
-description: "从公众号抓取文章 → 汇总报告发送 → 多视角主题评价 → 撰写+3 轮审稿（writer 技能）→ 技能配图 → 嵌入终稿 → 终稿发送 → 发布草稿箱"
+description: "全自动 MP 管线：加载配置 → 采集选题 → 写稿配图 → 发布"
 ---
 
 # MP 自动化管线
@@ -9,124 +9,126 @@ description: "从公众号抓取文章 → 汇总报告发送 → 多视角主�
 
 | 变量 | 来源 | 说明 |
 |------|------|------|
-| `{profile}` | `config.json` → `settings.name` | 配置名称，用于区分不同配置的输出目录前缀 |
-| `{date}` | 执行日期 | 格式 `yyyyMMdd`，如 `20260616` |
-| `{output}` | 输出根目录 | `output/{profile}/{date}` |
-| `{topic}` | 步骤 3 选中的主题名称 | 用于输出文件命名，如 `agi_draft.md` |
-| `{temp-data}` | 中间数据目录 | `.temp/{profile}/~data` | 非最终产出的中间文件均存放于此 |
-| `{temp-scripts}` | 脚本输出目录 | `.temp/{profile}/~scripts` | 运行期脚本均存放于此 |
-| `{config-runtime}` | 运行时配置 | `{temp-data}/config.json` | 步骤 1 从原始 config 复制至此，后续统一读取（含 email 字段） |
-| `{email}` | 收件地址 | `{config-runtime}` → `settings.email` | coordinator 在步骤 2 和 7 发送邮件时使用 |
-| `{email_summary_enabled}` | 汇总邮件开关 | `{config-runtime}` → `settings.email_summary_enabled`，默认 `true` | 设为 `false` 时 coordinator 跳过步骤 2 |
-| `{email_final_enabled}` | 终稿邮件开关 | `{config-runtime}` → `settings.email_final_enabled`，默认 `true` | 设为 `false` 时 coordinator 跳过步骤 7 |
-| `{wenyan_publish_enabled}` | 发布草稿开关 | `{config-runtime}` → `settings.wenyan_publish_enabled`，默认 `true` | 设为 `false` 时 coordinator 跳过步骤 8 |
-| `{wenyan_publish_result}` | 发布结果文件 | `{output}/wenyan-publish-result.json` | 步骤 8 执行结果（成功/失败）写入此文件 |
+| `{config}` | 输入参数 | 配置文件路径，如 `configs/ai-config.json` |
+| `{profile}` | `{config}` → `settings.name` | 配置名称，用于区分输出目录前缀 |
+| `{date}` | 执行日期 | 格式 `yyyyMMdd` |
+| `{output}` | 自动拼接 | `output/{profile}/{date}`，所有产物均写入此目录 |
+| `{topic}` | 子流程 A 产出 | 选中的主题名称，用于文件命名 |
+| `{temp}/data` | 中间数据目录 | `.temp/{profile}/data`，非最终产出的中间文件存放于此 |
+| `{config-runtime}` | 步骤 1 产出 | `{temp}/data/config.json`，运行时配置副本（含 email 字段） |
+| `{knowledge-local}` | `{config-runtime}` → `settings.knowledge-local`，默认 `.knowledge/{profile}` | 本地知识库根目录，文章下载至 `{knowledge-local}/mp_articles/` |
+| `{knowledge-remote}` | 输入参数（可选，预留） | 远程知识库接口，与 `{knowledge-local}` 并列 |
+| `{email}` | `{config-runtime}` → `settings.email` | 收件地址 |
+| `{email_summary_enabled}` | `{config-runtime}` → `settings.email_summary_enabled` | 汇总邮件开关，默认 `true` |
+| `{email_final_enabled}` | `{config-runtime}` → `settings.email_final_enabled` | 终稿邮件开关，默认 `true` |
+| `{wenyan_publish_enabled}` | `{config-runtime}` → `settings.wenyan_publish_enabled` | 发布草稿开关，默认 `true` |
+| `{wenyan_publish_result}` | 子流程 C 产出 | `{output}/wenyan-publish-result.json` |
 
 ## 流程图
 
 ```mermaid
 flowchart TD
-    classDef coord fill:#e3f2fd,stroke:#1565c0,stroke-width:1px,color:#0d47a1
-    classDef delegate fill:#fff3e0,stroke:#e65100,stroke-width:1px,color:#bf360c
-    classDef direct fill:#e8f5e9,stroke:#2e7d32,stroke-width:1px,color:#1b5e20
-    classDef decision fill:#f3e5f5,stroke:#6a1b9a,stroke-width:1px,color:#4a148c
+    classDef startend fill:#f5f5f5,stroke:#666,stroke-width:1px
+    classDef config fill:#e3f2fd,stroke:#1565c0,stroke-width:1px,color:#0d47a1
+    classDef subA fill:#fff3e0,stroke:#e65100,stroke-width:1px,color:#bf360c
+    classDef subB fill:#e8f5e9,stroke:#2e7d32,stroke-width:1px,color:#1b5e20
+    classDef subC fill:#f3e5f5,stroke:#6a1b9a,stroke-width:1px,color:#4a148c
+    classDef decision fill:#fff8e1,stroke:#f9a825,stroke-width:1px
 
-    S([开始]) --> G1[步骤1 coordinator → gatherer<br/>委托采集]
-    G1 --> G2[步骤2 coordinator → markdown-email 技能<br/>发送汇总报告]
-    G2 --> G3[步骤3 coordinator → commentator-*<br/>主题评价与选题]
-    G3 --> D{coordinator<br/>等权加总评分<br/>取最高分主题}
-    D --> G4[步骤4 coordinator → writer<br/>wechat-mp-writer 技能 · 3 轮审稿]
-    G4 --> G5[步骤5 coordinator → illustrator<br/>技能配图 → 自动优选下载]
-    G5 --> G6[步骤6 coordinator<br/>嵌入配图 → 合成终稿]
-    G6 --> E2{email_final_enabled?}
-    E2 -- true --> G7[步骤7 coordinator → markdown-email 技能<br/>发送终稿]
-    E2 -- false --> G8
-    G7 --> G8[步骤8 coordinator → wechat-mp-wenyan 技能<br/>发布到公众号草稿箱]
-    G8 --> F([结束])
+    S([开始]) --> C1[步骤1 加载配置<br/>解析 config.json → 初始化目录/变量]
+    C1 --> A[子流程A 采集与选题]
+    A --> B[子流程B 写稿与配图]
+    B --> C[子流程C 发布]
+    C --> F([结束])
+
+    subgraph A[子流程A 采集与选题]
+        A1[gatherer 采集<br/>wechat-mp-gather（抓取）<br/>→ wechat-mp-analyze（选题）]
+        A1 --> A2{email_summary_enabled?}
+        A2 -- true --> A3[发送汇总报告<br/>markdown-email 技能]
+        A2 -- false --> A4
+        A3 --> A4[commentator-* 主题评价<br/>5 视角独立打分]
+        A4 --> A5[coordinator 选题决策<br/>等权加总 → selected-topic.md]
+    end
+
+    subgraph B[子流程B 写稿与配图]
+        B1[writer 写稿<br/>wechat-mp-writer 技能]
+        B1 --> B2[illustrator 配图<br/>article-illustrator 技能]
+        B2 --> B3[coordinator 合并<br/>嵌入配图 → final.md]
+    end
+
+    subgraph C[子流程C 发布]
+        C1{email_final_enabled?}
+        C1 -- true --> C2[发送终稿<br/>markdown-email 技能]
+        C1 -- false --> C3
+        C2 --> C3{wenyan_publish_enabled?}
+        C3 -- true --> C4[发布草稿箱<br/>wechat-mp-wenyan 技能]
+        C3 -- false --> C5
+        C4 --> C5([子流程C 结束])
+    end
 
     class S,F startend
-    class G1,G3,G4,G5,G6,G8 delegate
-    class G2,G7 direct
-    class D,E2 decision
+    class C1 config
+    class A1,A4,A5,A subA
+    class B1,B2,B3,B subB
+    class A3,C2,C4,C subC
+    class A2,C1,C3 decision
 ```
 
 ## 步骤详情
 
-### 步骤 1：抓取与遴选
+### 步骤 1：加载配置
 
 | | |
 |------|------|
-| **执行者** | `coordinator` → `gatherer` |
-| **说明** | coordinator 将 `config.json` 路径传递给 gatherer，委托其执行采集任务。gatherer 运行技能 `wechat-mp-articles`，完成账号轮选、文章拉取、AI 评分、标签提取、主题遴选全流程，产出汇总报告和主题报告后返回给 coordinator |
-| **输入** | `config.json` |
-| **输出 (1)** | `{output}/summary_report.md` |
-| **输出 (2)** | `{output}/topic_*.md` |
+| **执行者** | `coordinator` |
+| **说明** | 读取 `{config}`，解析账号配置、开关设置、邮件地址等。确定 `{knowledge-local}`（优先取 `settings.knowledge-local`，默认 `.knowledge/{profile}`）。复制为运行时配置 `{config-runtime}`。初始化输出目录 `{output}`、中间数据目录 `{temp}/data`、知识库目录 `{knowledge-local}/mp_articles/` |
+| **输入** | `{config}` — 配置文件路径 |
+| **输出** | `{config-runtime}` — 运行时配置，所有子流程统一从此读取参数 |
 
-### 步骤 2：发送汇总报告
+### 子流程 A：采集与选题
 
-| | |
-|------|------|
-| **执行者** | `coordinator`（直接使用 `markdown-email` 技能） |
-| **说明** | 先检查 `{email_summary_enabled}`：若为 `false` 则直接跳过。若为 `true`，coordinator 使用技能 `markdown-email` 将 `{output}/summary_report.md` 发送到 `{email}`，邮件标题为 `资讯汇总 - {profile} - {date}` |
-| **输入** | `{output}/summary_report.md` |
-| **输出** | 已发送的汇总报告邮件；若跳过则无输出 |
+**目标**：从公众号抓取文章 → 评价打分 → 选出最佳主题
 
-### 步骤 3：主题评价与选题
+| 节点 | 执行者 | 说明 | 输入 | 输出 |
+|------|--------|------|------|------|
+| **A1 采集** | `coordinator` → `gatherer` | gatherer 先运行 `wechat-mp-gather`（抓取：账号轮选、文章拉取、下载），再运行 `wechat-mp-analyze`（选题：AI 评分、标签提取、主题遴选、报告生成） | `{config}` | `{output}/summary_report.md`、`{output}/topic_*.md` |
+| **A2 汇总邮件** | `coordinator`（`markdown-email` 技能） | 检查 `{email_summary_enabled}`，为 `true` 时将 `summary_report.md` 发送到 `{email}`，标题 `资讯汇总 - {profile} - {date}` | `{output}/summary_report.md` | 已发送邮件；若跳过则无输出 |
+| **A3 主题评价** | `coordinator` → `commentator-*` | 5 位评论员（value/tech/public/academic/ethics）从各自视角独立对每个主题打分（1-5 分） | `{output}/topic_*.md` | `{output}/commentary.md` — 各主题各维度打分 |
+| **A4 选题决策** | `coordinator` | 收集评分，等权加总，取最高分主题。输出选题决策和该主题对应文章路径 | `{output}/commentary.md` | `{output}/selected-topic.md` — 中选主题、得分对比、相关文章列表 |
 
-| | |
-|------|------|
-| **执行者** | `coordinator` → `commentator-*`（5 位评论员独立打分 → coordinator 汇总并机械计算） |
-| **说明** | coordinator 将每个 `topic_*.md` 分发给 5 位评论员（`commentator-value`、`commentator-tech`、`commentator-public`、`commentator-academic`、`commentator-ethics`），每位从各自视角独立对每个主题逐维打分（1-5 分）。coordinator 收集全部评分后，按各维度**等权加总**，取总分最高的主题作为最佳选题，输出评价报告和选题决策。coordinator **不参与内容判断**，仅做分数汇总与比较 |
-| **输入** | `{output}/topic_*.md` |
-| **输出 (1)** | `{output}/commentary.md` — 各主题各维度打分情况（按 `templates/mp-auto-pipeline/template_commentary.md` 渲染） |
-| **输出 (2)** | `{output}/selected-topic.md` — 选中的主题、中选理由（得分对比）、相关文章列表含本地路径（按 `templates/mp-auto-pipeline/template_selected-topic.md` 渲染） |
+**产出传递**：
+- `{output}/selected-topic.md` → 子流程 B
+- `{knowledge-local}/mp_articles/` → 子流程 B（含已下载的公众号原文）
 
-### 步骤 4：撰写与 3 轮审稿（writer 技能）
+### 子流程 B：写稿与配图
 
-| | |
-|------|------|
-| **执行者** | `coordinator` → `writer`（使用 `wechat-mp-writer` 技能） |
-| **说明** | coordinator 将 `selected-topic.md`、相关公众号文章路径、`web-search` 补充素材一并传递给 writer，委托其执行 `wechat-mp-writer` 技能。writer 按技能流程完成：阅读素材 → 拟定大纲（按文章类型匹配写作要求）→ 撰写初稿（插入 `[图：图片说明]` 标记）→ **第 1 轮审稿：内容与结构** → 修正 → **第 2 轮审稿：表达与风格** → 修正 → **第 3 轮审稿：调用 proofreader 校对** → 修正（可多次验证直至无误）。输出校对完成的终稿返回 coordinator |
-| **输入 (1)** | `{output}/selected-topic.md` — 选题说明与中选理由 |
-| **输入 (2)** | 步骤 1 下载的公众号文章原文（`{output}/../*.md`） |
-| **输入 (3)** | `web-search` 搜索补充素材的返回结果 |
-| **输出** | `{output}/{topic}_proofed.md` — 经过 3 轮审稿校对完成的文章，含 `[图：图片说明]` 标记 |
+**目标**：根据选题撰写文章、生成配图、合并为终稿
 
-### 步骤 5：配图（illustrator 技能配图）
+| 节点 | 执行者 | 说明 | 输入 | 输出 |
+|------|--------|------|------|------|
+| **B1 写稿** | `coordinator` → `writer` | writer 执行 `wechat-mp-writer` 技能：阅读素材（`{knowledge-local}/mp_articles/` 和/或 `{knowledge-remote}`）→ 拟定大纲 → 撰写初稿（frontmatter `title` + `[图：图片说明]` 标记）→ 3 轮审稿 | `{output}/selected-topic.md`、知识库参数 | `{output}/{topic}_proofed.md` — 含 `[图]` 标记的校对终稿 |
+| **B2 配图** | `coordinator` → `illustrator` | illustrator 通读 `{topic}_proofed.md`，解析 `[图]` 标记，对每张配图调用 `article-illustrator` 技能（双管线并行生成、自动优选、下载到本地） | `{output}/{topic}_proofed.md`、`{output}` | 图片文件 `{output}/{position}.png`、生成记录列表 |
+| **B3 合并** | `coordinator` | 建立 `position → local_path` 映射，遍历 `{topic}_proofed.md` 将 `[图：图片说明]` 替换为 `![图片说明]({local_path})`；配图失败的标记保留原样 | `{output}/{topic}_proofed.md`、生成记录 | `{output}/{topic}_final.md` — 图片嵌入完毕的终稿 |
 
-| | |
-|------|------|
-| **执行者** | `coordinator` → `illustrator`（使用 `article-illustrator` 技能） |
-| **说明** | coordinator 将 `{topic}_proofed.md` 和输出目录 `{output}` 传递给 illustrator。illustrator 通读全文，解析 `[图：图片说明]` 标记，提取图片数量与说明文字。为每个标记设计结构化 Prompt，调用技能 `article-illustrator`（通过脚本 `scripts/generate_image.js`）。技能内部自动启动双管线（modelscope + pollinations）并行生成，按规则自动优选（ModelScope 优先），下载图片到本地。文件命名格式 `{position}.png`（如 `cover.png`、`inline_1.png`）。每张图片调用一次脚本，返回 JSON 格式生成记录 |
-| **输入 (1)** | `{output}/{topic}_proofed.md` — 含 `[图：图片说明]` 标记的文章稿件 |
-| **输入 (2)** | `{output}` — 输出根目录，图片文件直接保存至此 |
-| **输出 (1)** | 图片文件：`{output}/{position}.png`（如 `{output}/cover.png`、`{output}/inline_1.png`） |
-| **输出 (2)** | 生成记录（每张图片执行结果 JSON）：`{ position, scene, prompt, success, local_path, selected_pipeline, attempts[{pipeline, success, error?, size_bytes?}] }` |
+### 子流程 C：发布
 
-### 步骤 6：嵌入配图 → 合成终稿
+**目标**：将终稿通过邮件发送和/或发布到公众号草稿箱
 
-| | |
-|------|------|
-| **执行者** | `coordinator`（直接操作，机械替换） |
-| **说明** | coordinator 汇总步骤 5 所有图片的生成记录，建立 `position → local_path` 映射表（如 `{ "cover": "output/ai/20260711/cover.png", "inline_1": "output/ai/20260711/inline_1.png" }`）。读取 `{topic}_proofed.md`，遍历文档中的 `[图：图片说明]` 标记，按 `position` 匹配对应图片路径，将每个标记替换为 `![图片说明]({local_path})`。替换完毕后输出为最终稿件 |
-| **输入 (1)** | `{output}/{topic}_proofed.md` — 含 `[图：图片说明]` 标记的文章模板 |
-| **输入 (2)** | 生成记录汇总 → `{ position: local_path }` 映射表（由步骤 5 各图片的 JSON 结果合并而来） |
-| **输出** | `{output}/{topic}_final.md` — 所有 `[图：...]` 标记已替换为 `![...](path)` 图片语法的终稿 |
+| 节点 | 执行者 | 说明 | 输入 | 输出 |
+|------|--------|------|------|------|
+| **C1 终稿邮件** | `coordinator`（`markdown-email` 技能） | 检查 `{email_final_enabled}`，为 `true` 时将 `{topic}_final.md` 发送到 `{email}`，标题 `{topic} - {date}` | `{output}/{topic}_final.md` | 已发送邮件；若跳过则无输出 |
+| **C2 发布草稿箱** | `coordinator` → `wechat-mp-wenyan` 技能 | 检查 `{wenyan_publish_enabled}`，为 `true` 时将 `{topic}_final.md` 发布到公众号草稿箱。结果写入 `{wenyan_publish_result}` | `{output}/{topic}_final.md` | `{wenyan_publish_result}` — 发布结果（成功/失败）；若跳过则无输出 |
 
-### 步骤 7：发送终稿
+## 子流程间数据流
 
-| | |
-|------|------|
-| **执行者** | `coordinator`（直接使用 `markdown-email` 技能） |
-| **说明** | 先检查 `{email_final_enabled}`：若为 `false` 则直接跳过。若为 `true`，coordinator 将步骤 6 产出的 `{topic}_final.md` 使用 `markdown-email` 技能发送，邮件标题 `{topic} - {date}` |
-| **输入** | `{output}/{topic}_final.md` |
-| **输出** | 已发送的终稿邮件；若跳过则无输出 |
+```
+步骤1 ──→ {config-runtime} ──→ 子流程A ──→ 子流程B ──→ 子流程C
+                                              ↑
+                  {knowledge-local}/mp_articles ─┘
+```
 
-### 步骤 8：发布到公众号草稿箱
-
-| | |
-|------|------|
-| **执行者** | `coordinator` → `wenyan-publish` 技能 |
-| **说明** | 先检查 `{wenyan_publish_enabled}`：若为 `false` 则直接跳过。若为 `true`，coordinator 使用技能 `wenyan-publish` 将 `{output}/{topic}_final.md` 发布到微信公众号草稿箱。执行结果（成功/失败）写入 `{output}/wenyan-publish-result.json`（脚本通过 `{output.result}` 参数接收），不阻塞管线结束 |
-| **输入** | `{output}/{topic}_final.md` |
-| **输出** | `{wenyan_publish_result}` — 执行结果（成功/失败）；若跳过则无输出 |
+| 传递链 | 说明 |
+|--------|------|
+| 步骤 1 → A | `{config-runtime}`（开关、邮件、账号等）、`{knowledge-local}`（知识库根目录） |
+| A → B | `{output}/selected-topic.md`（选题）、`{knowledge-local}/mp_articles/`（公众号原文） |
+| B → C | `{output}/{topic}_final.md`（终稿） |

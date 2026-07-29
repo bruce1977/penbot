@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const Mustache = require("mustache");
 
-const [,, articlesDir, outDirArg, analysisPath, configArg, topicPath] = process.argv;
+const [,, analysisPath, outDirArg, configArg, topicPath] = process.argv;
 
 const TEMPLATE_FILE = path.join(__dirname, "..", "templates", "template_topic.md");
 const DEDUP_THRESHOLD = 0.8;
@@ -24,8 +24,8 @@ function levenshtein(a, b) {
 }
 
 function parseArgs() {
-  if (!articlesDir || !outDirArg || !analysisPath || !configArg || !topicPath) {
-    console.error("Usage: node gen_topic_report.js <articles_dir> <output_dir> <analysis_json> <config_path> <analysis_topic_json>");
+  if (!analysisPath || !outDirArg || !configArg || !topicPath) {
+    console.error("Usage: node gen_topic_report.js <analysis_json> <output_dir> <config_path> <analysis_topic_json>");
     process.exit(1);
   }
   if (!fs.existsSync(topicPath)) {
@@ -33,21 +33,10 @@ function parseArgs() {
     process.exit(1);
   }
   const config = JSON.parse(fs.readFileSync(configArg, "utf-8"));
-  const namePrefix = (config.settings && config.settings.name) || "";
-  if (!namePrefix) {
-    console.error("Error: config.settings.name is empty");
-    process.exit(1);
-  }
   return { config };
 }
 
-function buildCategoryLookup(config) {
-  const lookup = {};
-  (config.accounts || []).forEach(a => { lookup[a.name] = a.category || "未分类"; });
-  return lookup;
-}
-
-function loadArticles(analysisPath, articlesDir, acctCategory) {
+function loadArticles(analysisPath, acctCategory) {
   const analysisRaw = safeRead(analysisPath);
   let analysisData;
   try { analysisData = JSON.parse(analysisRaw); } catch { analysisData = { articles: [] }; }
@@ -56,11 +45,10 @@ function loadArticles(analysisPath, articlesDir, acctCategory) {
   (analysisData.articles || []).forEach(meta => {
     if (!meta.link && !meta.url) return;
     const date = meta.update_time ? fmtDate(meta.update_time) : "";
-    const fname = meta.file_name || meta.file_path;
-    const file = fname && fs.existsSync(path.join(articlesDir, fname)) ? path.join(articlesDir, fname) : null;
+    const file = meta.file_full_path && fs.existsSync(meta.file_full_path) ? meta.file_full_path : null;
     articles.push({
       aid: meta.aid || "",
-      file: file ? path.relative(articlesDir, file).replace(/\\/g, "/") : null,
+      file: file ? path.basename(file) : null,
       title: meta.title || "",
       url: meta.link || meta.url || "",
       account: meta.account || meta.account_name || "",
@@ -71,6 +59,7 @@ function loadArticles(analysisPath, articlesDir, acctCategory) {
       tags: meta.tags || [],
       update_time: meta.update_time,
       file_path: meta.file_path,
+      file_full_path: meta.file_full_path,
       account_name: meta.account_name,
       account_category: meta.account_category,
     });
@@ -204,9 +193,8 @@ function writeEnhancedAnalysis(analysisPath, articles, dedupMap, dupGroups) {
 function main() {
   // Step 1: parse command line args and config
   const { config } = parseArgs();
-  const acctCategory = buildCategoryLookup(config);
   // Step 2: load and deduplicate articles
-  const articles = loadArticles(analysisPath, articlesDir, acctCategory);
+  const articles = loadArticles(analysisPath, {});
   const { dedupMap, dupGroups } = deduplicateArticles(articles);
   // Step 3: build topic data from analysis_topic.json
   const topics = buildTopics(topicPath, articles);

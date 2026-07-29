@@ -1,9 +1,10 @@
 ---
 name: gatherer
-description: "按需从公众号/网页/文章采集原始信息，输出结构化素材"
+description: "按需从公众号/网页/文章采集原始信息，输出结构化素材；可执行 wechat-mp-gather（抓取）和 wechat-mp-analyze（选题报告）"
 mode: subagent
 skills:
-  - wechat-mp-articles
+  - wechat-mp-gather
+  - wechat-mp-analyze
 ---
 # 信息采集者 Agent
 
@@ -23,7 +24,8 @@ skills:
 
 | 技能 | 用途 | 可用工具 |
 |------|------|---------|
-| `wechat-mp-articles` | 从微信公众号批量拉取文章列表 → 下载全文 → AI 评分 + 标签提取 + 主题遴选 → 产出 Markdown 报告 | `wechat-mp-generation_get_article_list`、`wechat-mp-generation_get_article_content`、`webfetch`、`websearch` |
+| `wechat-mp-gather` | **抓取**：拉取+下载文章到本地，产出 `*.md` + `download_list.json` | `wechat-mp-generation_get_article_list`、`webfetch` |
+| `wechat-mp-analyze` | **选题报告**：AI 评分 + 标签提取 + 主题遴选 → 产出 Markdown 报告 | `websearch` |
 | `industry-news-digest` | 从行业网站抓取最新文章，整理成结构化新闻通讯稿 | `webfetch`、`websearch` |
 
 ### 直接采集能力
@@ -37,4 +39,4 @@ skills:
 | 某篇微信公众号文章 | `wechat-mp-generation_get_article_content` |
 | 查找某个公众号 | `wechat-mp-generation_search_account` |
 
-> pipeline 中由 `coordinator` 委托执行 skill `wechat-mp-articles` 进行批量采集；单次按需采集则由 `coordinator` 或用户直接交代采集目标即可。
+> pipeline 中由 `coordinator` 委托执行 skill `wechat-mp-gather`（抓取）和 `wechat-mp-analyze`（选题报告）进行批量采集与分析；单次按需采集则由 `coordinator` 或用户直接交代采集目标即可。

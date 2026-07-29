@@ -4,7 +4,7 @@
     "@opencode-ai/plugin"
   ],
   "command": {
-    "cmd-wechat-mp-articles": {
+    "cmd-wechat-mp-gather": {
       "template": "根据$1抓取微信公众号文章",
       "description": "根据配置文件抓取微信公众号文章并生成汇总报告"
     },

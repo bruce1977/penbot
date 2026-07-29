@@ -38,7 +38,7 @@ PB_RESEND_API_KEY=xxx
 | 变量 | 说明 | 使用方 |
 |------|------|--------|
 | `PB_WECHAT_MP_AUTH_KEY` | 微信公众号 HTTP API 认证密钥 | wechat-mp-generation MCP、`fetch_and_prepare.js` |
-| `PB_WECHAT_MP_API_BASE` | 微信公众号 HTTP API 基础地址 | wechat-mp-generation MCP、wechat-mp-articles 各脚本 |
+| `PB_WECHAT_MP_API_BASE` | 微信公众号 HTTP API 基础地址 | wechat-mp-generation MCP、wechat-mp-gather 各脚本 |
 | `PB_PYCORRECTOR_API_URL` | 中文纠错 API 地址 | word-corrector |
 | `PB_MODEL_API_KEY` | ModelScope API 密钥 | image-generation、image-generation-modelscope |
 | `PB_IMAGE_GENERATION_URL` | ModelScope 文生图远端 MCP 地址 | image-generation |
@@ -49,7 +49,7 @@ PB_RESEND_API_KEY=xxx
 | Agent | 代号 | 模式 | 描述 |
 |-------|------|------|------|
 | `coordinator` | 司南 | `all` | 总调度，编排全流程：采集→评价→撰写→配图→发布 |
-| `gatherer` | 拾遗 | `all` | 采集公众号文章，运行 wechat-mp-articles 技能产出报告与主题 |
+| `gatherer` | 拾遗 | `all` | 采集公众号文章，运行 wechat-mp-gather 技能产出报告与主题 |
 | `writer` | 墨言 | `all` | 专注撰写，接收素材后独立成文，内部调用 proofreader 完成校对迭代 |
 | `illustrator` | 画眉 | `all` | 根据文章主题用 `image-generation-*` MCP 工具绘制配图 |
 | `proofreader` | — | `subagent` | writer 的子流程，检查敏感词、错别字、语法/逻辑，与 writer 直接闭环 |
@@ -64,7 +64,8 @@ PB_RESEND_API_KEY=xxx
 
 | Skill | 描述 | 依赖/说明 |
 |-------|------|----------|
-| `wechat-mp-articles` | 从微信公众号抓取文章、AI 评分遴选、生成主题报告与汇总报告 | Node 脚本直连 HTTP API，无需 MCP；需 `axios`、`mustache` |
+| `wechat-mp-gather` | **抓取**：拉取+下载公众号文章到本地 | Node 脚本直连 HTTP API，需 `axios` |
+| `wechat-mp-analyze` | **选题**：AI 评分遴选、生成主题报告与汇总报告 | Node 脚本 + LLM，需 `mustache` |
 | `industry-news-digest` | 从指定行业网站抓取文章并生成新闻通讯稿 | — |
 | `pdf-digest` | 从 PDF 提取内容并整理成摘要/通讯稿 | — |
 | `word-corrector-check` | 中文错别字检测，支持音似、形似错误检测 | word-corrector MCP |
@@ -83,11 +84,9 @@ PB_RESEND_API_KEY=xxx
 | `image-generation` | remote | 文生图/图生图（ModelScope API，远端） | — |
 | `playwright` | local | 浏览器自动化（由 npx 动态拉取） | npx @playwright/mcp |
 
-> **注意**：`wechat-mp-generation` MCP 目前仅用于搜索公众号（获取 `fake_id`）。文章拉取和下载均通过 wechat-mp-articles 技能内的 Node 脚本直连 HTTP API，不走 MCP 通道。
+> **注意**：`wechat-mp-generation` MCP 目前仅用于搜索公众号（获取 `fake_id`）。文章拉取和下载均通过 wechat-mp-gather 技能内的 Node 脚本直连 HTTP API，不走 MCP 通道。
 
-## wechat-mp-articles 技能内部流程
-
-该技能的完整脚本驱动流程如下（与 pipeline 步骤 1 对应）：
+## 采集管线流程（wechat-mp-gather + wechat-mp-analyze）
 
 ```
 config.json + date
@@ -108,7 +107,7 @@ config.json + date
 │    ├ 批量下载 Markdown（含校验重试） │
 │    └ 自动生成下载汇总报告           │
 └────────────────────────────────────┘
-    │  *.md + download_report.json
+    │  *.md + download_list.json
 ┌─ 步骤 3 ──────────────────────────┐
 │  AI 评分 & 标签提取                 │
 │  merge_scored_articles.js  汇总评分缓存 │
@@ -152,7 +151,7 @@ config.json + date
 │   ├── commentator-*.md       # 5 位主题评论员
 │   └── silent.md              # 静默执行
 ├── skills/                    # 自定义 Skill（5 个）
-│   ├── wechat-mp-articles/
+│   ├── wechat-mp-gather/
 │   │   ├── scripts/           # Node.js 驱动脚本
 │   │   ├── steps/             # 步骤文档
 │   │   └── templates/         # 报告模板（Mustache）

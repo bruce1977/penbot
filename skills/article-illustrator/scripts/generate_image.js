@@ -31,7 +31,6 @@ function parseArgs() {
   }
   return { prompt, scene, position, outputDir: path.resolve(outputDir), size };
 }
-}
 
 async function download(url, dest) {
   const res = await fetch(url, { redirect: "follow" });

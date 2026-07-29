@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const Mustache = require("mustache");
 
-const [,, articlesDir, outDirArg, analysisPath, configArg, dateSuffix] = process.argv;
+const [,, analysisPath, outDirArg, configArg, dateSuffix] = process.argv;
 
 const TEMPLATE_FILE = path.join(__dirname, "..", "templates", "template_summary.md");
 const TOP_TAGS_COUNT = 10;
@@ -13,27 +13,16 @@ function fmtDate(ts) { const d = new Date(ts * 1000); return `${d.getFullYear()}
 function nowStamp() { const n = new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,"0")}-${String(n.getDate()).padStart(2,"0")} ${String(n.getHours()).padStart(2,"0")}:${String(n.getMinutes()).padStart(2,"0")}`; }
 
 function parseArgs() {
-  if (!articlesDir || !outDirArg || !configArg) {
-    console.error("Usage: node gen_summary_report.js <articles_dir> <output_dir> [analysis_json] <config_path> [date_suffix]");
+  if (!analysisPath || !outDirArg || !configArg) {
+    console.error("Usage: node gen_summary_report.js <analysis_json> <output_dir> <config_path> [date_suffix]");
     process.exit(1);
   }
   const config = JSON.parse(fs.readFileSync(configArg, "utf-8"));
-  const namePrefix = (config.settings && config.settings.name) || "";
-  if (!namePrefix) {
-    console.error("Error: config.settings.name is empty");
-    process.exit(1);
-  }
   const dateTag = dateSuffix || new Date().toISOString().slice(0,10).replace(/-/g, "");
   return { config, dateTag };
 }
 
-function buildCategoryLookup(config) {
-  const lookup = {};
-  (config.accounts || []).forEach(a => { lookup[a.name] = a.category || "未分类"; });
-  return lookup;
-}
-
-function loadArticles(analysisPath, articlesDir, acctCategory) {
+function loadArticles(analysisPath) {
   const articles = [];
   if (!analysisPath) return articles;
   try {
@@ -41,19 +30,17 @@ function loadArticles(analysisPath, articlesDir, acctCategory) {
     (ad.articles || []).forEach(meta => {
       if (!meta.link && !meta.url) return;
       const date = meta.update_time ? fmtDate(meta.update_time) : "";
-      const fname = meta.file_name || meta.file_path;
-      const file = fname && fs.existsSync(path.join(articlesDir, fname)) ? path.join(articlesDir, fname) : null;
       const tags = meta.tags || [];
       articles.push({
         aid: meta.aid || "",
-        file: file ? path.relative(articlesDir, file).replace(/\\/g, "/") : null,
+        file: meta.file_full_path ? path.basename(meta.file_full_path) : null,
         title: (meta.title || "").replace(/\|/g, "丨").trim(),
         url: meta.link || meta.url || "",
         account: meta.account || meta.account_name || "",
         date,
         digest: meta.digest || "",
         score: meta.score != null ? (String(meta.score).includes("/") ? String(meta.score) : String(meta.score) + "/5") : "-",
-        category: acctCategory[meta.account || meta.account_name] || meta.category || meta.account_category || "未分类",
+        category: meta.category || meta.account_category || "未分类",
         tags,
       });
     });
@@ -147,9 +134,8 @@ function renderReport(data, outDir, dateTag) {
 function main() {
   // 步骤 1: 解析命令行参数与配置文件
   const { config, dateTag } = parseArgs();
-  const acctCategory = buildCategoryLookup(config);
   // 步骤 2: 加载并排序文章数据
-  const articles = loadArticles(analysisPath, articlesDir, acctCategory);
+  const articles = loadArticles(analysisPath);
   sortArticles(articles);
   // 步骤 3: 分组统计
   const byAccount = groupByAccount(articles);
