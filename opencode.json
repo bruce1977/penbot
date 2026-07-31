@@ -4,9 +4,25 @@
     "@opencode-ai/plugin"
   ],
   "command": {
-    "cmd-wechat-mp-gather": {
-      "template": "根据$1抓取微信公众号文章",
-      "description": "根据配置文件抓取微信公众号文章并生成汇总报告"
+    "cmd-knowledge": {
+      "template": "根据$1执行MP知识库管线 (`workflows/workflow-knowledge.md`)",
+      "description": "MP知识库管线总索引：采集→分析→导入→归档四子流程，各子流程可独立运行"
+    },
+    "cmd-knowledge-collect": {
+      "template": "根据$1执行知识库子流程2.1 采集入库 (`workflows/workflow-knowledge-collect.md`)",
+      "description": "知识库采集入库：公众号文章拉取+下载到 inbox/（参数为 profile）"
+    },
+    "cmd-knowledge-analyze": {
+      "template": "根据$1执行知识库子流程2.2 文档分析 (`workflows/workflow-knowledge-analyze.md`)",
+      "description": "知识库文档分析：打标签+评分+合并元数据到 marked/（参数为 profile）"
+    },
+    "cmd-knowledge-import": {
+      "template": "根据$1执行知识库子流程2.3 导入知识库 (`workflows/workflow-knowledge-import.md`)",
+      "description": "知识库导入：marked/ 终稿导入 WeKnora（文章+标签）到 weknora/（参数为 profile）"
+    },
+    "cmd-knowledge-archive": {
+      "template": "根据$1执行知识库子流程2.4 归档 (`workflows/workflow-knowledge-archive.md`)",
+      "description": "知识库归档：weknora/ 旧文件移动到 archived/（参数为 profile）"
     },
     "cmd-mp-auto-pipeline": {
       "template": "根据$1执行MP自动化管线",
@@ -22,7 +38,12 @@
     }
   },
   "permission": {
-    "read": { ".env": "allow", "**/.env": "allow", ".env.*": "allow", "**/.env.*": "allow" }
+    "read": { "*": "allow", "*.env": "deny", "*.env.*": "deny", "*.env.example": "allow" },
+    "write": { "*": "allow", "*.env": "deny", "*.env.*": "deny" },
+    "external_directory": {
+      "{env:PB_KNOWLEDGE_BASE_PATH}/**": "allow",
+      "{env:PB_KNOWLEDGE_BASE_PATH}": "allow"
+    }
   },
   "skills": {
     "paths": ["skills"]
@@ -42,6 +63,11 @@
       "description": "按需从公众号/网页/文章采集原始信息，输出结构化素材",
       "mode": "all",
       "prompt": "{file:agents/gatherer.md}"
+    },
+    "tagger": {
+      "description": "对文章进行 AI 打标签：提取标签/摘要/关键词/分类，输出 .meta.json",
+      "mode": "subagent",
+      "prompt": "{file:agents/tagger.md}"
     },
     "illustrator": {
       "description": "根据公众号文章主题绘制配图",

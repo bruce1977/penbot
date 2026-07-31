@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "registry": "https://clawhub.ai",
+  "slug": "weknora",
+  "ownerHandle": "lyingbug",
+  "installedVersion": "1.0.1",
+  "installedAt": 1785310149423,
+  "artifact": {
+    "kind": "archive",
+    "sha256": "b9253d348955329cba26f40ee0806a405c431e71b7a513f4d934878968ff0b32",
+    "integrity": "sha256-uSU9NIlVMpy6JvQO4IBqQFxDHnG3pRP02TSHiWj/CzI="
+  },
+  "skillFile": {
+    "path": "SKILL.md",
+    "sha256": "a41fa279b09e4fde83365e002cebd75a8560dc29b91b5f1db787e42bc70d7203"
+  }
+}

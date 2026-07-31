@@ -21,10 +21,19 @@ mode: all
 
 | Agent | 职责 |
 |-------|------|
-| `gatherer` | 信息采集，运行 `wechat-mp-gather`（抓取）、`wechat-mp-analyze`（选题）或 `industry-news-digest` 等采集技能 |
-| `commentator-*` | 5 位独立评论员，对主题从商业/技术/公众/学术/伦理五个维度打分 |
+| `gatherer` | 信息采集，运行 `wechat-mp-gather`（抓取）、`wechat-mp-analyze`（选题报告）或 `industry-news-digest` 等采集技能 |
+| `tagger` | 知识库子流程 2.2 打标签：提取标签/摘要/关键词/分类 → `.meta.json` |
+| `commentator-*` | 5 位独立评论员，对文章/主题从商业/技术/公众/学术/伦理五个维度打分 |
 | `writer` | 根据主题与素材撰写文章，内部自行完成 proofreader 校对闭环 |
 | `illustrator` | 根据文章内容用 MCP `image-generation-*` 工具绘制配图 |
+
+## 可调用的技能
+
+| 技能 | 场景 |
+|------|------|
+| `wechat-mp-knowledge` | 知识库管线标准脚本（`check_exists_all.js` 去重、`analyze_to_marked.js` 合并+批量移动），文件操作必须经脚本执行 |
+| `wechat-mp-sync-weknora` | 将 `marked/` 终稿导入 WeKnora 并移动到 `weknora/` |
+| `weknora` | WeKnora API 交互（知识库查询、混合检索） |
 
 ## 上下文管理
 

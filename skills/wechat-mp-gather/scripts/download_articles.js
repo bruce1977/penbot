@@ -12,6 +12,7 @@ const MAX_RETRIES_INVALID = 2;
 const MAX_RETRIES_FALLBACK = 2;
 const IO_RETRY_DELAY_MS = 10000;
 const DOWNLOAD_TIMEOUT_MS = 30000;
+const DOWNLOAD_SCRIPT_TIMEOUT_MS = parseInt(process.env.DOWNLOAD_SCRIPT_TIMEOUT_MS || "300000", 10);
 
 const USER_AGENTS = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -48,34 +49,8 @@ function initDirectories(articlesDir, outDir) {
   if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
 }
 
-function initLists(outDir, articles) {
-  const pendingPath = path.join(outDir, "list_pending.txt");
-  const failedPath = path.join(outDir, "list_failed.txt");
-  const allAids = Object.keys(articles);
-  fs.writeFileSync(pendingPath, allAids.join("\n") + "\n", "utf-8");
-  fs.writeFileSync(failedPath, "", "utf-8");
-  console.log(`Initialized pending list: ${allAids.length} articles`);
-  return { pendingPath, failedPath };
-}
-
-function loadState(pendingPath, failedPath) {
-  const pendingAids = fs.readFileSync(pendingPath, "utf-8").trim().split("\n").filter(Boolean);
-  const failedLines = fs.readFileSync(failedPath, "utf-8").trim().split("\n").filter(Boolean);
-  const failedReasons = Object.fromEntries(failedLines.map(l => {
-    const [aid, ...rest] = l.split("|");
-    return [aid, rest.join("|") || "未知错误"];
-  }));
-  return { pendingAids, failedReasons };
-}
-
-function saveState(pendingPath, failedPath, pendingAids, failedReasons) {
-  fs.writeFileSync(pendingPath, pendingAids.join("\n") + "\n", "utf-8");
-  fs.writeFileSync(failedPath, Object.entries(failedReasons).map(([k, v]) => `${k}|${v}`).join("\n") + "\n", "utf-8");
-}
-
 async function downloadOne(apiBase, aid, link, fpath) {
   const url = `${apiBase}${API_PATH}/download?url=${encodeURIComponent(link)}&format=markdown`;
-  console.log(`  GET ${url}`);
   const resp = await axios.get(url, { responseType: "text", timeout: DOWNLOAD_TIMEOUT_MS });
   const text = resp.data;
   if (!text || typeof text !== "string") {
@@ -85,12 +60,10 @@ async function downloadOne(apiBase, aid, link, fpath) {
   const dir = path.dirname(fpath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(fpath, cleaned, "utf-8");
-  console.log(`  Written ${fpath} (${cleaned.length} bytes)`);
 }
 
 async function fallbackDownload(link, fpath) {
   const ua = USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-  console.log(`  FALLBACK GET ${link}`);
   const resp = await axios.get(link, {
     responseType: "text",
     timeout: DOWNLOAD_TIMEOUT_MS,
@@ -111,7 +84,6 @@ async function fallbackDownload(link, fpath) {
   const dir = path.dirname(fpath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(fpath, cleaned, "utf-8");
-  console.log(`  Written (fallback) ${fpath} (${cleaned.length} bytes)`);
 }
 
 function checkArticle(articles, articlesDir, aid) {
@@ -137,7 +109,6 @@ async function processOne(apiBase, articlesDir, articles, aid) {
 
   const existingCheck = checkArticle(articles, articlesDir, aid);
   if (existingCheck.code === 0) {
-    console.log(`  SKIP ${aid} (already exists and valid)`);
     return { ok: true, reason: null };
   }
 
@@ -151,7 +122,6 @@ async function processOne(apiBase, articlesDir, articles, aid) {
         const result = checkArticle(articles, articlesDir, aid);
         if (result.code === 0) return true;
         if (result.code === 2 && attempts < MAX_RETRIES_INVALID) {
-          console.log(`  INVALID_CONTENT, retry ${attempts}/${MAX_RETRIES_INVALID}...`);
           if (fs.existsSync(fpath)) fs.unlinkSync(fpath);
           return attemptApiDownload();
         }
@@ -164,12 +134,9 @@ async function processOne(apiBase, articlesDir, articles, aid) {
     return false;
   }
 
-  // Try 1: download via API
   const apiOk = await attemptApiDownload();
   if (apiOk) return { ok: true, reason: null };
 
-  // Try 2: fallback — fetch HTML directly and convert to Markdown
-  console.log(`  API failed for ${aid}, trying fallback HTML fetch...`);
   for (let retry = 1; retry <= MAX_RETRIES_FALLBACK; retry++) {
     try {
       if (fs.existsSync(fpath)) fs.unlinkSync(fpath);
@@ -177,7 +144,6 @@ async function processOne(apiBase, articlesDir, articles, aid) {
       const result = checkArticle(articles, articlesDir, aid);
       if (result.code === 0) return { ok: true, reason: null };
       if (fs.existsSync(fpath)) fs.unlinkSync(fpath);
-      console.log(`  FALLBACK_INVALID, retry ${retry}/${MAX_RETRIES_FALLBACK}...`);
     } catch (err) {
       console.error(`  FALLBACK_ERROR (attempt ${retry}/${MAX_RETRIES_FALLBACK}): ${err.message}`);
       if (retry < MAX_RETRIES_FALLBACK) await sleep(IO_RETRY_DELAY_MS);
@@ -187,9 +153,9 @@ async function processOne(apiBase, articlesDir, articles, aid) {
   return { ok: false, reason: "API+Fallback均失败" };
 }
 
-async function downloadAll(apiBase, articlesDir, articles, pendingPath, failedPath) {
-  const { pendingAids, failedReasons } = loadState(pendingPath, failedPath);
-  console.log(`Pending: ${pendingAids.length} articles, concurrency=${CONCURRENCY}`);
+async function downloadAll(apiBase, articlesDir, articles) {
+  const pendingAids = Object.keys(articles);
+  const failedReasons = {};
 
   let successCount = 0;
   let failCount = 0;
@@ -201,19 +167,13 @@ async function downloadAll(apiBase, articlesDir, articles, pendingPath, failedPa
     for (const { aid, ok, reason } of results) {
       if (ok) {
         successCount++;
-        delete failedReasons[aid];
       } else {
         failCount++;
         failedReasons[aid] = reason || "网络/IO错误";
       }
-      console.log(`  [${ok ? "OK" : "FAIL"}] ${aid}  (success=${successCount}, fail=${failCount})`);
     }
-
-    saveState(pendingPath, failedPath, pendingAids, failedReasons);
-    console.log(`Batch done, remaining=${pendingAids.length}`);
   }
 
-  console.log(`\nDone. success=${successCount}, fail=${failCount}`);
   return { successCount, failCount, failedReasons };
 }
 
@@ -239,26 +199,38 @@ function generateDownloadList(articles, articlesDir, outDir, failedReasons) {
   if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
   const listPath = path.join(outDir, "download_list.json");
   fs.writeFileSync(listPath, JSON.stringify(list, null, 2), "utf-8");
-  console.log(`Download list generated: ${listPath}`);
-  if (filesList.length < rawArticles.length) {
-    console.log(`Warning: ${rawArticles.length - filesList.length} articles failed to download`);
+  const failCount = Object.keys(failedReasons).length;
+  console.log(`Downloaded ${filesList.length}/${rawArticles.length} articles`);
+  if (failCount > 0) {
+    console.warn(`Failed: ${failCount} articles`);
   }
+  return failCount;
 }
 
 async function main() {
-  // 步骤 1: 解析命令行参数与配置文件
   const { apiBase, articles } = parseArgs();
-  // 步骤 2: 初始化目录和任务列表
+  const total = Object.keys(articles).length;
+  if (total === 0) {
+    console.warn("WARN: article list is empty — nothing to download");
+    const flagPath = path.join(outDir, ".NO_ARTICLES");
+    if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+    fs.writeFileSync(flagPath, JSON.stringify({ time: new Date().toISOString(), reason: "empty_article_list" }), "utf-8");
+    console.log("NO_ARTICLES: true");
+    process.exit(0);
+  }
   initDirectories(articlesDir, outDir);
-  const { pendingPath, failedPath } = initLists(outDir, articles);
-  // 步骤 3: 批量下载文章（含重试）
-  const { failCount, failedReasons } = await downloadAll(apiBase, articlesDir, articles, pendingPath, failedPath);
-  // 步骤 4: 生成下载清单
-  generateDownloadList(articles, articlesDir, outDir, failedReasons);
-  process.exit(failCount > 0 ? 1 : 0);
+  const { failCount, failedReasons } = await downloadAll(apiBase, articlesDir, articles);
+  const nFailed = generateDownloadList(articles, articlesDir, outDir, failedReasons);
+  process.exit(nFailed > 0 ? 1 : 0);
 }
 
-main().catch(err => {
+const dlTimeout = setTimeout(() => {
+  console.error(`FATAL: download script timed out after ${DOWNLOAD_SCRIPT_TIMEOUT_MS}ms`);
+  process.exit(1);
+}, DOWNLOAD_SCRIPT_TIMEOUT_MS);
+
+main().then(() => clearTimeout(dlTimeout)).catch(err => {
+  clearTimeout(dlTimeout);
   console.error("FATAL:", err.message);
   process.exit(1);
 });
