@@ -32,7 +32,7 @@ mode: all
 | 技能 | 场景 |
 |------|------|
 | `wechat-mp-knowledge` | 知识库管线标准脚本（`check_exists_all.js` 去重、`analyze_to_marked.js` 合并+批量移动），文件操作必须经脚本执行 |
-| `wechat-mp-sync-weknora` | 将 `marked/` 终稿导入 WeKnora 并移动到 `weknora/` |
+| `knowledge-sync-weknora` | 将 `marked/` 终稿导入 WeKnora 并移动到 `weknora/` |
 | `weknora` | WeKnora API 交互（知识库查询、混合检索） |
 
 ## 上下文管理

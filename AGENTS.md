@@ -29,7 +29,7 @@
 | `/cmd-knowledge` | 根据$1执行MP知识库管线（四子流程总索引） | [workflows/workflow-knowledge.md](workflows/workflow-knowledge.md) |
 | `/cmd-knowledge-collect` | 根据$1执行知识库子流程2.1 采集入库 | [workflows/workflow-knowledge-collect.md](workflows/workflow-knowledge-collect.md) |
 | `/cmd-knowledge-analyze` | 根据$1执行知识库子流程2.2 文档分析 | [workflows/workflow-knowledge-analyze.md](workflows/workflow-knowledge-analyze.md) |
-| `/cmd-knowledge-import` | 根据$1执行知识库子流程2.3 导入知识库 | [workflows/workflow-knowledge-import.md](workflows/workflow-knowledge-import.md) |
+| `/cmd-knowledge-sync-to-weknora` | 根据$1执行知识库子流程2.3 同步导入知识库 | [workflows/workflow-knowledge-sync-to-weknora.md](workflows/workflow-knowledge-sync-to-weknora.md) |
 | `/cmd-knowledge-archive` | 根据$1执行知识库子流程2.4 归档 | [workflows/workflow-knowledge-archive.md](workflows/workflow-knowledge-archive.md) |
 
 > 示例：`/cmd-mp-digest configs/ai-config.json` 触发采集简报管线，发送汇总报告邮件后结束。

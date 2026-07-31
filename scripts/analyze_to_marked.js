@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { contentHash } = require("../skills/knowledge-analyze/scripts/lib/content_hash");
 
 const [,, inboxDir, markedDir] = process.argv;
 
@@ -28,7 +29,7 @@ function yamlArr(arr) {
   return "[" + arr.map(x => JSON.stringify(String(x))).join(", ") + "]";
 }
 
-function buildFrontmatter(meta, rate, body) {
+function buildFrontmatter(meta, rate, body, hash) {
   const title = (meta && meta.title) || "";
   const raw = (rate && rate.ratings) || {};
   const ratings = {};
@@ -37,6 +38,7 @@ function buildFrontmatter(meta, rate, body) {
   }
   const lines = [
     "---",
+    `hash: ${yamlStr(hash)}`,
     `title: ${yamlStr(title)}`,
     `auther: ${yamlStr(meta ? meta.auther : "")}`,
     `date: ${yamlStr(meta ? meta.date : "")}`,
@@ -71,12 +73,7 @@ function main() {
     const base = f.endsWith(".md") ? f.slice(0, -3) : f;
     const metaPath = path.join(inboxDir, `${base}.meta.json`);
     const ratePath = path.join(inboxDir, `${base}.rate.json`);
-    const dstPath = path.join(markedDir, f);
 
-    if (fs.existsSync(dstPath)) {
-      console.log(`  SKIP ${f} (already in marked)`);
-      continue;
-    }
     if (!fs.existsSync(metaPath)) {
       console.log(`  WAIT ${f} (no .meta.json)`);
       wait++;
@@ -88,15 +85,23 @@ function main() {
       if (!meta) throw new Error("invalid .meta.json");
       const rate = loadJSON(ratePath);
       const content = fs.readFileSync(srcPath, "utf-8");
-      const merged = buildFrontmatter(meta, rate, content);
+      const hash = (meta && meta.hash) || contentHash(content);
+      const dstName = `${hash}_${f}`;
+      const dstPath = path.join(markedDir, dstName);
+
+      if (fs.existsSync(dstPath)) {
+        console.log(`  SKIP ${f} (already in marked as ${dstName})`);
+        continue;
+      }
+
+      const merged = buildFrontmatter(meta, rate, content, hash);
       fs.writeFileSync(dstPath, merged, "utf-8");
       fs.unlinkSync(srcPath);
       fs.unlinkSync(metaPath);
       if (fs.existsSync(ratePath)) fs.unlinkSync(ratePath);
-      console.log(`  MERGE ${f}`);
+      console.log(`  MERGE ${f} -> ${dstName}`);
       moved++;
     } catch (err) {
-      if (fs.existsSync(dstPath)) fs.unlinkSync(dstPath);
       console.error(`  FAIL ${f}: ${err.message}`);
       failed++;
     }

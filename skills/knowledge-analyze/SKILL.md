@@ -14,10 +14,25 @@ description: "知识库子流程 2.2 元数据提取标准：对 inbox/ 文章�
 `tagger` 扫描 `{inbox}` 目录（`{KB}/articles/{profile}/inbox/`），对每个无 `.meta.json` 的 `.md` 文件：
 
 1. 读取 `.md` 原文
-2. 调用 LLM 提取元数据
-3. 写入 `{file}.meta.json`（与 `.md` 同目录并列存放）
+2. 计算内容 hash（见下方「hash 提取」）
+3. 调用 LLM 提取元数据
+4. 写入 `{file}.meta.json`（与 `.md` 同目录并列存放）
 
 已有 `.meta.json` 的文件跳过（缓存策略，幂等）。
+
+## hash 提取
+
+每篇文章需计算**内容 hash**（12 位十六进制），用于导入知识库时精确去重。hash 由脚本计算，**不依赖 LLM**：
+
+```
+node skills/knowledge-analyze/scripts/hash_content.js {file}.md
+```
+
+- 对文件内容进行 **3 轮 sha256 迭代**，取前 12 位十六进制作为 hash
+- 同一文章内容恒定、hash 恒定；内容不同则 hash 不同
+- 将结果写入 `.meta.json` 的 `hash` 字段
+
+> hash 计算必须使用脚本，不得由 LLM 自行"生成"（LLM 无法精确计算）。若脚本输出异常，该篇标记失败跳过。
 
 ## 元数据标准
 
@@ -25,6 +40,7 @@ description: "知识库子流程 2.2 元数据提取标准：对 inbox/ 文章�
 
 ```json
 {
+  "hash": "c1b3a308d5b8",
   "title": "MoE架构：稀疏激活与大模型容量",
   "date": "2026-07-31T10:30:00+08:00",
   "auther": "科技兽",
@@ -37,6 +53,7 @@ description: "知识库子流程 2.2 元数据提取标准：对 inbox/ 文章�
 
 | 字段 | 类型 | 必填 | 提取规则 |
 |------|------|------|---------|
+| `hash` | string | 是 | **内容 hash**（12 位十六进制），用 `node skills/knowledge-analyze/scripts/hash_content.js {file}.md` 计算，不得手写 |
 | `title` | string | 是 | 文章标题。**优先从文件名提取**：采集文件名格式 `{fakeid}_{index}_{date}_{account}_{title}.md`，去掉前四段（fakeid、序号、日期、公众号名）后剩余部分即标题（可含下划线/逗号等）；文件名无法解析出标题时，回退到正文首部标题（setext 标题或 `#` 标题），不含 markdown 标记 |
 | `date` | string | 是 | **打标时刻**，ISO 8601 含时区（如 `2026-07-31T10:30:00+08:00`），非文章发布时间 |
 | `auther` | string | 否 | 从文章**正文内检索**作者/公众号名（如"原创 xx"、"作者：xx"）；正文确实无作者信息时输出空字符串 `""` |
@@ -62,6 +79,6 @@ description: "知识库子流程 2.2 元数据提取标准：对 inbox/ 文章�
 
 | 文件 | 说明 |
 |------|------|
-| `{inbox}/{file}.meta.json` | 每篇的元数据缓存，供 `analyze_to_marked.js` 合并为 frontmatter |
+| `{inbox}/{file}.meta.json` | 每篇的元数据缓存（含 `hash`），供 `analyze_to_marked.js` 合并为 frontmatter |
 
 Base directory for this skill: skills/knowledge-analyze

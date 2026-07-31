@@ -44,10 +44,11 @@ description: "知识库子流程 2.2：文档分析（打标签+评分+合并元
 
 ### 1. 打标签（tagger 批量）
 
-`tagger` 扫描 `{inbox}` 中所有 `.md` 文件，跳过已有 `.meta.json` 的，对剩余文章批量提取元数据并写入 `{file}.meta.json`：
+`tagger` 扫描 `{inbox}` 中所有 `.md` 文件，跳过已有 `.meta.json` 的，对剩余文章**先计算内容 hash**（`node skills/knowledge-analyze/scripts/hash_content.js {file}.md`，3 轮 sha256 取 12 位十六进制），再批量提取元数据并写入 `{file}.meta.json`：
 
 ```json
 {
+  "hash": "c1b3a308d5b8",
   "title": "iPhone 20 多方爆料汇总",
   "date": "2026-07-31T10:30:00+08:00",
   "auther": "科技兽",
@@ -60,6 +61,7 @@ description: "知识库子流程 2.2：文档分析（打标签+评分+合并元
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
+| `hash` | string | 是 | **内容 hash**（12 位十六进制），用脚本 `node skills/knowledge-analyze/scripts/hash_content.js {file}.md` 计算，不得手写 |
 | `title` | string | 是 | 文章标题。**优先从文件名提取**（采集文件名 `{fakeid}_{index}_{date}_{account}_{title}.md` 去掉前四段）；无法解析时回退正文首部标题（setext/`#` 标题），不含 markdown 标记 |
 | `date` | string | 是 | **打标签的时刻**（ISO 8601 含时区），非文章发布时间 |
 | `auther` | string | 是 | 从文章正文内检索作者/公众号名，**找不到时填空字符串 `""`** |
@@ -88,7 +90,9 @@ description: "知识库子流程 2.2：文档分析（打标签+评分+合并元
 node {scripts}/analyze_to_marked.js {inbox} {marked}
 ```
 
-`analyze_to_marked.js` 将 `.meta.json` / `.rate.json` 合并为 frontmatter 嵌入 `.md`，批量移动到 `{marked}/` 并清理侧车文件。无 `.meta.json` 的文件标记 `WAIT`，留在 `{inbox}` 待打标。脚本幂等：已出现在 `{marked}/` 的文件不再重复处理。
+`analyze_to_marked.js` 将 `.meta.json` / `.rate.json` 合并为 frontmatter 嵌入 `.md`，**以 `${hash}_` 前缀重命名**后批量移动到 `{marked}/` 并清理侧车文件。无 `.meta.json` 的文件标记 `WAIT`，留在 `{inbox}` 待打标。脚本幂等：已出现在 `{marked}/` 的文件（`${hash}_` 前缀命中）不再重复处理。
+
+> 文件名格式：`{marked}/{hash}_{原文件名}.md`。hash 来自 `.meta.json`，缺失时脚本按内容重新计算（`skills/knowledge-analyze/scripts/lib/content_hash.js`，与 `hash_content.js` 同源）。
 
 ### 4. 汇总结果
 
@@ -105,7 +109,7 @@ node {scripts}/analyze_to_marked.js {inbox} {marked}
 
 | 文件 | 说明 |
 |------|------|
-| `{marked}/*.md` | 带 frontmatter 的已分析终稿 |
+| `{marked}/{hash}_*.md` | 带 frontmatter（含 `hash`）的已分析终稿，文件名带 hash 前缀 |
 
 ## 错误处理
 

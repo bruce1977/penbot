@@ -16,9 +16,9 @@
       "template": "根据$1执行知识库子流程2.2 文档分析 (`workflows/workflow-knowledge-analyze.md`)",
       "description": "知识库文档分析：打标签+评分+合并元数据到 marked/（参数为 profile）"
     },
-    "cmd-knowledge-import": {
-      "template": "根据$1执行知识库子流程2.3 导入知识库 (`workflows/workflow-knowledge-import.md`)",
-      "description": "知识库导入：marked/ 终稿导入 WeKnora（文章+标签）到 weknora/（参数为 profile）"
+    "cmd-knowledge-sync-to-weknora": {
+      "template": "根据$1执行知识库子流程2.3 同步导入知识库 (`workflows/workflow-knowledge-sync-to-weknora.md`)",
+      "description": "知识库同步导入：marked/ 终稿导入 WeKnora（文章+标签）到 weknora/（参数为 profile）"
     },
     "cmd-knowledge-archive": {
       "template": "根据$1执行知识库子流程2.4 归档 (`workflows/workflow-knowledge-archive.md`)",
