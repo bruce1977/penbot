@@ -3,6 +3,18 @@
   "plugin": [
     "@opencode-ai/plugin"
   ],
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama (本地)",
+      "options": {
+        "baseURL": "http://localhost:11434/v1"
+      },
+      "models": {
+        "qwen2.5:1.5b": { "name": "Qwen2.5 1.5B (本地)" }
+      }
+    }
+  },
   "command": {
     "cmd-knowledge": {
       "template": "根据$1执行MP知识库管线 (`workflows/workflow-knowledge.md`)",
@@ -67,6 +79,7 @@
     "tagger": {
       "description": "对文章进行 AI 打标签：提取标签/摘要/关键词/分类，输出 .meta.json",
       "mode": "subagent",
+      "model": "opencode/mimo-v2.5-free",
       "prompt": "{file:agents/tagger.md}"
     },
     "illustrator": {

@@ -16,7 +16,7 @@ description: "知识库子流程 2.2 元数据提取标准：对 inbox/ 文章�
 1. 读取 `.md` 原文
 2. 计算内容 hash（见下方「hash 提取」）
 3. 调用 LLM 提取元数据
-4. 写入 `{file}.meta.json`（与 `.md` 同目录并列存放）
+4. 写入 `{file}.meta.json`（`{file}` = 文章文件名去 `.md` 扩展的基础名，即 `{file}.md` → `{file}.meta.json`，**不含 `.md`**，与 `.md` 同目录并列存放）
 
 已有 `.meta.json` 的文件跳过（缓存策略，幂等）。
 
@@ -47,7 +47,8 @@ node skills/knowledge-analyze/scripts/hash_content.js {file}.md
   "source": "https://mp.weixin.qq.com/s/...",
   "tags": ["大模型", "开源", "MoE"],
   "summary": "MoE架构通过稀疏激活在同等算力下实现更大模型容量。",
-  "keywords": ["MoE", "稀疏激活"]
+  "keywords": ["MoE", "稀疏激活"],
+  "model": "opencode/mimo-v2.5-free"
 }
 ```
 
@@ -61,6 +62,7 @@ node skills/knowledge-analyze/scripts/hash_content.js {file}.md
 | `tags` | string[] | 是 | 2-5 个标签，精准概括文章主题，避免泛词（如"AI"）单独成标签 |
 | `summary` | string | 是 | 1-2 句核心摘要，覆盖关键观点与结论 |
 | `keywords` | string[] | 是 | 3-5 个关键词/短语，辅助检索 |
+| `model` | string | 是 | **打标所用模型名称**，由模型**自动输出自身正在运行的模型 ID/名称**（如 `opencode/mimo-v2.5-free`），不读取任何配置、不手写虚构值；用于追溯元数据来源 |
 
 > **无 `category` 字段**：无固定枚举时归类值不稳定，统一以 `tags` 承载主题信息。
 

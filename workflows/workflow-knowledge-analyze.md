@@ -16,7 +16,8 @@ description: "知识库子流程 2.2：文档分析（打标签+评分+合并元
 | `{base}` | `{KB}/articles/{profile}` | profile 知识库根目录 |
 | `{inbox}` | `{base}/inbox` | 原始文章目录 |
 | `{marked}` | `{base}/marked` | 已分析终稿目录 |
-| `{scripts}` | `skills/wechat-mp-knowledge/scripts` | 预置脚本目录 |
+| `{scripts}` | `scripts`（项目根目录） | 预置脚本目录（`analyze_to_marked.js`、`archive_old_files.js` 等） |
+| `{file}` | 文章文件名，**不含 `.md` 扩展**（如 `xxx`） | 文章文件为 `{file}.md`；侧车文件为 `{file}.meta.json` / `{file}.rate.json`（**不含 `.md`**） |
 
 > 调用方式：`coordinator` 仅需告知 `{profile}`（如 `ai`），即处理 `D:/knowledge/articles/ai/` 下 `inbox/ → marked/`。
 
@@ -44,7 +45,7 @@ description: "知识库子流程 2.2：文档分析（打标签+评分+合并元
 
 ### 1. 打标签（tagger 批量）
 
-`tagger` 扫描 `{inbox}` 中所有 `.md` 文件，跳过已有 `.meta.json` 的，对剩余文章**先计算内容 hash**（`node skills/knowledge-analyze/scripts/hash_content.js {file}.md`，3 轮 sha256 取 12 位十六进制），再批量提取元数据并写入 `{file}.meta.json`：
+`tagger` 扫描 `{inbox}` 中所有 `.md` 文件，跳过已有 `.meta.json` 的，对剩余文章**先计算内容 hash**（`node skills/knowledge-analyze/scripts/hash_content.js {file}.md`，3 轮 sha256 取 12 位十六进制），再批量提取元数据并写入 `{file}.meta.json`（`{file}` = 文章文件名去 `.md` 扩展的基础名，即 `{file}.md` → `{file}.meta.json`，**不含 `.md`**）：
 
 ```json
 {
@@ -55,7 +56,8 @@ description: "知识库子流程 2.2：文档分析（打标签+评分+合并元
   "source": "https://mp.weixin.qq.com/s/...",
   "tags": ["iPhone 20", "苹果", "产品爆料"],
   "summary": "汇总iPhone 20多方爆料，涵盖玻璃机身、固态按键、屏下Face ID等设计。",
-  "keywords": ["iPhone 20", "固态按键", "屏下Face ID"]
+  "keywords": ["iPhone 20", "固态按键", "屏下Face ID"],
+  "model": "opencode/mimo-v2.5-free"
 }
 ```
 
@@ -69,12 +71,13 @@ description: "知识库子流程 2.2：文档分析（打标签+评分+合并元
 | `tags` | string[] | 是 | 2-5 个标签，精准概括主题 |
 | `summary` | string | 是 | 1-2 句核心摘要 |
 | `keywords` | string[] | 否 | 3-5 个关键词/短语，辅助检索 |
+| `model` | string | 是 | **打标所用模型名称**，由模型**自动输出自身正在运行的模型 ID/名称**，不读取任何配置、不手写虚构值 |
 
 > **说明**：`auther` 需从文章正文内检索（如"原创 xx"、"作者：xx"），不可只依赖文件名；正文确实无作者信息时输出 `""`。不设 `category` 字段——无固定枚举时归类值不稳定，统一以 `tags` 承载主题信息。
 
 ### 2. 评分（coordinator 批量）
 
-对 `{inbox}` 中**已有 `.meta.json` 但无 `.rate.json`** 的文章，`coordinator` 并行触发 5 位 `commentator-*`（商业/技术/公众/学术/伦理）打分（1-5），汇总写入 `{file}.rate.json`：
+对 `{inbox}` 中**已有 `.meta.json` 但无 `.rate.json`** 的文章，`coordinator` 并行触发 5 位 `commentator-*`（商业/技术/公众/学术/伦理）打分（1-5），汇总写入 `{file}.rate.json`（`{file}` 命名规则同 `.meta.json`，不含 `.md`）：
 
 ```json
 { "ratings": { "value": 4, "tech": 5, "public": 3, "academic": null, "ethics": 5 } }

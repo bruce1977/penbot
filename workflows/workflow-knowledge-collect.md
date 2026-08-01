@@ -17,7 +17,7 @@ description: "知识库子流程 2.1：微信公众号采集入库（拉取+下�
 | `{base}` | `{KB}/articles/{profile}` | profile 知识库根目录 |
 | `{inbox}` | `{base}/inbox` | 文章存放目录 |
 | `{temp}` | `.temp/{profile}` | 运行时临时目录 |
-| `{scripts}` | `skills/wechat-mp-knowledge/scripts` | 预置脚本目录 |
+| `{scripts}` | `scripts`（项目根目录） | 预置脚本目录（`analyze_to_marked.js`、`archive_old_files.js` 等） |
 
 > 调用方式：`coordinator` 仅需告知 `{profile}`（如 `ai`），即读取 `configs/ai-config.json` 并下载到 `D:/knowledge/articles/ai/inbox/`。
 

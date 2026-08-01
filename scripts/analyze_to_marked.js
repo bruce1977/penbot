@@ -46,6 +46,7 @@ function buildFrontmatter(meta, rate, body, hash) {
     `tags: ${yamlArr(meta ? meta.tags : [])}`,
     `keywords: ${yamlArr(meta ? meta.keywords : [])}`,
     `summary: ${yamlStr(meta ? meta.summary : "")}`,
+    `model: ${yamlStr(meta ? meta.model : "")}`,
     "rating:",
     `  business: ${ratings.business}`,
     `  technical: ${ratings.technical}`,

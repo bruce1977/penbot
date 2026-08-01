@@ -30,6 +30,7 @@ skills:
 | `tags` | 2-5 个标签，具体到主题/技术点 |
 | `summary` | 1-2 句核心摘要 |
 | `keywords` | 检索关键词列表 |
+| `model` | **打标所用模型名称**，由模型**自动输出自身正在运行的模型 ID/名称**（如 `opencode/mimo-v2.5-free`），不读取任何配置、不手写虚构值 |
 
 不输出 `category` 字段——无固定枚举时归类值不稳定，统一以 `tags` 承载主题信息。
 
@@ -62,7 +63,7 @@ flowchart LR
 
 ## 输出格式
 
-对每篇文章产出 `{file}.meta.json`：
+对每篇文章产出 `{file}.meta.json`（`{file}` = 文章文件名去 `.md` 扩展的基础名，即 `{file}.md` → `{file}.meta.json`，**不含 `.md`**）：
 
 ```json
 {
@@ -71,7 +72,8 @@ flowchart LR
   "source": "https://mp.weixin.qq.com/s/...",
   "tags": ["大模型", "开源", "MoE"],
   "summary": "MoE架构通过稀疏激活在同等算力下实现更大模型容量。",
-  "keywords": ["MoE", "稀疏激活"]
+  "keywords": ["MoE", "稀疏激活"],
+  "model": "opencode/mimo-v2.5-free"
 }
 ```
 

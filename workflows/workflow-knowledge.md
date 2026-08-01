@@ -45,7 +45,7 @@ description: "MP 知识库管线（总索引）：4 个独立子流程，每个�
 | `{weknora}` | `{base}/weknora` | 已导入 WeKnora 目录 |
 | `{archived}` | `{base}/archived` | 归档目录 |
 | `{temp}` | `.temp/{profile}` | 运行时临时目录 |
-| `{scripts}` | `skills/wechat-mp-knowledge/scripts` | 预置脚本目录 |
+| `{scripts}` | `scripts`（项目根目录） | 预置脚本目录（`analyze_to_marked.js`、`archive_old_files.js` 等） |
 
 > 所有子流程均以 `{profile}` 为唯一入口：`/cmd-knowledge-collect ai`、`/cmd-knowledge-analyze ai`、`/cmd-knowledge-sync-to-weknora ai`、`/cmd-knowledge-archive ai`。
 
@@ -79,6 +79,7 @@ source: "https://mp.weixin.qq.com/s/r7rCQB5xqalabqpAouXGlw"
 tags: ["人生感悟", "金句摘录", "LLM思考"]
 keywords: ["周报", "人生感悟"]
 summary: "李继刚周报，摘录本周金句..."
+model: "opencode/mimo-v2.5-free"
 rating:
   business: 4
   technical: 5
@@ -98,6 +99,7 @@ rating:
 | `tags` | `.meta.json` | AI 提取的标签列表 |
 | `keywords` | `.meta.json` | 关键词列表（可选） |
 | `summary` | `.meta.json` | AI 生成的核心摘要 |
+| `model` | `.meta.json` | **打标所用模型名称**（模型自动输出自身运行的模型 ID），追溯元数据来源 |
 | `rating` | `.rate.json` | 评论员五维评分，null 表示未评分 |
 
 > 不设 `category` 字段——无固定枚举时归类值不稳定，统一以 `tags` 承载主题信息。
