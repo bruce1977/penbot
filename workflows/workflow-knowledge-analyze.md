@@ -1,11 +1,13 @@
 ---
 name: mp-knowledge-analyze
-description: "知识库子流程 2.2：文档分析（打标签+评分+合并元数据 → marked），输入 profile 即可"
+description: "知识库子流程 2.2：文档分析（元数据提取+评分+合并 → marked），指定目录 + batch size + 提示词样例"
 ---
 
 # 子流程 2.2：文档分析
 
-知识库管线四子流程之一。对 `{inbox}` 中的文章批量完成 **打标签 → 评分 → 合并元数据**，终稿移动到 `{marked}/`。本流程**只接受 `{profile}`**，所有处理均在其知识库目录下，不读取任何配置文件。
+知识库管线四子流程之一。对指定目录中的 `.md` 文章批量完成 **元数据提取 + 评分 + 合并 frontmatter**，终稿移动到目标目录。
+
+> 本流程为**纯脚本驱动**，不依赖 LLM Agent。`coordinator` 加载 `knowledge-analyze` 技能后执行脚本即可。
 
 ## 变量定义
 
@@ -14,111 +16,117 @@ description: "知识库子流程 2.2：文档分析（打标签+评分+合并元
 | `{profile}` | 输入参数 | 知识库 profile 名称 |
 | `{KB}` | 环境变量 `PB_KNOWLEDGE_BASE_PATH` | 知识库根目录 |
 | `{base}` | `{KB}/articles/{profile}` | profile 知识库根目录 |
-| `{inbox}` | `{base}/inbox` | 原始文章目录 |
-| `{marked}` | `{base}/marked` | 已分析终稿目录 |
-| `{scripts}` | `scripts`（项目根目录） | 预置脚本目录（`analyze_to_marked.js`、`archive_old_files.js` 等） |
-| `{file}` | 文章文件名，**不含 `.md` 扩展**（如 `xxx`） | 文章文件为 `{file}.md`；侧车文件为 `{file}.meta.json` / `{file}.rate.json`（**不含 `.md`**） |
+| `{inbox}` | `{base}/inbox` | 源文章目录 |
+| `{marked}` | `{base}/marked` | 终稿输出目录 |
 
-> 调用方式：`coordinator` 仅需告知 `{profile}`（如 `ai`），即处理 `D:/knowledge/articles/ai/` 下 `inbox/ → marked/`。
+## 调用方式
 
-## 执行者
-
-| 执行者 | 动作 | 产出 |
-|--------|------|------|
-| `tagger` | 批量对 `{inbox}` 中无 `.meta.json` 的文章打标签（标签/摘要/关键词/作者/日期） | `{file}.meta.json` |
-| `coordinator` | 并行触发 5 位 `commentator-*` 对每篇已打标文章评分 | `{file}.rate.json` |
-| `coordinator` | 运行标准脚本 `analyze_to_marked.js`，合并元数据为 frontmatter 并批量移动 | `{marked}/*.md` |
-
-## 处理方式：批量两阶段（可恢复）
-
-**先全部打标，再全部评分，最后一次性合并移动**，而非逐篇处理。每篇的状态由 `.meta.json` / `.rate.json` 是否存在独立记录，中途中断后重跑本流程会**自动跳过已完成步骤**：
-
-| 中断点 | 已有产物 | 重跑时 |
-|--------|---------|--------|
-| 打标中 | 部分 `.meta.json` | 已打标的跳过，只处理剩余篇 |
-| 评分中 | `.meta.json` 齐、部分 `.rate.json` | 已评分的跳过，只评剩余篇 |
-| 合并中 | 部分文件已移动 | 已移动的（`{marked}` 内）不再重复处理 |
-
-> 原则：`inbox/` 内已生成 `.meta.json` 的文件即为"已打标"，已出现在 `{marked}/` 的文件即为"已完成"。脚本幂等，可安全重复运行。
-
-## 步骤
-
-### 1. 打标签（tagger 批量）
-
-`tagger` 扫描 `{inbox}` 中所有 `.md` 文件，跳过已有 `.meta.json` 的，对剩余文章**先计算内容 hash**（`node skills/knowledge-analyze/scripts/hash_content.js {file}.md`，3 轮 sha256 取 12 位十六进制），再批量提取元数据并写入 `{file}.meta.json`（`{file}` = 文章文件名去 `.md` 扩展的基础名，即 `{file}.md` → `{file}.meta.json`，**不含 `.md`**）：
-
-```json
-{
-  "hash": "c1b3a308d5b8",
-  "title": "iPhone 20 多方爆料汇总",
-  "date": "2026-07-31T10:30:00+08:00",
-  "auther": "科技兽",
-  "source": "https://mp.weixin.qq.com/s/...",
-  "tags": ["iPhone 20", "苹果", "产品爆料"],
-  "summary": "汇总iPhone 20多方爆料，涵盖玻璃机身、固态按键、屏下Face ID等设计。",
-  "keywords": ["iPhone 20", "固态按键", "屏下Face ID"],
-  "model": "opencode/mimo-v2.5-free"
-}
+```bash
+node skills/knowledge-analyze/scripts/analyze_batch.js <source_dir> <target_dir> [batch_size]
 ```
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `hash` | string | 是 | **内容 hash**（12 位十六进制），用脚本 `node skills/knowledge-analyze/scripts/hash_content.js {file}.md` 计算，不得手写 |
-| `title` | string | 是 | 文章标题。**优先从文件名提取**（采集文件名 `{fakeid}_{index}_{date}_{account}_{title}.md` 去掉前四段）；无法解析时回退正文首部标题（setext/`#` 标题），不含 markdown 标记 |
-| `date` | string | 是 | **打标签的时刻**（ISO 8601 含时区），非文章发布时间 |
-| `auther` | string | 是 | 从文章正文内检索作者/公众号名，**找不到时填空字符串 `""`** |
-| `source` | string | 是 | 原文链接（正文或上下文可得） |
-| `tags` | string[] | 是 | 2-5 个标签，精准概括主题 |
-| `summary` | string | 是 | 1-2 句核心摘要 |
-| `keywords` | string[] | 否 | 3-5 个关键词/短语，辅助检索 |
-| `model` | string | 是 | **打标所用模型名称**，由模型**自动输出自身正在运行的模型 ID/名称**，不读取任何配置、不手写虚构值 |
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<source_dir>` | 是 | 源文章目录 |
+| `<target_dir>` | 是 | 终稿输出目录 |
+| `[batch_size]` | 否 | 批处理文件数上限，默认 30 |
 
-> **说明**：`auther` 需从文章正文内检索（如"原创 xx"、"作者：xx"），不可只依赖文件名；正文确实无作者信息时输出 `""`。不设 `category` 字段——无固定枚举时归类值不稳定，统一以 `tags` 承载主题信息。
+## 示例
 
-### 2. 评分（coordinator 批量）
+### 基础用法
 
-对 `{inbox}` 中**已有 `.meta.json` 但无 `.rate.json`** 的文章，`coordinator` 并行触发 5 位 `commentator-*`（商业/技术/公众/学术/伦理）打分（1-5），汇总写入 `{file}.rate.json`（`{file}` 命名规则同 `.meta.json`，不含 `.md`）：
+处理默认知识库，逐篇处理：
 
-```json
-{ "ratings": { "value": 4, "tech": 5, "public": 3, "academic": null, "ethics": 5 } }
+```bash
+node skills/knowledge-analyze/scripts/analyze_batch.js \
+  D:/knowledge/articles/ai/inbox \
+  D:/knowledge/articles/ai/marked \
+  1
 ```
 
-某维评分失败则该维为 `null`，不影响其他维度与其他文章。
+### 批量处理
 
-### 3. 合并元数据 + 批量移动
+处理指定知识库，每批 50 篇：
 
-**本步骤必须完全由标准脚本 `analyze_to_marked.js` 执行**，禁止手工编辑 frontmatter 或手工移动文件：
+```bash
+node skills/knowledge-analyze/scripts/analyze_batch.js \
+  D:/knowledge/articles/dev/inbox \
+  D:/knowledge/articles/dev/marked \
+  50
+```
+
+### 全量处理
+
+不限 batch size，处理全部待分析文件：
+
+```bash
+node skills/knowledge-analyze/scripts/analyze_batch.js \
+  D:/knowledge/articles/ai/inbox \
+  D:/knowledge/articles/ai/marked
+```
+
+## 提示词样例
+
+脚本内置两套提示词，定义了提取行为：
+
+### 元数据提取（meta_prompt.txt）
 
 ```
-node {scripts}/analyze_to_marked.js {inbox} {marked}
+你是资深内容编辑。为下面这篇文章提取元数据，只输出一个 JSON 对象。
+
+字段要求：
+- "title": 文章标题。参考标题 "{{title}}"，若与正文不符则以正文首部标题为准。
+- "auther": 从正文检索作者/公众号名，找不到输出 ""。
+- "source": 原文链接，无则 ""。
+- "tags": 2-4 个主题分类标签，用于文章归类。禁止出现具体产品名、术语、人名。
+- "summary": 一句话核心摘要（80-150 字）。禁止用"本文""文章""该文"开头。
+- "keywords": 3-5 个从原文提取的单个词，用于搜索匹配。
+
+只输出：{"title":"...","auther":"...","source":"...","tags":[...],"summary":"...","keywords":[...]}
+
+文章内容：
+{{content}}
 ```
 
-`analyze_to_marked.js` 将 `.meta.json` / `.rate.json` 合并为 frontmatter 嵌入 `.md`，**以 `${hash}_` 前缀重命名**后批量移动到 `{marked}/` 并清理侧车文件。无 `.meta.json` 的文件标记 `WAIT`，留在 `{inbox}` 待打标。脚本幂等：已出现在 `{marked}/` 的文件（`${hash}_` 前缀命中）不再重复处理。
+### 五维评分（rate_prompt.txt）
 
-> 文件名格式：`{marked}/{hash}_{原文件名}.md`。hash 来自 `.meta.json`，缺失时脚本按内容重新计算（`skills/knowledge-analyze/scripts/lib/content_hash.js`，与 `hash_content.js` 同源）。
+```
+你是内容评审员。根据文章内容，从5个维度各打1-5分（支持0.5），输出纯JSON。
 
-### 4. 汇总结果
+评分标准：
+- value（商业与市场）：1=纯技术探讨无商业路径，5=已有成熟商业模式
+- tech（技术与工程）：1=无技术含量或纯搬运，5=原创技术方案或重大突破
+- public（公众传播）：1=极小众专业话题，5=全民级话题
+- academic（学术研究）：1=纯经验分享，5=开创性研究
+- ethics（伦理合规）：1=存在严重伦理风险，5=完全合规且有积极社会价值
 
-返回移动/等待/失败数量。失败文件保留在 `{inbox}` 或 `{marked}` 原状态，重跑本流程即可续处理。
+输出格式：{"value":n,"tech":n,"public":n,"academic":n,"ethics":n}
 
-## 说明
+文章内容：
+{{content}}
+```
 
-- **只接受 `{profile}`**，无 config 参数
-- **幂等可恢复**：`.meta.json`/`.rate.json` 为已完成标记，`{marked}/` 内文件不再重复处理
-- 单篇失败不影响其他文章（脚本逐文件 try/catch）
-- 产出文件为带 frontmatter 的终稿（格式见总索引 [workflow-knowledge.md](workflow-knowledge.md)）
+## 缓存与幂等
+
+| 状态 | 重跑行为 |
+|------|---------|
+| 无 `.meta.json` | 执行元数据提取 |
+| 有 `.meta.json`、无 `.rate.json` | 跳过提取，执行评分 |
+| 有 `.meta.json` + `.rate.json` | 跳过提取和评分，执行合并 |
+| 已在目标目录（`{hash}_` 前缀命中） | 完全跳过 |
+
+> 中断后重跑自动续处理，无需人工判断。
 
 ## 产出
 
 | 文件 | 说明 |
 |------|------|
-| `{marked}/{hash}_*.md` | 带 frontmatter（含 `hash`）的已分析终稿，文件名带 hash 前缀 |
+| `{target_dir}/{hash}_{原文件名}.md` | 带 frontmatter 的终稿，hash 前缀用于去重 |
 
 ## 错误处理
 
 | 场景 | 处理 |
 |------|------|
-| `.meta.json` 缺失 | 文件留在 `{inbox}`，脚本标记 `WAIT` |
-| 某篇打标/评分失败 | 跳过该篇，不影响其他 |
-| 某维评分失败 | 该维为 `null`，`rating` 未评分维度置空 |
-| 中间中断 | 重跑本流程，自动跳过已完成篇（依据 `.meta.json`/`.rate.json`/`{marked}` 状态） |
+| 单篇提取/评分失败 | 跳过该篇，不影响其他 |
+| 单维评分失败 | 该维为 `null` |
+| 中间中断 | 重跑自动跳过已完成篇 |

@@ -28,7 +28,7 @@ skills:
 | `wechat-mp-analyze` | **选题报告**：AI 评分 + 标签提取 + 主题遴选 → Markdown 报告（用于选题简报，非知识库打标） | `websearch` |
 | `industry-news-digest` | 从行业网站抓取最新文章，整理成结构化新闻通讯稿 | `webfetch`、`websearch` |
 
-> 知识库管线（`workflow-knowledge.md`）中：`gatherer` 负责子流程 2.1 采集入库（`wechat-mp-gather` → `inbox/`）。子流程 2.2 的打标签（`.meta.json`）由 `tagger` 独立负责，评分由 `coordinator` 委托 `commentator-*`。
+> 知识库管线（`workflow-knowledge.md`）中：`gatherer` 负责子流程 2.1 采集入库（`wechat-mp-gather` → `inbox/`）。子流程 2.2 由 `coordinator` 调用 `analyze_batch.js` 脚本完成（元数据提取+评分+合并），不依赖 LLM Agent。
 
 ### 直接采集能力
 

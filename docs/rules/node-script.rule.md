@@ -65,6 +65,7 @@ main();
 
 - 异步脚本用 `async function main()` + `main().catch(...)`
 - 辅助函数用 `function` 声明或 `const fn = () => { }`
+- **`main` 只描述主干步骤**：验证参数 → 获取待处理列表 → 循环调用处理函数 → 输出摘要。循环体内的单条目处理逻辑（校验、读取、转换、写入）必须抽到独立函数（如 `processFile`、`handleItem`），`main` 中只保留调用与计数。避免 `main` 混入业务细节。
 
 ## 环境变量
 

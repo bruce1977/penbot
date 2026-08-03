@@ -76,12 +76,6 @@
       "mode": "all",
       "prompt": "{file:agents/gatherer.md}"
     },
-    "tagger": {
-      "description": "对文章进行 AI 打标签：提取标签/摘要/关键词/分类，输出 .meta.json",
-      "mode": "subagent",
-      "model": "opencode/mimo-v2.5-free",
-      "prompt": "{file:agents/tagger.md}"
-    },
     "illustrator": {
       "description": "根据公众号文章主题绘制配图",
       "mode": "all",

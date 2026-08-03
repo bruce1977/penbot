@@ -14,7 +14,7 @@ description: "MP 知识库管线（总索引）：4 个独立子流程，每个�
 | # | 子流程 | 输入 | 执行者 | 技能/脚本 | 产出 | 文档 |
 |---|--------|------|--------|-----------|------|------|
 | 2.1 | 采集入库 | `{profile}`（账号列表来自 `configs/{profile}-config.json`） | `gatherer` | `wechat-mp-gather` | `inbox/*.md` | [workflow-knowledge-collect.md](workflow-knowledge-collect.md) |
-| 2.2 | 文档分析 | `inbox/*.md` | `tagger` + `coordinator` | `knowledge-analyze` + `commentator-*` | `marked/*.md` | [workflow-knowledge-analyze.md](workflow-knowledge-analyze.md) |
+| 2.2 | 文档分析 | `inbox/*.md` | `coordinator` | `knowledge-analyze`（`analyze_batch.js`） | `marked/*.md` | [workflow-knowledge-analyze.md](workflow-knowledge-analyze.md) |
 | 2.3 | 同步导入知识库 | `marked/*.md` | `coordinator` | `knowledge-sync-weknora` | `weknora/*.md` | [workflow-knowledge-sync-to-weknora.md](workflow-knowledge-sync-to-weknora.md) |
 | 2.4 | 归档 | `weknora/*.md` | `coordinator` | `archive_old_files.js` | `archived/*.md` | [workflow-knowledge-archive.md](workflow-knowledge-archive.md) |
 
@@ -45,7 +45,7 @@ description: "MP 知识库管线（总索引）：4 个独立子流程，每个�
 | `{weknora}` | `{base}/weknora` | 已导入 WeKnora 目录 |
 | `{archived}` | `{base}/archived` | 归档目录 |
 | `{temp}` | `.temp/{profile}` | 运行时临时目录 |
-| `{scripts}` | `scripts`（项目根目录） | 预置脚本目录（`analyze_to_marked.js`、`archive_old_files.js` 等） |
+| `{scripts}` | `skills/knowledge-analyze/scripts` | 知识库分析标准脚本目录（`analyze_batch.js` 等） |
 
 > 所有子流程均以 `{profile}` 为唯一入口：`/cmd-knowledge-collect ai`、`/cmd-knowledge-analyze ai`、`/cmd-knowledge-sync-to-weknora ai`、`/cmd-knowledge-archive ai`。
 
@@ -91,8 +91,8 @@ rating:
 
 | 字段 | 来源 | 说明 |
 |------|------|------|
-| `hash` | `.meta.json`（由 `skills/knowledge-analyze/scripts/hash_content.js` 计算，3 轮 sha256 取 12 位十六进制） | 内容 hash，用于导入去重与文件名前缀（`{marked}/{hash}_*.md`） |
-| `title` | `.meta.json`（必填，由 tagger 提取） | 文章标题 |
+| `hash` | `.meta.json`（由 `lib/content_hash.js` 自动计算，3 轮 sha256 取 12 位十六进制） | 内容 hash，用于导入去重与文件名前缀（`{marked}/{hash}_*.md`） |
+| `title` | `.meta.json`（必填，由 `extract_meta.js` 提取） | 文章标题 |
 | `auther` | `.meta.json`（正文检索）→ 文件名回退 | 公众号名称，正文无作者时 `""` |
 | `date` | `.meta.json` | **打标时刻**（ISO 8601 含时区），非发布时间 |
 | `source` | `.meta.json` | 原文链接 |

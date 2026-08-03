@@ -56,7 +56,7 @@ node skills/knowledge-sync-weknora/scripts/sync_to_weknora.js {marked} {weknora}
    - **提交间隔**：每篇提交后等待 `submit_interval_ms`（默认 10s）再提交下一篇
 4. **结果汇总**：输出同步成功/失败数量；失败篇保留在 `{marked}` 待重试
 
-> 查重键为 **hash + title**：hash 在子流程 2.2 由 `skills/knowledge-analyze/scripts/hash_content.js` 计算（3 轮 sha256 取 12 位），写入 frontmatter `hash` 字段并作为文件名前缀。导入时把 hash 拼进标题，使 hash 随标题进入 WeKnora，库内标题集合即可精确去重（同标题不同内容的文章因 hash 不同不会误判）。无 `hash` 的旧文件回退为按 `title` 查重。
+> 查重键为 **hash + title**：hash 在子流程 2.2 由 `lib/content_hash.js` 自动计算（3 轮 sha256 取 12 位），写入 frontmatter `hash` 字段并作为文件名前缀。导入时把 hash 拼进标题，使 hash 随标题进入 WeKnora，库内标题集合即可精确去重（同标题不同内容的文章因 hash 不同不会误判）。无 `hash` 的旧文件回退为按 `title` 查重。
 >
 > **Why not 独立 hash 字段**：已实测 WeKnora manual 导入不持久化自定义 metadata（`file_hash` 为空、metadata 仅保留 content/format/status/version/updated_at），无法按 hash 字段查询，故采用 hash 嵌入标题的方案。
 

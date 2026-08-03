@@ -44,7 +44,6 @@
 |-------|------|------|------|
 | `coordinator` | 司南 | `all` | 总调度支持两种入口：**full**（采集→评价→撰写→配图→发送→发布）或 **write-only**（直接输入主题+风格+知识库→写稿→配图→发布）。分别对应 `workflow_mp-auto-pipeline.md` 和 `workflow_mp-write.md` |
 | `gatherer` | 拾遗 | `all` | 采集公众号文章（`wechat-mp-gather`），产出 `{inbox}/*.md` + `download_list.json` |
-| `tagger` | 书签 | `subagent` | 知识库子流程 2.2 打标签：提取 title/date/auther/source/tags/summary/keywords → `.meta.json` |
 | `writer` | 墨言 | `all` | 专注撰写，执行 `wechat-mp-writer` 技能完成素材阅读→大纲→初稿→3 轮审稿→输出，通过 `agents/experience/writer.md` 经验池持续自我改进 |
 
 ### 评论员（主题评价）
