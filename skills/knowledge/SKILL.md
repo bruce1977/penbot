@@ -1,23 +1,63 @@
 ---
 name: knowledge
-description: "知识库管线技能：文档分析（元数据提取+评分+合并）、同步导入 WeKnora、归档旧文件。通过不同提示词选择功能。"
+description: "知识库管线技能：初始化目录、文档分析（元数据提取+评分+合并）、同步导入 WeKnora、归档旧文件。通过不同命令选择功能。"
 ---
 
 # 知识库管线 (knowledge)
 
-知识库管线的核心技能，提供三大功能：
+知识库管线的核心技能，提供四大功能：
 
 | 功能 | 脚本 | 说明 |
 |------|------|------|
+| **init** | `init_start.js` | 初始化目录结构和 config.json |
 | **analyze** | `analyze_start.js` | 元数据提取 + 五维评分 + 合并 frontmatter |
 | **sync** | `weknora_start_to_sync.js` | 将终稿导入 WeKnora 远程知识库 |
 | **archive** | `archive_start.js` | 按文件年龄归档旧文件 |
 
 > 本技能为**纯脚本驱动**，不依赖 LLM Agent。调用方通过不同命令选择功能。
 
-## 功能一：文档分析 (analyze)
+---
 
-对源目录内的 `.md` 文章批量执行 **元数据提取 + 评分 + 合并 frontmatter**，终稿移动到目标目录。
+## 功能一：初始化 (init)
+
+创建知识库 profile 根目录下的目录结构和默认 `config.json`。幂等操作——已存在的目录/文件不会被覆盖。
+
+### 调用方式
+
+```bash
+node skills/knowledge/scripts/init_start.js <base_dir>
+```
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<base_dir>` | 是 | 知识库 profile 根目录（如 `D:/knowledge/articles/ai`） |
+
+### 创建内容
+
+| 项目 | 说明 |
+|------|------|
+| `inbox/` | 原始文档存放目录 |
+| `marked/` | 已分析文档目录 |
+| `weknora/` | 已同步文档目录 |
+| `archive/` | 归档文档目录 |
+| `config.json` | 默认配置文件（若不存在） |
+
+### 默认 config.json
+
+```json
+{
+  "weknora": { "category_id": "", "sync_enabled": true },
+  "archive": { "days": 90 },
+  "analyze": { "batch_size": 30 },
+  "sync": { "submit_interval_ms": 10000 }
+}
+```
+
+---
+
+## 功能二：文档分析 (analyze)
+
+对源目录内的 `.md` 文章批量执行 **元数据提取 + 五维评分 + 合并 frontmatter**，终稿移动到目标目录。
 
 ### 调用方式
 
@@ -65,20 +105,20 @@ analyze_start.js                 ← 主入口：编排全流程
 ```
 source_dir/*.md
   │
-  ▼  剥离 frontmatter → 写 .tmp/ 临时文件
+  ▼  剥离 frontmatter → 写入临时文件（source_dir/{ts}_{basename}）
   │
-  ├──→ analyze_extract_meta.js（Ollama） → .tmp/{ts}*.meta.json
-  ├──→ analyze_extract_rate.js（Ollama） → .tmp/{ts}*.rate.json
-  │         （并发执行）
+  ├──→ analyze_extract_meta.js → .meta.json（并发）
+  ├──→ analyze_extract_rate.js → .rate.json（并发）
+  │
   ▼
-analyze_merge.js → 合并为 frontmatter JSON
+analyze_merge.js → 合并为 frontmatter，写入 target_dir/{hash}_{title}.md
   │
-  ▼  主流程：写入 target_dir/{hash}_{title}.md
-  │         删除源 .md + .meta.json + .rate.json
-  │         清理 .tmp/
+  ▼  清理：删除源 .md + .meta.json + .rate.json + 临时文件
   ▼
 done
 ```
+
+> 临时文件在 source_dir 内创建（`{timestamp}_{filename}`），处理完成后自动清理。
 
 ### 元数据标准
 
@@ -140,7 +180,7 @@ done
 
 ---
 
-## 功能二：同步导入 WeKnora (sync)
+## 功能三：同步导入 WeKnora (sync)
 
 将 `{source}` 目录中带 frontmatter 的终稿逐篇导入 WeKnora 知识库（文章 + 标签），导入成功后移动到 `{target}` 目录。
 
@@ -177,7 +217,7 @@ node skills/knowledge/scripts/weknora_start_to_sync.js <source_dir> <target_dir>
    - 成功后 `Move` 到 `{target}/`
 3. **结果汇总**：输出同步成功/失败数量；失败篇保留在 `{source}` 待重试
 
-> **查重键 = hash + title**：hash 由子流程 2.2 计算（3 轮 sha256 取 12 位），写于 frontmatter `hash` 字段与文件名前缀。提交标题 `${hash}_${title}` 使 hash 随标题进入 WeKnora，库内标题集合即可精确判断重复。
+> **查重键 = hash + title**：hash 由流程二（分析）计算（3 轮 sha256 取 12 位），写于 frontmatter `hash` 字段与文件名前缀。提交标题 `${hash}_${title}` 使 hash 随标题进入 WeKnora，库内标题集合即可精确判断重复。
 
 ### 产出
 
@@ -199,7 +239,7 @@ node skills/knowledge/scripts/weknora_start_to_sync.js <source_dir> <target_dir>
 
 ---
 
-## 功能三：归档 (archive)
+## 功能四：归档 (archive)
 
 将 `{source}` 中超过指定天数的旧文件移动到 `{target}` 目录。
 
@@ -244,12 +284,13 @@ skills/knowledge/
 │   ├── meta_prompt.txt          ← 元数据提取 prompt
 │   └── rate_prompt.txt          ← 五维评分 prompt
 └── scripts/
-    ├── analyze_start.js         ← 功能一：分析主入口
+    ├── init_start.js            ← 功能一：初始化
+    ├── analyze_start.js         ← 功能二：分析主入口
     ├── analyze_extract_meta.js  ← 元数据提取（in-process 模块）
     ├── analyze_extract_rate.js  ← 评分提取（in-process 模块）
     ├── analyze_merge.js         ← 合并 frontmatter（in-process 模块）
-    ├── weknora_start_to_sync.js ← 功能二：同步 WeKnora
-    ├── archive_start.js         ← 功能三：归档
+    ├── weknora_start_to_sync.js ← 功能三：同步 WeKnora
+    ├── archive_start.js         ← 功能四：归档
     └── lib/
         ├── llm.js               ← LLM 客户端 + 工具函数
         └── content_hash.js      ← 内容 hash（3 轮 sha256）

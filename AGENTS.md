@@ -26,15 +26,15 @@
 | `/cmd-mp-auto-pipeline` | 根据$1执行MP自动化管线 | [workflows/workflow_mp-auto-pipeline.md](workflows/workflow_mp-auto-pipeline.md) |
 | `/cmd-mp-digest` | 根据$1执行MP采集简报管线 | [workflows/workflow_mp-digest.md](workflows/workflow_mp-digest.md) |
 | `/cmd-wechat-mp-publish-drafts` | 将微信公众号草稿箱内的草稿发布为已发表文章（需微信认证开通权限） | [skills/wechat-mp-wenyan/SKILL.md](skills/wechat-mp-wenyan/SKILL.md) |
-| `/cmd-knowledge` | 根据$1执行MP知识库管线（四子流程总索引） | [workflows/workflow-knowledge.md](workflows/workflow-knowledge.md) |
-| `/cmd-knowledge-collect` | 根据$1执行知识库子流程2.1 采集入库 | [workflows/workflow-knowledge-collect.md](workflows/workflow-knowledge-collect.md) |
-| `/cmd-knowledge-analyze` | 根据$1执行知识库子流程2.2 文档分析 | [workflows/workflow-knowledge-analyze.md](workflows/workflow-knowledge-analyze.md) |
-| `/cmd-knowledge-sync-to-weknora` | 根据$1执行知识库子流程2.3 同步导入知识库 | [workflows/workflow-knowledge-sync-to-weknora.md](workflows/workflow-knowledge-sync-to-weknora.md) |
-| `/cmd-knowledge-archive` | 根据$1执行知识库子流程2.4 归档 | [workflows/workflow-knowledge-archive.md](workflows/workflow-knowledge-archive.md) |
+| `/cmd-knowledge` | 根据$1执行MP知识库管线 | [workflows/workflow-knowledge.md](workflows/workflow-knowledge.md) |
+| `/cmd-knowledge-collect` | 根据$1执行知识库采集入库 | [workflows/workflow-knowledge.md](workflows/workflow-knowledge.md) |
+| `/cmd-knowledge-analyze` | 根据$1执行知识库文档分析 | [workflows/workflow-knowledge.md](workflows/workflow-knowledge.md) |
+| `/cmd-knowledge-sync-to-weknora` | 根据$1执行知识库同步导入 WeKnora | [workflows/workflow-knowledge.md](workflows/workflow-knowledge.md) |
+| `/cmd-knowledge-archive` | 根据$1执行知识库归档 | [workflows/workflow-knowledge.md](workflows/workflow-knowledge.md) |
 
 > 示例：`/cmd-mp-digest configs/ai-config.json` 触发采集简报管线，发送汇总报告邮件后结束。
 >
-> **知识库管线**：`/cmd-knowledge ai` 触发，知识库路径为 `{PB_KNOWLEDGE_BASE_PATH}/articles/{profile}/`。文件按阶段在 `inbox/`（原始）→ `marked/`（已分析）→ `weknora/`（已同步）→ `archive/`（已归档）四目录间单向流转。执行者根据参数或目录状态决定运行哪个子流程，四个子流程可分别用 `/cmd-knowledge-collect|analyze|import|archive <profile>` 独立触发，详见 [workflow-knowledge.md](workflows/workflow-knowledge.md)。
+> **知识库管线**：`/cmd-knowledge ai` 触发，知识库路径为 `{PB_KNOWLEDGE_BASE_PATH}/{profile}/`。文件按阶段在 `inbox/`（原始）→ `marked/`（已分析）→ `weknora/`（已同步）→ `archive/`（已归档）四目录间单向流转。执行者根据参数或目录状态决定运行哪个流程，五个流程可分别用 `/cmd-knowledge-collect|analyze|import|archive <profile>` 独立触发，详见 [workflow-knowledge.md](workflows/workflow-knowledge.md)。
 
 ## Agents 一览
 

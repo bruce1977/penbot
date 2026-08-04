@@ -1,16 +1,23 @@
 # 知识库管线 (knowledge)
 
-知识库管线的核心技能，提供三大功能：文档分析、同步导入 WeKnora、归档旧文件。
+知识库管线的核心技能，提供四大功能：初始化、文档分析、同步导入 WeKnora、归档旧文件。
 
 ## 功能一览
 
 | 功能 | 脚本 | 说明 |
 |------|------|------|
+| init | `init_start.js` | 初始化目录结构和 config.json |
 | analyze | `analyze_start.js` | 元数据提取 + 五维评分 + 合并 frontmatter |
 | sync | `weknora_start_to_sync.js` | 将终稿导入 WeKnora 远程知识库 |
 | archive | `archive_start.js` | 按文件年龄归档旧文件 |
 
 ## 快速开始
+
+### 初始化
+
+```bash
+node skills/knowledge/scripts/init_start.js <base_dir>
+```
 
 ### 文档分析
 
@@ -50,11 +57,13 @@ node skills/knowledge/scripts/archive_start.js <source_dir> <target_dir> [days]
 | `WEKNORA_BASE_URL` | 必填 | WeKnora API 地址 |
 | `WEKNORA_API_KEY` | 必填 | API 密钥 |
 | `SUBMIT_INTERVAL_MS` | `10000` | 提交间隔 |
+| `SYNC_SCRIPT_TIMEOUT_MS` | `600000` | 脚本整体超时 |
 
 ## 脚本结构
 
 ```
 scripts/
+├── init_start.js            ← 初始化
 ├── analyze_start.js         ← 分析主入口
 ├── analyze_extract_meta.js  ← 元数据提取（in-process 模块）
 ├── analyze_extract_rate.js  ← 评分提取（in-process 模块）
@@ -71,15 +80,16 @@ scripts/
 ```
 source_dir/*.md
   │
-  ▼  剥离 frontmatter → 写 .tmp/ 临时文件
+  ▼  剥离 frontmatter → 写入临时文件（source_dir/{ts}_{basename}）
   │
-  ├──→ analyze_extract_meta.js → .tmp/*.meta.json
-  ├──→ analyze_extract_rate.js → .tmp/*.rate.json
-  │         （并发执行）
+  ├──→ analyze_extract_meta.js → .meta.json（并发）
+  ├──→ analyze_extract_rate.js → .rate.json（并发）
+  │
   ▼
 analyze_merge.js → 合并 frontmatter
   │
   ▼  写入 target_dir/{hash}_{title}.md
+  ▼  清理：删除源文件 + 临时文件 + JSON 副产物
   ▼
 done
 ```

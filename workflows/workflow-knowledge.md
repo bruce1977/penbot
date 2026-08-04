@@ -1,27 +1,26 @@
 ---
-name: mp-knowledge
+name: workflow-knowledge
 ---
 
-# 知识库管线 — 简化版
+# 知识库管线
 
 > **入口命令**：`/cmd-knowledge <profile>`
 > **技能加载**：`skills/knowledge/SKILL.md`
 > **脚本目录**：`skills/knowledge/scripts`
+> **基准目录**：`{PB_KNOWLEDGE_BASE_PATH}/{profile}/`
 
 ---
 
 ## 目录结构
 
 ```
-{KB_base}/{profile}/
+{PB_KNOWLEDGE_BASE_PATH}/{profile}/
 ├── inbox/      ← 用户手动放置 .md 文档
 ├── marked/     ← 分析后带 frontmatter 的文档
 ├── weknora/    ← 已同步到 WeKnora 的文档
 ├── archive/    ← 归档的旧文档
-└── config.json ← 子库配置（如 weknora category_id）
+└── config.json ← 知识库配置
 ```
-
-> `KB_base` 默认为环境变量 `PB_KNOWLEDGE_BASE_PATH` 或 `D:/knowledge/articles`。
 
 ---
 
@@ -30,20 +29,66 @@ name: mp-knowledge
 ```json
 {
   "weknora": {
-    "category_id": "your-weknora-category-id"
+    "category_id": "",
+    "sync_enabled": true
+  },
+  "archive": {
+    "days": 90
+  },
+  "analyze": {
+    "batch_size": 30
+  },
+  "sync": {
+    "submit_interval_ms": 10000
   }
 }
 ```
 
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `weknora.category_id` | string | `""` | WeKnora 知识库 ID |
+| `weknora.sync_enabled` | boolean | `true` | 是否启用 WeKnora 同步 |
+| `archive.days` | number | `90` | 归档文件年龄阈值（天） |
+| `analyze.batch_size` | number | `30` | 分析批处理文件数上限 |
+| `sync.submit_interval_ms` | number | `10000` | 每篇同步提交后等待间隔（毫秒） |
+
 ---
 
-## 流程一：采集（手动）
+## 流程一：初始化
+
+自动创建 `{profile}/` 下的目录结构和默认 `config.json`。幂等操作——已存在的目录/文件不会被覆盖。
+
+### 脚本
+
+```bash
+node skills/knowledge/scripts/init_start.js <base_dir>
+```
+
+### 示例
+
+```bash
+node skills/knowledge/scripts/init_start.js D:/knowledge/articles/ai
+```
+
+### 自动初始化
+
+以下流程在执行前会检查目标目录是否存在，若不存在则自动调用初始化：
+
+| 流程 | 检查目录 | 自动初始化触发条件 |
+|------|---------|-------------------|
+| 流程三（分析） | `{inbox}` | `inbox/` 不存在时自动创建 |
+| 流程四（同步） | `{marked}`、`{weknora}` | `marked/` 或 `weknora/` 不存在时自动创建 |
+| 流程五（归档） | `{weknora}`、`{archive}` | `weknora/` 或 `archive/` 不存在时自动创建 |
+
+---
+
+## 流程二：采集（手动）
 
 用户将待处理的 `.md` 文档手动放入 `{inbox}/` 目录。无自动化脚本。
 
 ---
 
-## 流程二：文档分析
+## 流程三：文档分析
 
 对 `{inbox}/` 内 `.md` 批量执行 **元数据提取 + 五维评分 + 合并 frontmatter**，终稿移动到 `{marked}/`。
 
@@ -56,11 +101,18 @@ node skills/knowledge/scripts/analyze_start.js <source_dir> <target_dir> [batch_
 ### 示例
 
 ```bash
-# 分析 AI 知识库
 node skills/knowledge/scripts/analyze_start.js \
   D:/knowledge/articles/ai/inbox \
   D:/knowledge/articles/ai/marked
 ```
+
+### 参数说明
+
+| 参数 | 必填 | 说明 | 配置来源 |
+|------|------|------|---------|
+| `<source_dir>` | 是 | 源文章目录 | 固定为 `{profile}/inbox` |
+| `<target_dir>` | 是 | 终稿输出目录 | 固定为 `{profile}/marked` |
+| `[batch_size]` | 否 | 批处理文件数上限 | `config.json → analyze.batch_size`，默认 30 |
 
 ### 环境变量
 
@@ -75,14 +127,11 @@ node skills/knowledge/scripts/analyze_start.js \
 
 ---
 
-## 流程三：同步导入 WeKnora
+## 流程四：同步导入 WeKnora
 
 将 `{marked}/` 中带 frontmatter 的终稿逐篇导入 WeKnora（文章 + 标签），导入成功后移动到 `{weknora}/`。
 
-### 前置条件
-
-1. 从 `config.json` 读取 `weknora.category_id`
-2. 设置环境变量：`WEKNORA_BASE_URL`、`WEKNORA_API_KEY`
+> 前置条件：`config.json → weknora.category_id` 非空且 `weknora.sync_enabled` 为 `true`。
 
 ### 脚本
 
@@ -98,6 +147,14 @@ node skills/knowledge/scripts/weknora_start_to_sync.js \
   D:/knowledge/articles/ai/weknora \
   <category_id>
 ```
+
+### 参数说明
+
+| 参数 | 必填 | 说明 | 配置来源 |
+|------|------|------|---------|
+| `<source_dir>` | 是 | 带 frontmatter 的终稿目录 | 固定为 `{profile}/marked` |
+| `<target_dir>` | 是 | 已同步文章存放目录 | 固定为 `{profile}/weknora` |
+| `<category_id>` | 是 | WeKnora 知识库 ID | `config.json → weknora.category_id` |
 
 ### 环境变量
 
@@ -119,7 +176,7 @@ node skills/knowledge/scripts/weknora_start_to_sync.js \
 
 ---
 
-## 流程四：归档
+## 流程五：归档
 
 将 `{weknora}/` 中超过指定天数的旧文件移动到 `{archive}/`。
 
@@ -138,14 +195,23 @@ node skills/knowledge/scripts/archive_start.js \
   90
 ```
 
+### 参数说明
+
+| 参数 | 必填 | 说明 | 配置来源 |
+|------|------|------|---------|
+| `<source_dir>` | 是 | 待归档目录 | 固定为 `{profile}/weknora` |
+| `<target_dir>` | 是 | 归档输出目录 | 固定为 `{profile}/archive` |
+| `[days]` | 否 | 文件年龄阈值（天） | `config.json → archive.days`，默认 90 |
+
 ---
 
 ## 脚本总览
 
 | 脚本 | 对应流程 | 说明 |
 |------|---------|------|
-| `analyze_start.js` | 流程二 | 元数据提取 + 五维评分 + 合并 frontmatter |
-| `weknora_start_to_sync.js` | 流程三 | 同步导入 WeKnora 知识库 |
-| `archive_start.js` | 流程四 | 按文件年龄归档旧文件 |
+| `init_start.js` | 流程一 | 初始化目录结构和 config.json |
+| `analyze_start.js` | 流程三 | 元数据提取 + 五维评分 + 合并 frontmatter |
+| `weknora_start_to_sync.js` | 流程四 | 同步导入 WeKnora 知识库 |
+| `archive_start.js` | 流程五 | 按文件年龄归档旧文件 |
 
 所有脚本位于 `skills/knowledge/scripts/`，详细用法见 [skills/knowledge/SKILL.md](../skills/knowledge/SKILL.md)。
