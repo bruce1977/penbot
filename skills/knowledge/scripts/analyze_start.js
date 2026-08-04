@@ -39,7 +39,14 @@ function selectBatch(absSource) {
 
 async function processFile(f) {
   const filePath = path.join(sourceDir, f);
+  const base = f.slice(0, -3);
   const t0 = Date.now();
+
+  // Cache check: if both .meta.json and .rate.json exist next to the original file,
+  // extraction was already done (e.g. previous interrupted run). Skip straight to merge.
+  const metaPath = path.join(sourceDir, `${base}.meta.json`);
+  const ratePath = path.join(sourceDir, `${base}.rate.json`);
+  const cacheReady = fs.existsSync(metaPath) && fs.existsSync(ratePath);
 
   // Hand a frontmatter-stripped body to the extractors via a temp file.
   const clean = stripFrontmatter(fs.readFileSync(filePath, "utf-8"));
@@ -47,21 +54,28 @@ async function processFile(f) {
   fs.writeFileSync(tmpPath, clean, "utf-8");
 
   try {
-    // Run metadata extraction and rating concurrently as in-process module calls.
-    const [metaResult, rateResult] = await Promise.all([
-      extractMeta.processFile(tmpPath),
-      extractRate.processFile(tmpPath),
-    ]);
+    let metaResult, rateResult;
+
+    if (cacheReady) {
+      // Cache hit: reuse existing .meta.json / .rate.json
+      metaResult = { status: "skip", file: f };
+      rateResult = { status: "skip", file: f };
+    } else {
+      // Cache miss: run extraction concurrently, write cache to sourceDir (next to original file)
+      [metaResult, rateResult] = await Promise.all([
+        extractMeta.processFile(tmpPath, sourceDir, base),
+        extractRate.processFile(tmpPath, sourceDir, base),
+      ]);
+    }
 
     // A genuine error (not a cached-json reuse) aborts the file.
     if (metaResult.status === "error") return { file: f, status: "failed", error: `meta: ${metaResult.error}`, ms: Date.now() - t0 };
     if (rateResult.status === "error") return { file: f, status: "failed", error: `rate: ${rateResult.error}`, ms: Date.now() - t0 };
 
-    const mergeResult = await mergeToMarked.processFile(tmpPath, targetDir);
+    const mergeResult = await mergeToMarked.processFile(filePath, targetDir);
     if (mergeResult.status !== "ok") return { file: f, status: "failed", error: mergeResult.error || mergeResult.reason, ms: Date.now() - t0 };
 
-    // merge_to_marked already wrote the target file (${hash}_${title}.md); main flow only cleans up the source dir.
-    const base = f.slice(0, -3);
+    // merge_to_marked already wrote the target file (${hash}_${title}.md); clean up source.
     fs.unlinkSync(filePath);
     [".meta.json", ".rate.json"].forEach(suf => {
       const p = path.join(sourceDir, `${base}${suf}`);
@@ -70,10 +84,8 @@ async function processFile(f) {
 
     return { file: f, status: "done", target: mergeResult.targetPath, ms: Date.now() - t0 };
   } finally {
-    // Always remove the temp file and any json side-effects it produced.
-    const tmpBase = path.basename(tmpPath, ".md");
-    [`${tmpPath}`, path.join(sourceDir, `${tmpBase}.meta.json`), path.join(sourceDir, `${tmpBase}.rate.json`)]
-      .forEach(p => { if (fs.existsSync(p)) fs.unlinkSync(p); });
+    // Always remove the temp file.
+    if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
   }
 }
 

@@ -50,9 +50,13 @@ function validateRate(rate) {
 }
 
 // Called by the main script analyze_start.js as a module: returns a result object, does not call process.exit.
-async function processFile(absPath) {
-  const base = path.basename(absPath, ".md");
-  const ratePath = path.join(path.dirname(absPath), `${base}.rate.json`);
+// absPath: path to the .md file to process (may be a temp file)
+// outDir (optional): directory to write .rate.json cache to (defaults to file's dir)
+// cacheBase (optional): base name for cache file (defaults to file's basename without ext)
+async function processFile(absPath, outDir, cacheBase) {
+  const base = cacheBase || path.basename(absPath, ".md");
+  const cacheDir = outDir || path.dirname(absPath);
+  const ratePath = path.join(cacheDir, `${base}.rate.json`);
 
   if (fs.existsSync(ratePath)) {
     return { status: "skip", file: path.basename(absPath) };

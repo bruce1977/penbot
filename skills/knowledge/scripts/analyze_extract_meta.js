@@ -43,9 +43,13 @@ function validateMeta(meta) {
 }
 
 // Called by the main script analyze_start.js as a module: returns a result object, does not call process.exit.
-async function processFile(absPath) {
-  const base = path.basename(absPath, ".md");
-  const metaPath = path.join(path.dirname(absPath), `${base}.meta.json`);
+// absPath: path to the .md file to process (may be a temp file)
+// outDir (optional): directory to write .meta.json cache to (defaults to file's dir)
+// cacheBase (optional): base name for cache file (defaults to file's basename without ext)
+async function processFile(absPath, outDir, cacheBase) {
+  const base = cacheBase || path.basename(absPath, ".md");
+  const cacheDir = outDir || path.dirname(absPath);
+  const metaPath = path.join(cacheDir, `${base}.meta.json`);
 
   if (fs.existsSync(metaPath)) {
     return { status: "skip", file: path.basename(absPath) };
