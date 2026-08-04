@@ -2,7 +2,7 @@
 
 单一功能：根据公众号列表拉取文章列表并下载 Markdown 原文。
 
-> **职责边界**：本技能只负责采集下载。元数据提取与评分由 `knowledge-analyze` 技能的 `analyze_batch.js` 脚本完成。
+> **职责边界**：本技能只负责采集下载。元数据提取与评分由 `knowledge` 技能的 `analyze_start.js` 脚本完成。
 
 ## 环境变量
 

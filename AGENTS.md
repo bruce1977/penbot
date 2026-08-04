@@ -15,9 +15,9 @@
 | **完整管线** | `cmd-mp-auto-pipeline` | 步骤 1 → 子流程 A(A1→A2可选→A3→A4) → 子流程 B(B1→B2→B3) → 子流程 C(C1可选→C2可选) | 终稿邮件 + 公众号草稿 |
 | **采集简报** | `cmd-mp-digest` | 步骤 1 → 2 | 汇总报告邮件——发送即结束，**不做**步骤 3-8 |
 | **草稿发布** | `cmd-wechat-mp-publish-drafts` | 草稿箱 → 已发表 | 公众号已发表文章 |
-| **知识库管线** | `cmd-knowledge`（总索引）`cmd-knowledge-collect\|analyze\|import\|archive`（独立子流程） | 子流程 2.1 → 2.2 → 2.3 → 2.4（各子流程可独立运行） | `{KB}/articles/{profile}/[inbox\|marked\|weknora\|archived]`——采集→分析→导入→归档 |
+| **知识库管线** | `cmd-knowledge`（总索引）`cmd-knowledge-collect\|analyze\|import\|archive`（独立子流程） | 采集（手动）→ 分析 → 同步 → 归档 | `{KB}/articles/{profile}/[inbox\|marked\|weknora\|archive]` |
 
-**执行原则**：各模式的边界由命令的 `description` 和此表共同约束。`cmd-mp-digest` 包含步骤 2 的邮件发送，**不得**将步骤 2 排除在外。知识库管线四子流程相互独立，均可由 `cmd-knowledge-collect|analyze|import|archive <profile>` 单独触发，各自以 `{profile}` 为唯一入口。
+**执行原则**：各模式的边界由命令的 `description` 和此表共同约束。`cmd-mp-digest` 包含步骤 2 的邮件发送，**不得**将步骤 2 排除在外。知识库管线四流程可分别用 `/cmd-knowledge-collect|analyze|import|archive <profile>` 独立触发，各自以 `{profile}` 为唯一入口。
 
 ## 工作流程
 
@@ -34,7 +34,7 @@
 
 > 示例：`/cmd-mp-digest configs/ai-config.json` 触发采集简报管线，发送汇总报告邮件后结束。
 >
-> **知识库管线**：`/cmd-knowledge ai` 触发，知识库路径为 `{PB_KNOWLEDGE_BASE_PATH}/articles/{profile}/`。文件按阶段在 `inbox/`（原始）→ `marked/`（已分析）→ `weknora/`（已导入）→ `archived/`（已归档）四目录间单向流转。执行者根据参数或目录状态决定运行哪个子流程，四个子流程可分别用 `/cmd-knowledge-collect|analyze|import|archive <profile>` 独立触发，详见 [workflow-knowledge.md](workflows/workflow-knowledge.md)。
+> **知识库管线**：`/cmd-knowledge ai` 触发，知识库路径为 `{PB_KNOWLEDGE_BASE_PATH}/articles/{profile}/`。文件按阶段在 `inbox/`（原始）→ `marked/`（已分析）→ `weknora/`（已同步）→ `archive/`（已归档）四目录间单向流转。执行者根据参数或目录状态决定运行哪个子流程，四个子流程可分别用 `/cmd-knowledge-collect|analyze|import|archive <profile>` 独立触发，详见 [workflow-knowledge.md](workflows/workflow-knowledge.md)。
 
 ## Agents 一览
 

@@ -1,14 +1,18 @@
 const fs = require("fs");
 const path = require("path");
 
-const [,, markedDir, weknoraDir, profile, kbId] = process.argv;
+// --- 参数解析 ---
+const [,, sourceDir, targetDir, categoryId] = process.argv;
 
-if (!markedDir || !weknoraDir || !profile) {
-  console.error("Usage: node sync_to_weknora.js <marked_dir> <weknora_dir> <profile> [kb_id]");
-  console.error("  kb_id: optional override; otherwise read from {profile}/weknora.json, then KB.name==profile match");
+if (!sourceDir || !targetDir || !categoryId) {
+  console.error("Usage: node weknora_start_to_sync.js <source_dir> <target_dir> <category_id>");
+  console.error("  source_dir:  带 frontmatter 的终稿目录（如 marked/）");
+  console.error("  target_dir:  已同步文章存放目录（导入成功后 move 到此）");
+  console.error("  category_id: WeKnora 知识库 ID");
   process.exit(1);
 }
 
+// --- 环境变量 ---
 const apiBase = process.env.WEKNORA_BASE_URL;
 const apiKey = process.env.WEKNORA_API_KEY;
 if (!apiBase) {
@@ -20,47 +24,13 @@ if (!apiKey) {
   process.exit(1);
 }
 
-function profileConfigPath() {
-  return path.join(path.dirname(markedDir), "weknora.json");
-}
-
-function loadProfileConfig() {
-  const cfgFile = profileConfigPath();
-  try {
-    return JSON.parse(fs.readFileSync(cfgFile, "utf-8"));
-  } catch {
-    const defaults = { kb_id: "", submit_interval_ms: 10000 };
-    try {
-      fs.mkdirSync(path.dirname(cfgFile), { recursive: true });
-      fs.writeFileSync(cfgFile, JSON.stringify(defaults, null, 2) + "\n", "utf-8");
-      console.log(`[weknora] created default config: ${cfgFile}`);
-    } catch (err) {
-      console.warn(`[weknora] failed to create default config: ${err.message}`);
-    }
-    return defaults;
-  }
-}
-
-function writeKbIdBack(id) {
-  const cfgFile = profileConfigPath();
-  try {
-    const cfg = JSON.parse(fs.readFileSync(cfgFile, "utf-8")) || {};
-    cfg.kb_id = id;
-    fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
-    console.log(`[weknora] wrote resolved kb_id to ${cfgFile}`);
-  } catch {
-    /* non-fatal */
-  }
-}
-
-const profileConfig = loadProfileConfig();
-
 const REQUEST_TIMEOUT_MS = 30000;
 const SCRIPT_TIMEOUT_MS = parseInt(process.env.SYNC_SCRIPT_TIMEOUT_MS || "600000", 10);
-const SUBMIT_INTERVAL_MS = parseInt(profileConfig?.submit_interval_ms ?? process.env.SUBMIT_INTERVAL_MS ?? "10000", 10);
+const SUBMIT_INTERVAL_MS = parseInt(process.env.SUBMIT_INTERVAL_MS || "10000", 10);
 
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
+// --- API 请求 ---
 async function wkRequest(method, url, body) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -81,34 +51,23 @@ async function wkRequest(method, url, body) {
   }
 }
 
-async function findKbId() {
-  if (kbId) return kbId;
-  if (profileConfig?.kb_id) return String(profileConfig.kb_id).trim();
-  const res = await wkRequest("GET", `${apiBase}/knowledge-bases`);
-  const kb = (res.data || []).find(k => k.name === profile);
-  if (!kb) {
-    const names = (res.data || []).map(k => `"${k.name}"`).join(", ");
-    throw new Error(`KB not found for profile "${profile}" (no kb_id in weknora.json and no KB named "${profile}"). Available: ${names || "(none)"}`);
-  }
-  writeKbIdBack(kb.id);
-  return kb.id;
-}
-
-async function ensureTag(kbId, tagName) {
-  const listRes = await wkRequest("GET", `${apiBase}/knowledge-bases/${kbId}/tags?page=1&page_size=200`);
+// --- 标签管理：创建或复用已有标签 ---
+async function ensureTag(tagName) {
+  const listRes = await wkRequest("GET", `${apiBase}/knowledge-bases/${categoryId}/tags?page=1&page_size=200`);
   const tags = (listRes.data?.data) || [];
   const found = tags.find(t => t.name === tagName);
   if (found) return found.id;
-  const created = await wkRequest("POST", `${apiBase}/knowledge-bases/${kbId}/tags`, { name: tagName });
+  const created = await wkRequest("POST", `${apiBase}/knowledge-bases/${categoryId}/tags`, { name: tagName });
   return created.data.id;
 }
 
-async function fetchExistingTitles(kbId) {
+// --- 查重：分页拉取库内全部标题 ---
+async function fetchExistingTitles() {
   const titles = new Set();
   let page = 1;
   const pageSize = 200;
   while (true) {
-    const res = await wkRequest("GET", `${apiBase}/knowledge-bases/${kbId}/knowledge?page=${page}&page_size=${pageSize}`);
+    const res = await wkRequest("GET", `${apiBase}/knowledge-bases/${categoryId}/knowledge?page=${page}&page_size=${pageSize}`);
     const items = res.data || [];
     for (const it of items) {
       if (it.title) titles.add(it.title);
@@ -119,6 +78,7 @@ async function fetchExistingTitles(kbId) {
   return titles;
 }
 
+// --- Frontmatter 解析 ---
 function parseFrontmatter(content) {
   const t = content.trimStart();
   if (!t.startsWith("---")) return { title: "", hash: "", tags: [], body: t };
@@ -127,8 +87,7 @@ function parseFrontmatter(content) {
   const fm = t.slice(3, end).trim();
   const body = t.slice(end + 3).trimStart();
   let title = "", hash = "", tags = [];
-  const lines = fm.split("\n");
-  for (const line of lines) {
+  for (const line of fm.split("\n")) {
     const m = line.match(/^title:\s*(.+)$/);
     if (m) title = m[1].replace(/^"|"$/g, "").trim();
     const hashM = line.match(/^hash:\s*(.+)$/);
@@ -141,6 +100,7 @@ function parseFrontmatter(content) {
   return { title, hash, tags, body };
 }
 
+// --- 文件移动（跨分区时 copy + unlink） ---
 function moveFile(src, dst) {
   try {
     fs.renameSync(src, dst);
@@ -154,58 +114,69 @@ function moveFile(src, dst) {
   }
 }
 
+// --- 主流程 ---
 async function main() {
-  if (!fs.existsSync(markedDir)) {
-    console.error(`Error: marked directory not found: ${markedDir}`);
+  if (!fs.existsSync(sourceDir)) {
+    console.error(`Error: source directory not found: ${sourceDir}`);
     process.exit(1);
   }
-  if (!fs.existsSync(weknoraDir)) fs.mkdirSync(weknoraDir, { recursive: true });
+  if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
 
-  const kbId = await findKbId();
-  console.log(`Using KB: ${kbId} (profile: ${profile}, submit interval: ${SUBMIT_INTERVAL_MS}ms)`);
+  console.log(`Using KB: ${categoryId} (submit interval: ${SUBMIT_INTERVAL_MS}ms)`);
 
-  const existingTitles = await fetchExistingTitles(kbId);
+  const existingTitles = await fetchExistingTitles();
   console.log(`[dedup] loaded ${existingTitles.size} existing titles from KB`);
 
+  const files = fs.readdirSync(sourceDir).filter(f => f.endsWith(".md")).sort();
+  if (files.length === 0) {
+    console.log("No .md files found in source directory");
+    process.exit(0);
+  }
+
   let synced = 0, skipped = 0, failed = 0;
-  const files = fs.readdirSync(markedDir).filter(f => f.endsWith(".md")).sort();
-  if (files.length === 0) { console.log("No .md files found in marked"); process.exit(0); }
+
   for (let i = 0; i < files.length; i++) {
     const f = files[i];
-    const srcPath = path.join(markedDir, f);
-    const dstPath = path.join(weknoraDir, f);
+    const srcPath = path.join(sourceDir, f);
+    const dstPath = path.join(targetDir, f);
+
     try {
       const content = fs.readFileSync(srcPath, "utf-8");
       const { title, hash, tags, body } = parseFrontmatter(content);
       const finalTitle = title || f.replace(/\.md$/i, "");
       const submitTitle = hash ? `${hash}_${finalTitle}` : finalTitle;
 
+      // 去重：标题已存在则跳过，直接移动
       if (existingTitles.has(submitTitle)) {
         moveFile(srcPath, dstPath);
-        console.log(`  SKIP ${f}: hash+title already exists in KB ("${submitTitle}")`);
+        console.log(`  SKIP ${f}: already exists in KB ("${submitTitle}")`);
         skipped++;
         continue;
       }
 
+      // 创建/复用标签
       const tagIds = [];
       for (const tag of tags) {
-        tagIds.push(await ensureTag(kbId, tag));
+        tagIds.push(await ensureTag(tag));
       }
+
+      // 导入文章
       const payload = { title: submitTitle, content: body, status: "publish" };
       if (tagIds.length > 0) payload.tag_ids = tagIds;
+      await wkRequest("POST", `${apiBase}/knowledge-bases/${categoryId}/knowledge/manual`, payload);
 
-      await wkRequest("POST", `${apiBase}/knowledge-bases/${kbId}/knowledge/manual`, payload);
+      // 导入成功：更新本地去重集 + 移动文件
       existingTitles.add(submitTitle);
-
       moveFile(srcPath, dstPath);
-      console.log(`  SYNCED ${f} (tags: ${tags.length}, submit title: "${submitTitle}")`);
+      console.log(`  SYNCED ${f} (tags: ${tags.length}, title: "${submitTitle}")`);
       synced++;
     } catch (err) {
       console.error(`  FAIL ${f}: ${err.message}`);
       failed++;
     }
+
+    // 提交间隔（最后一篇不等待）
     if (i < files.length - 1) {
-      console.log(`  waiting ${SUBMIT_INTERVAL_MS}ms before next submit...`);
       await delay(SUBMIT_INTERVAL_MS);
     }
   }
@@ -214,6 +185,7 @@ async function main() {
   if (failed > 0) process.exitCode = 1;
 }
 
+// --- 超时保护 ---
 const timeout = setTimeout(() => {
   console.error(`FATAL: script timed out after ${SCRIPT_TIMEOUT_MS}ms`);
   process.exitCode = 1;

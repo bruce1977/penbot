@@ -30,8 +30,7 @@ mode: all
 
 | 技能 | 场景 |
 |------|------|
-| `knowledge-analyze` + `scripts/` | 知识库管线标准脚本（`scripts/check_exists_all.js` 去重、`skills/knowledge-analyze/scripts/analyze_batch.js` 打标+评分+合并+批量移动），文件操作必须经脚本执行 |
-| `knowledge-sync-weknora` | 将 `marked/` 终稿导入 WeKnora 并移动到 `weknora/` |
+| `knowledge` | 知识库管线技能（`scripts/check_exists_all.js` 去重、`skills/knowledge/scripts/analyze_start.js` 打标+评分+合并+批量移动、`weknora_start_to_sync.js` 同步导入、`archive_start.js` 归档），文件操作必须经脚本执行 |
 | `weknora` | WeKnora API 交互（知识库查询、混合检索） |
 
 ## 上下文管理

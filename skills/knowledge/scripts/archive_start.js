@@ -4,7 +4,7 @@ const path = require("path");
 const [,, srcDir, dstDir, daysStr] = process.argv;
 
 if (!srcDir || !dstDir) {
-  console.error("Usage: node archive_old_files.js <source_dir> <archive_dir> [days]");
+  console.error("Usage: node archive_start.js <source_dir> <archive_dir> [days]");
   console.error("  days: 文件年龄阈值（默认 90 天），按文件 mtime 计算");
   process.exit(1);
 }

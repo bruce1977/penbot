@@ -14,7 +14,11 @@
     "mp-ai-digest": "npx dotenv-cli -e .env -- opencode run \"/cmd-mp-digest configs/ai-config.json\"",
     "mp-meihua-digest": "npx dotenv-cli -e .env -- opencode run \"/cmd-mp-digest configs/meihua-config.json\"",
     "mp-test-digest": "npx dotenv-cli -e .env -- opencode run \"/cmd-mp-digest configs/test-config.json\"",
-    "setup": "npm install --ignore-scripts && node scripts/install-deps.js"
+    "kb:analyze": "node scripts/kb-analyze.js",
+    "kb:env:analyze:ai": "npx dotenv-cli -e .env -- node scripts/kb-analyze.js ai 20",
+    "setup": "npm install --ignore-scripts && node scripts/install-deps.js",
+    "lint": "eslint scripts/ skills/knowledge/scripts/",
+    "lint:fix": "eslint --fix scripts/ skills/knowledge/scripts/"
   },
   "dependencies": {
     "markdown-it": "^14.2.0",
@@ -36,5 +40,10 @@
   "bugs": {
     "url": "https://github.com/bruce1977/penbot/issues"
   },
-  "homepage": "https://github.com/bruce1977/penbot#readme"
+  "homepage": "https://github.com/bruce1977/penbot#readme",
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "globals": "^17.9.0"
+  }
 }

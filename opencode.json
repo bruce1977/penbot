@@ -18,23 +18,23 @@
   "command": {
     "cmd-knowledge": {
       "template": "根据$1执行MP知识库管线 (`workflows/workflow-knowledge.md`)",
-      "description": "MP知识库管线总索引：采集→分析→导入→归档四子流程，各子流程可独立运行"
+      "description": "MP知识库管线：采集→分析→同步→归档"
     },
     "cmd-knowledge-collect": {
-      "template": "根据$1执行知识库子流程2.1 采集入库 (`workflows/workflow-knowledge-collect.md`)",
-      "description": "知识库采集入库：公众号文章拉取+下载到 inbox/（参数为 profile）"
+      "template": "根据$1执行知识库采集入库 (`workflows/workflow-knowledge.md`)",
+      "description": "知识库采集入库：用户手动放置文档到 inbox/"
     },
     "cmd-knowledge-analyze": {
-      "template": "根据$1执行知识库子流程2.2 文档分析 (`workflows/workflow-knowledge-analyze.md`)",
-      "description": "知识库文档分析：打标签+评分+合并元数据到 marked/（参数为 profile）"
+      "template": "根据$1执行知识库文档分析 (`workflows/workflow-knowledge.md`)",
+      "description": "知识库文档分析：打标签+评分+合并元数据到 marked/"
     },
     "cmd-knowledge-sync-to-weknora": {
-      "template": "根据$1执行知识库子流程2.3 同步导入知识库 (`workflows/workflow-knowledge-sync-to-weknora.md`)",
-      "description": "知识库同步导入：marked/ 终稿导入 WeKnora（文章+标签）到 weknora/（参数为 profile）"
+      "template": "根据$1执行知识库同步导入 WeKnora (`workflows/workflow-knowledge.md`)",
+      "description": "知识库同步导入：marked/ 终稿导入 WeKnora（文章+标签）到 weknora/"
     },
     "cmd-knowledge-archive": {
-      "template": "根据$1执行知识库子流程2.4 归档 (`workflows/workflow-knowledge-archive.md`)",
-      "description": "知识库归档：weknora/ 旧文件移动到 archived/（参数为 profile）"
+      "template": "根据$1执行知识库归档 (`workflows/workflow-knowledge.md`)",
+      "description": "知识库归档：weknora/ 旧文件移动到 archive/"
     },
     "cmd-mp-auto-pipeline": {
       "template": "根据$1执行MP自动化管线",

@@ -1,13 +1,12 @@
 const fs = require("fs");
-const path = require("path");
 
-const LLM_BASE_URL = process.env.LLM_BASE_URL || "http://localhost:11434/v1";
-const LLM_API_KEY = process.env.LLM_API_KEY || "";
+const KB_LLM_BASE_URL = process.env.KB_LLM_BASE_URL || "http://localhost:11434/v1";
+const KB_LLM_API_KEY = process.env.KB_LLM_API_KEY || "";
 const DEFAULT_MODEL = "qwen2.5:3b";
-const REQUEST_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 120000);
+const REQUEST_TIMEOUT_MS = Number(process.env.KB_LLM_TIMEOUT_MS || 120000);
 const MAX_RETRIES = 3;
 
-const MODEL = process.env.LLM_MODEL || DEFAULT_MODEL;
+const MODEL = process.env.KB_LLM_MODEL || DEFAULT_MODEL;
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -15,7 +14,7 @@ function sleep(ms) {
 
 function buildHeaders() {
   const headers = { "Content-Type": "application/json" };
-  if (LLM_API_KEY) headers["Authorization"] = `Bearer ${LLM_API_KEY}`;
+  if (KB_LLM_API_KEY) headers["Authorization"] = `Bearer ${KB_LLM_API_KEY}`;
   return headers;
 }
 
@@ -26,7 +25,7 @@ async function llmChat(systemPrompt, userPrompt, model) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
     try {
-      const res = await fetch(`${LLM_BASE_URL}/chat/completions`, {
+      const res = await fetch(`${KB_LLM_BASE_URL}/chat/completions`, {
         method: "POST",
         headers: buildHeaders(),
         body: JSON.stringify({
@@ -80,10 +79,10 @@ function nowIso() {
 }
 
 function stripFrontmatter(content) {
-  if (!content.startsWith("---")) return content;
+  if (!content.startsWith("---")) return content.replace(/^\n+/, "");
   const end = content.indexOf("---", 3);
-  if (end === -1) return content;
-  return content.slice(end + 3).replace(/^\n/, "");
+  if (end === -1) return content.replace(/^\n+/, "");
+  return content.slice(end + 3).replace(/^\n+/, "");
 }
 
 module.exports = { llmChat, extractJSON, loadPrompt, nowIso, stripFrontmatter, MODEL, MAX_RETRIES };

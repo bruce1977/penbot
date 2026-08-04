@@ -1,13 +1,13 @@
 ---
 name: wechat-mp-gather
-description: "根据公众号列表拉取文章列表并下载 Markdown 原文。适用于：微信公众号采集下载。元数据提取与评分由 knowledge-analyze 技能完成"
+description: "根据公众号列表拉取文章列表并下载 Markdown 原文。适用于：微信公众号采集下载。元数据提取与评分由 knowledge 技能完成"
 ---
 
 # 微信公众号文章采集
 
 本技能提供**单一功能**：根据公众号列表拉取文章 + 下载 Markdown 原文。
 
-> **职责边界**：本技能只负责采集下载。文章的元数据提取（标签/摘要/关键词 → `.meta.json`）和评分（→ `.rate.json`）由 `knowledge-analyze` 技能的 `analyze_batch.js` 脚本完成，均不在本技能范围内。
+> **职责边界**：本技能只负责采集下载。文章的元数据提取（标签/摘要/关键词 → `.meta.json`）和评分（→ `.rate.json`）由 `knowledge` 技能的 `analyze_start.js` 脚本完成，均不在本技能范围内。
 
 ## 前置条件
 

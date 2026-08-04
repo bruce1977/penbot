@@ -1,105 +1,151 @@
 ---
 name: mp-knowledge
-description: "MP 知识库管线（总索引）：4 个独立子流程，每个可单独运行（采集→分析→导入→归档）"
 ---
 
-# MP 知识库管线（四子流程总索引）
+# 知识库管线 — 简化版
 
-知识采集由 **4 个独立子流程** 组成，每个子流程单独运行以满足各类知识的采集要求。上一子流程的产出目录即为下一子流程的输入目录。
+> **入口命令**：`/cmd-knowledge <profile>`
+> **技能加载**：`skills/knowledge/SKILL.md`
+> **脚本目录**：`skills/knowledge/scripts`
 
-> 本文档是总索引。执行某个子流程时，请加载对应子流程文档并按其步骤执行。
-
-## 子流程一览
-
-| # | 子流程 | 输入 | 执行者 | 技能/脚本 | 产出 | 文档 |
-|---|--------|------|--------|-----------|------|------|
-| 2.1 | 采集入库 | `{profile}`（账号列表来自 `configs/{profile}-config.json`） | `gatherer` | `wechat-mp-gather` | `inbox/*.md` | [workflow-knowledge-collect.md](workflow-knowledge-collect.md) |
-| 2.2 | 文档分析 | `inbox/*.md` | `coordinator` | `knowledge-analyze`（`analyze_batch.js`） | `marked/*.md` | [workflow-knowledge-analyze.md](workflow-knowledge-analyze.md) |
-| 2.3 | 同步导入知识库 | `marked/*.md` | `coordinator` | `knowledge-sync-weknora` | `weknora/*.md` | [workflow-knowledge-sync-to-weknora.md](workflow-knowledge-sync-to-weknora.md) |
-| 2.4 | 归档 | `weknora/*.md` | `coordinator` | `archive_old_files.js` | `archived/*.md` | [workflow-knowledge-archive.md](workflow-knowledge-archive.md) |
+---
 
 ## 目录结构
 
-每个 profile 知识库建立 4 个目录，文件按处理阶段单向流转：
-
 ```
-{KB}/articles/{profile}/
-├── inbox/       ← 原始文章（自动下载或手动放置）
-├── marked/      ← 已打标+评分、元数据嵌入 MD 后的终稿（`{hash}_*.md`）
-├── weknora/     ← 已成功导入 WeKnora 的文章
-└── archived/    ← 旧文件归档（可配置，默认 3 个月）
-```
-
-文件流转：`inbox → marked → weknora → archived`，单向推进，无回退。
-
-## 变量定义
-
-| 变量 | 来源 | 说明 |
-|------|------|------|
-| `{profile}` | 输入参数 | 配置名称/知识库 profile |
-| `{config}` | `configs/{profile}-config.json` | 约定配置文件（公众号列表、`archive_after_days` 等；导入所需的 WeKnora 配置见 `{base}/weknora.json`） |
-| `{KB}` | 环境变量 `PB_KNOWLEDGE_BASE_PATH` | 知识库根目录 |
-| `{base}` | `{KB}/articles/{profile}` | profile 知识库根目录 |
-| `{inbox}` | `{base}/inbox` | 原始文章目录 |
-| `{marked}` | `{base}/marked` | 已分析终稿目录 |
-| `{weknora}` | `{base}/weknora` | 已导入 WeKnora 目录 |
-| `{archived}` | `{base}/archived` | 归档目录 |
-| `{temp}` | `.temp/{profile}` | 运行时临时目录 |
-| `{scripts}` | `skills/knowledge-analyze/scripts` | 知识库分析标准脚本目录（`analyze_batch.js` 等） |
-
-> 所有子流程均以 `{profile}` 为唯一入口：`/cmd-knowledge-collect ai`、`/cmd-knowledge-analyze ai`、`/cmd-knowledge-sync-to-weknora ai`、`/cmd-knowledge-archive ai`。
-
-## 数据流总览
-
-```
-{profile} ──→ [2.1 采集] ──→ {inbox}/*.md
-                               ↓
-                         [2.2 分析] 打标签 + 评分 + 合并元数据
-                               ↓ (批量合并移动)
-                          {marked}/*.md
-                               ↓
-                         [2.3 导入] weknora API (文章+标签)
-                               ↓ (导入成功才移动)
-                         {weknora}/*.md
-                               ↓
-                         [2.4 归档] mtime > N 天
-                               ↓
-                         {archived}/*.md
+{KB_base}/{profile}/
+├── inbox/      ← 用户手动放置 .md 文档
+├── marked/     ← 分析后带 frontmatter 的文档
+├── weknora/    ← 已同步到 WeKnora 的文档
+├── archive/    ← 归档的旧文档
+└── config.json ← 子库配置（如 weknora category_id）
 ```
 
-## Frontmatter 格式
+> `KB_base` 默认为环境变量 `PB_KNOWLEDGE_BASE_PATH` 或 `D:/knowledge/articles`。
 
-```yaml
 ---
-hash: "c1b3a308d5b8"
-title: "人生周报v076：命运"
-auther: "李继刚"
-date: "2026-07-31T10:30:00+08:00"
-source: "https://mp.weixin.qq.com/s/r7rCQB5xqalabqpAouXGlw"
-tags: ["人生感悟", "金句摘录", "LLM思考"]
-keywords: ["周报", "人生感悟"]
-summary: "李继刚周报，摘录本周金句..."
-model: "opencode/mimo-v2.5-free"
-rating:
-  business: 4
-  technical: 5
-  social: 3
-  academic: null
-  ethics: 5
----
+
+## config.json
+
+```json
+{
+  "weknora": {
+    "category_id": "your-weknora-category-id"
+  }
+}
 ```
 
-| 字段 | 来源 | 说明 |
-|------|------|------|
-| `hash` | `.meta.json`（由 `lib/content_hash.js` 自动计算，3 轮 sha256 取 12 位十六进制） | 内容 hash，用于导入去重与文件名前缀（`{marked}/{hash}_*.md`） |
-| `title` | `.meta.json`（必填，由 `extract_meta.js` 提取） | 文章标题 |
-| `auther` | `.meta.json`（正文检索）→ 文件名回退 | 公众号名称，正文无作者时 `""` |
-| `date` | `.meta.json` | **打标时刻**（ISO 8601 含时区），非发布时间 |
-| `source` | `.meta.json` | 原文链接 |
-| `tags` | `.meta.json` | AI 提取的标签列表 |
-| `keywords` | `.meta.json` | 关键词列表（可选） |
-| `summary` | `.meta.json` | AI 生成的核心摘要 |
-| `model` | `.meta.json` | **打标所用模型名称**（模型自动输出自身运行的模型 ID），追溯元数据来源 |
-| `rating` | `.rate.json` | 评论员五维评分，null 表示未评分 |
+---
 
-> 不设 `category` 字段——无固定枚举时归类值不稳定，统一以 `tags` 承载主题信息。
+## 流程一：采集（手动）
+
+用户将待处理的 `.md` 文档手动放入 `{inbox}/` 目录。无自动化脚本。
+
+---
+
+## 流程二：文档分析
+
+对 `{inbox}/` 内 `.md` 批量执行 **元数据提取 + 五维评分 + 合并 frontmatter**，终稿移动到 `{marked}/`。
+
+### 脚本
+
+```bash
+node skills/knowledge/scripts/analyze_start.js <source_dir> <target_dir> [batch_size]
+```
+
+### 示例
+
+```bash
+# 分析 AI 知识库
+node skills/knowledge/scripts/analyze_start.js \
+  D:/knowledge/articles/ai/inbox \
+  D:/knowledge/articles/ai/marked
+```
+
+### 环境变量
+
+| 变量 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `KB_LLM_BASE_URL` | 否 | `http://localhost:11434/v1` | LLM API 地址 |
+| `KB_LLM_API_KEY` | 否 | 空 | LLM API 密钥 |
+| `KB_LLM_MODEL` | 否 | `qwen2.5:3b` | 默认模型 |
+| `KB_LLM_META_MODEL` | 否 | 继承 `KB_LLM_MODEL` | 元数据提取专用模型 |
+| `KB_LLM_RATE_MODEL` | 否 | 继承 `KB_LLM_MODEL` | 评分提取专用模型 |
+| `KB_LLM_TIMEOUT_MS` | 否 | `120000` | 单次 LLM 请求超时（毫秒） |
+
+---
+
+## 流程三：同步导入 WeKnora
+
+将 `{marked}/` 中带 frontmatter 的终稿逐篇导入 WeKnora（文章 + 标签），导入成功后移动到 `{weknora}/`。
+
+### 前置条件
+
+1. 从 `config.json` 读取 `weknora.category_id`
+2. 设置环境变量：`WEKNORA_BASE_URL`、`WEKNORA_API_KEY`
+
+### 脚本
+
+```bash
+node skills/knowledge/scripts/weknora_start_to_sync.js <source_dir> <target_dir> <category_id>
+```
+
+### 示例
+
+```bash
+node skills/knowledge/scripts/weknora_start_to_sync.js \
+  D:/knowledge/articles/ai/marked \
+  D:/knowledge/articles/ai/weknora \
+  <category_id>
+```
+
+### 环境变量
+
+| 变量 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `WEKNORA_BASE_URL` | 是 | — | WeKnora API 基础地址 |
+| `WEKNORA_API_KEY` | 是 | — | API 密钥 |
+| `SUBMIT_INTERVAL_MS` | 否 | `10000` | 每篇提交后等待间隔（毫秒） |
+| `SYNC_SCRIPT_TIMEOUT_MS` | 否 | `600000` | 脚本整体超时 |
+
+### 执行步骤
+
+1. 分页拉取库内已有标题，建立标题集合
+2. 遍历 `{source}/*.md`，每篇：
+   - 解析 frontmatter：`hash`、`title`、`tags`、正文 body
+   - 提交标题 = `${hash}_${title}`；若已存在 → SKIP 并移动
+   - 创建/复用标签 → 导入文章 → 成功后 Move 到 `{target}/`
+3. 失败篇保留在 `{source}` 待重试
+
+---
+
+## 流程四：归档
+
+将 `{weknora}/` 中超过指定天数的旧文件移动到 `{archive}/`。
+
+### 脚本
+
+```bash
+node skills/knowledge/scripts/archive_start.js <source_dir> <target_dir> [days]
+```
+
+### 示例
+
+```bash
+node skills/knowledge/scripts/archive_start.js \
+  D:/knowledge/articles/ai/weknora \
+  D:/knowledge/articles/ai/archive \
+  90
+```
+
+---
+
+## 脚本总览
+
+| 脚本 | 对应流程 | 说明 |
+|------|---------|------|
+| `analyze_start.js` | 流程二 | 元数据提取 + 五维评分 + 合并 frontmatter |
+| `weknora_start_to_sync.js` | 流程三 | 同步导入 WeKnora 知识库 |
+| `archive_start.js` | 流程四 | 按文件年龄归档旧文件 |
+
+所有脚本位于 `skills/knowledge/scripts/`，详细用法见 [skills/knowledge/SKILL.md](../skills/knowledge/SKILL.md)。
