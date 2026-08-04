@@ -36,7 +36,9 @@ function moveFile(src, dst) {
   }
 }
 
-const files = fs.readdirSync(srcDir).filter(f => f.endsWith(".md")).sort();
+const files = fs.readdirSync(srcDir)
+    .filter(f => f.endsWith(".md"))
+    .sort();
 if (files.length === 0) { console.log("No .md files found"); process.exit(0); }
 
 let archived = 0, kept = 0;

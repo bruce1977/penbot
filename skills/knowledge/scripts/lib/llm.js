@@ -50,7 +50,10 @@ async function llmChat(systemPrompt, userPrompt, model) {
       return content;
     } catch (err) {
       lastErr = err;
-      if (i < MAX_RETRIES) await sleep(2000 * i);
+      if (i < MAX_RETRIES) {
+        console.log(`LLM request failed (${i}/${MAX_RETRIES}): ${err.message}, retrying in ${2000 * i}ms...`);
+        await sleep(2000 * i);
+      }
     } finally {
       clearTimeout(timer);
     }

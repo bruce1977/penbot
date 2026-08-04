@@ -94,7 +94,9 @@ function parseFrontmatter(content) {
     if (hashM) hash = hashM[1].replace(/^"|"$/g, "").trim();
     const tagM = line.match(/^tags:\s*\[(.*)\]$/);
     if (tagM) {
-      tags = tagM[1].split(",").map(s => s.trim().replace(/^"|"$/g, "")).filter(Boolean);
+      tags = tagM[1].split(",")
+          .map(s => s.trim().replace(/^"|"$/g, ""))
+          .filter(Boolean);
     }
   }
   return { title, hash, tags, body };
@@ -127,7 +129,9 @@ async function main() {
   const existingTitles = await fetchExistingTitles();
   console.log(`[dedup] loaded ${existingTitles.size} existing titles from KB`);
 
-  const files = fs.readdirSync(sourceDir).filter(f => f.endsWith(".md")).sort();
+  const files = fs.readdirSync(sourceDir)
+      .filter(f => f.endsWith(".md"))
+      .sort();
   if (files.length === 0) {
     console.log("No .md files found in source directory");
     process.exit(0);

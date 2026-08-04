@@ -5,7 +5,7 @@ const { llmChat, extractJSON, loadPrompt, nowIso } = require("./lib/llm");
 const MODEL = process.env.KB_LLM_META_MODEL || process.env.KB_LLM_MODEL || "qwen2.5:3b";
 const SCRIPT_DIR = path.dirname(__filename || __dirname);
 const PROMPT_DIR = path.resolve(SCRIPT_DIR, "..", "prompts");
-const SYSTEM_PROMPT = "你是结构化信息提取器。输出必须是纯 JSON，禁止使用'本文''文章''该文'等元词开头。摘要应以主体（人名/公司名/产品名）直接切入。";
+const SYSTEM_PROMPT = "You are a structured information extractor. Output must be pure JSON. Do not start with words like 'this article' or 'the article'. Summaries should begin directly with the subject (person/company/product).";
 
 // Pull the candidate title from the filename (text after the 4th underscore segment).
 function titleFromFilename(baseName) {
@@ -42,20 +42,13 @@ function validateMeta(meta) {
   return errors;
 }
 
-// Called by the main script analyze_start.js as a module: returns a result object, does not call process.exit.
-// absPath: path to the .md file to process (may be a temp file)
-// outDir (optional): directory to write .meta.json cache to (defaults to file's dir)
-// cacheBase (optional): base name for cache file (defaults to file's basename without ext)
-async function processFile(absPath, outDir, cacheBase) {
-  const base = cacheBase || path.basename(absPath, ".md");
-  const cacheDir = outDir || path.dirname(absPath);
-  const metaPath = path.join(cacheDir, `${base}.meta.json`);
-
-  if (fs.existsSync(metaPath)) {
-    return { status: "skip", file: path.basename(absPath) };
-  }
-
-  const content = fs.readFileSync(absPath, "utf-8");
+// Extract metadata from content and write to target file.
+// @param {string} content - markdown content to extract metadata from
+// @param {string} targetFile - path to write .meta.json output
+// @param {string} sourceName - source file name for title extraction and logging
+// @returns {Promise<{status: string, file?: string, error?: string, metaPath?: string}>}
+async function processFile(content, targetFile, sourceName) {
+  const base = path.basename(sourceName, ".md");
   const candidateTitle = titleFromFilename(base);
 
   let meta = null;
@@ -72,34 +65,13 @@ async function processFile(absPath, outDir, cacheBase) {
   }
 
   if (!meta) {
-    return { status: "error", file: path.basename(absPath), error: `validation failed: ${lastErrors.join("; ")}` };
+    return { status: "error", file: sourceName, error: `validation failed: ${lastErrors.join("; ")}` };
   }
 
-  fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2), "utf-8");
-  return { step: "meta", status: "ok", file: path.basename(absPath), metaPath };
+  const targetDir = path.dirname(targetFile);
+  if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+  fs.writeFileSync(targetFile, JSON.stringify(meta, null, 2), "utf-8");
+  return { status: "ok", file: sourceName, metaPath: targetFile };
 }
 
 module.exports = { processFile, buildMeta, validateMeta, MODEL };
-
-// Keep the standalone CLI entry: node analyze_extract_meta.js <file_path>
-if (require.main === module) {
-  const [,, filePath] = process.argv;
-  if (!filePath) {
-    console.error("Usage: node analyze_extract_meta.js <file_path>");
-    process.exit(1);
-  }
-  const absPath = path.resolve(filePath);
-  if (!fs.existsSync(absPath)) {
-    console.log(JSON.stringify({ status: "error", file: filePath, error: "file not found" }));
-    process.exit(1);
-  }
-  processFile(absPath)
-    .then((result) => {
-      console.log(JSON.stringify(result));
-      process.exit(result.status === "error" ? 1 : 0);
-    })
-    .catch((err) => {
-      console.log(JSON.stringify({ status: "error", file: path.basename(filePath), error: err.message }));
-      process.exit(1);
-    });
-}

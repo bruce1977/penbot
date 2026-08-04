@@ -2,10 +2,12 @@ const fs = require("fs");
 const path = require("path");
 const extractMeta = require("./analyze_extract_meta");
 const extractRate = require("./analyze_extract_rate");
-const mergeToMarked = require("./analyze_merge");
+const { generateYamlHeader, sanitizeTitle, loadJSON } = require("./analyze_frontmatter");
 const { stripFrontmatter } = require("./lib/llm");
+const { contentHash } = require("./lib/content_hash");
 
 const BATCH_TIMEOUT_MS = 3600000;
+const SEPARATOR = "-".repeat(60);
 
 const [, , sourceDir, targetDir, batchSizeArg] = process.argv;
 if (!sourceDir || !targetDir) {
@@ -37,62 +39,82 @@ function selectBatch(absSource) {
   return { sorted, batch: sorted.slice(0, BATCH_SIZE) };
 }
 
-async function processFile(f) {
+async function processFile(f, index, total) {
   const filePath = path.join(sourceDir, f);
   const base = f.slice(0, -3);
   const t0 = Date.now();
+  const prefix = `[${String(index + 1).padStart(String(total).length)}/${total}]`;
 
-  // Cache check: if both .meta.json and .rate.json exist next to the original file,
-  // extraction was already done (e.g. previous interrupted run). Skip straight to merge.
-  const metaPath = path.join(sourceDir, `${base}.meta.json`);
-  const ratePath = path.join(sourceDir, `${base}.rate.json`);
-  const cacheReady = fs.existsSync(metaPath) && fs.existsSync(ratePath);
+  console.log(`${prefix} Processing: ${f}`);
+  console.log(SEPARATOR);
 
-  // Hand a frontmatter-stripped body to the extractors via a temp file.
-  const clean = stripFrontmatter(fs.readFileSync(filePath, "utf-8"));
-  const tmpPath = path.join(sourceDir, `${Date.now()}_${path.basename(filePath)}`);
-  fs.writeFileSync(tmpPath, clean, "utf-8");
+  // Step 1: Strip existing frontmatter
+  console.log(`${prefix} Step 1: Stripping existing frontmatter`);
+  const rawContent = fs.readFileSync(filePath, "utf-8");
+  const cleanBody = stripFrontmatter(rawContent);
 
-  try {
-    let metaResult, rateResult;
+  // Step 2: Compute content hash
+  console.log(`${prefix} Step 2: Computing content hash`);
+  const hash = contentHash(cleanBody);
+  console.log(`${prefix} hash: ${hash}`);
 
-    if (cacheReady) {
-      // Cache hit: reuse existing .meta.json / .rate.json
-      metaResult = { status: "skip", file: f };
-      rateResult = { status: "skip", file: f };
-    } else {
-      // Cache miss: run extraction concurrently, write cache to sourceDir (next to original file)
-      [metaResult, rateResult] = await Promise.all([
-        extractMeta.processFile(tmpPath, sourceDir, base),
-        extractRate.processFile(tmpPath, sourceDir, base),
-      ]);
-    }
+  // Step 3 & 4: Extract metadata and rate content (parallel)
+  console.log(`${prefix} Step 3 & 4: Extracting metadata and rating content (parallel)`);
+  const metaPath = path.join(sourceDir, `${hash}.meta.json`);
+  const ratePath = path.join(sourceDir, `${hash}.rate.json`);
 
-    // A genuine error (not a cached-json reuse) aborts the file.
-    if (metaResult.status === "error") return { file: f, status: "failed", error: `meta: ${metaResult.error}`, ms: Date.now() - t0 };
-    if (rateResult.status === "error") return { file: f, status: "failed", error: `rate: ${rateResult.error}`, ms: Date.now() - t0 };
+  const metaTask = fs.existsSync(metaPath)
+      ? Promise.resolve({ status: "skip", file: f })
+      : extractMeta.processFile(cleanBody, metaPath, f);
 
-    const mergeResult = await mergeToMarked.processFile(filePath, targetDir);
-    if (mergeResult.status !== "ok") return { file: f, status: "failed", error: mergeResult.error || mergeResult.reason, ms: Date.now() - t0 };
+  const rateTask = fs.existsSync(ratePath)
+      ? Promise.resolve({ status: "skip", file: f })
+      : extractRate.processFile(cleanBody, ratePath, f);
 
-    // merge_to_marked already wrote the target file (${hash}_${title}.md); clean up source.
-    fs.unlinkSync(filePath);
-    [".meta.json", ".rate.json"].forEach(suf => {
-      const p = path.join(sourceDir, `${base}${suf}`);
-      if (fs.existsSync(p)) fs.unlinkSync(p);
-    });
+  const [metaResult, rateResult] = await Promise.all([metaTask, rateTask]);
 
-    return { file: f, status: "done", target: mergeResult.targetPath, ms: Date.now() - t0 };
-  } finally {
-    // Always remove the temp file.
-    if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+  if (metaResult.status === "error") {
+    console.log(`${prefix} Metadata extraction failed: ${metaResult.error}`);
+    return { file: f, status: "failed", error: `meta: ${metaResult.error}`, ms: Date.now() - t0 };
   }
+  if (rateResult.status === "error") {
+    console.log(`${prefix} Rating failed: ${rateResult.error}`);
+    return { file: f, status: "failed", error: `rate: ${rateResult.error}`, ms: Date.now() - t0 };
+  }
+
+  // Step 5: Generate YAML header
+  console.log(`${prefix} Step 5: Generating YAML header`);
+  const meta = loadJSON(metaPath);
+  const rate = loadJSON(ratePath);
+  if (!meta) {
+    return { file: f, status: "failed", error: "failed to load meta.json", ms: Date.now() - t0 };
+  }
+  const yamlHeader = generateYamlHeader(meta, rate, hash);
+
+  // Step 6: Create target file with YAML header and content
+  console.log(`${prefix} Step 6: Creating target file`);
+  if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+  const targetPath = path.join(targetDir, `${hash}_${sanitizeTitle(meta.title)}.md`);
+  const fileContent = `${yamlHeader}\n\n${cleanBody}`;
+  fs.writeFileSync(targetPath, fileContent, "utf-8");
+
+  // Step 7: Cleanup intermediate files
+  console.log(`${prefix} Step 7: Cleaning up intermediate files`);
+  [`${hash}.meta.json`, `${hash}.rate.json`].forEach(filename => {
+    const p = path.join(sourceDir, filename);
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  });
+  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+  console.log(`${prefix} Completed: ${f} → ${path.basename(targetPath)}`);
+  console.log(SEPARATOR);
+
+  return { file: f, status: "done", target: targetPath, ms: Date.now() - t0 };
 }
 
 async function runBatch(batch) {
   const results = [];
   const batchStart = Date.now();
-  const width = String(batch.length).length;
 
   for (let i = 0; i < batch.length; i++) {
     if (Date.now() - batchStart > BATCH_TIMEOUT_MS) {
@@ -100,12 +122,12 @@ async function runBatch(batch) {
       break;
     }
     const f = batch[i];
-    const r = await processFile(f).catch(err => ({ file: f, status: "failed", error: err.message, ms: 0 }));
-    const mark = r.status === "done" ? "OK " : r.status === "skip" ? "SKIP" : "ERR ";
+    const r = await processFile(f, i, batch.length).catch(err => ({ file: f, status: "failed", error: err.message, ms: 0 }));
+    const mark = r.status === "done" ? "OK" : r.status === "skip" ? "SKIP" : "ERR";
     const tail = r.status === "done" && r.target
-      ? ` → ${path.basename(r.target)}`
+      ? ` -> ${path.basename(r.target)}`
       : (r.status === "failed" ? `  ${r.error}` : "");
-    console.log(`[${String(i + 1).padStart(width)}/${batch.length}] ${mark} ${f}  ${((r.ms || 0) / 1000).toFixed(0)}s${tail}`);
+    console.log(`${mark} ${f}  ${((r.ms || 0) / 1000).toFixed(0)}s${tail}`);
     results.push(r);
   }
   return results;
@@ -117,14 +139,33 @@ function printSummary(results, sorted, batch) {
   const failed = results.filter(r => r.status === "failed").length;
   const totalMs = results.reduce((s, r) => s + (r.ms || 0), 0);
   const avg = results.length ? (totalMs / results.length / 1000).toFixed(1) : "0.0";
-  console.log(`\n=== Summary: done ${done}, skipped ${skipped}, failed ${failed} | total ${(totalMs / 1000).toFixed(1)}s, avg ${avg}s/file ===`);
+
+  console.log("\n" + "=".repeat(60));
+  console.log("Processing Summary");
+  console.log("=".repeat(60));
+  console.log(`Done: ${done} | Skipped: ${skipped} | Failed: ${failed}`);
+  console.log(`Total time: ${(totalMs / 1000).toFixed(1)}s | Avg: ${avg}s/file`);
   console.log(`Remaining: ${sorted.length - batch.length} files`);
-  results.filter(r => r.status === "failed").forEach(r => console.log(`  ERR ${r.file}: ${r.error}`));
+
+  if (failed > 0) {
+    console.log("\nFailed files:");
+    results.filter(r => r.status === "failed")
+        .forEach(r => console.log(`  ERR ${r.file}: ${r.error}`));
+  }
+  console.log("=".repeat(60));
 }
 
 async function main() {
   const { sorted, batch } = selectBatch(path.resolve(sourceDir));
-  console.log(`=== Knowledge analysis: ${batch.length}/${sorted.length} files (timeout ${BATCH_TIMEOUT_MS / 1000}s) ===`);
+  console.log("\n" + "=".repeat(60));
+  console.log("Knowledge Document Analysis");
+  console.log("=".repeat(60));
+  console.log(`Source: ${sourceDir}`);
+  console.log(`Target: ${targetDir}`);
+  console.log(`Batch size: ${batch.length}/${sorted.length}`);
+  console.log(`Timeout: ${BATCH_TIMEOUT_MS / 1000}s`);
+  console.log("=".repeat(60) + "\n");
+
   const results = await runBatch(batch);
   printSummary(results, sorted, batch);
 }

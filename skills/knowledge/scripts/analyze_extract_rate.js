@@ -5,7 +5,7 @@ const { llmChat, extractJSON, loadPrompt } = require("./lib/llm");
 const MODEL = process.env.KB_LLM_RATE_MODEL || process.env.KB_LLM_MODEL || "qwen2.5:3b";
 const SCRIPT_DIR = path.dirname(__filename || __dirname);
 const PROMPT_DIR = path.resolve(SCRIPT_DIR, "..", "prompts");
-const SYSTEM_PROMPT = "你是结构化评分器。只输出纯JSON，不要任何额外文字。";
+const SYSTEM_PROMPT = "You are a structured rater. Output pure JSON only, no additional text.";
 
 function buildPrompt(content) {
   return loadPrompt(path.join(PROMPT_DIR, "rate_prompt.txt"), {
@@ -49,21 +49,12 @@ function validateRate(rate) {
   return errors;
 }
 
-// Called by the main script analyze_start.js as a module: returns a result object, does not call process.exit.
-// absPath: path to the .md file to process (may be a temp file)
-// outDir (optional): directory to write .rate.json cache to (defaults to file's dir)
-// cacheBase (optional): base name for cache file (defaults to file's basename without ext)
-async function processFile(absPath, outDir, cacheBase) {
-  const base = cacheBase || path.basename(absPath, ".md");
-  const cacheDir = outDir || path.dirname(absPath);
-  const ratePath = path.join(cacheDir, `${base}.rate.json`);
-
-  if (fs.existsSync(ratePath)) {
-    return { status: "skip", file: path.basename(absPath) };
-  }
-
-  const content = fs.readFileSync(absPath, "utf-8");
-
+// Extract rating from content and write to target file.
+// @param {string} content - markdown content to rate
+// @param {string} targetFile - path to write .rate.json output
+// @param {string} sourceName - source file name for logging
+// @returns {Promise<{status: string, file?: string, error?: string, ratePath?: string}>}
+async function processFile(content, targetFile, sourceName) {
   let rate = null;
   let lastErrors = [];
   for (let attempt = 1; attempt <= 3; attempt++) {
@@ -78,34 +69,13 @@ async function processFile(absPath, outDir, cacheBase) {
   }
 
   if (!rate) {
-    return { status: "error", file: path.basename(absPath), error: `validation failed: ${lastErrors.join("; ")}` };
+    return { status: "error", file: sourceName, error: `validation failed: ${lastErrors.join("; ")}` };
   }
 
-  fs.writeFileSync(ratePath, JSON.stringify(rate, null, 2), "utf-8");
-  return { step: "rate", status: "ok", file: path.basename(absPath), ratePath };
+  const targetDir = path.dirname(targetFile);
+  if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+  fs.writeFileSync(targetFile, JSON.stringify(rate, null, 2), "utf-8");
+  return { status: "ok", file: sourceName, ratePath: targetFile };
 }
 
 module.exports = { processFile, buildRate, validateRate, MODEL };
-
-// Keep the standalone CLI entry: node analyze_extract_rate.js <file_path>
-if (require.main === module) {
-  const [,, filePath] = process.argv;
-  if (!filePath) {
-    console.error("Usage: node analyze_extract_rate.js <file_path>");
-    process.exit(1);
-  }
-  const absPath = path.resolve(filePath);
-  if (!fs.existsSync(absPath)) {
-    console.log(JSON.stringify({ status: "error", file: filePath, error: "file not found" }));
-    process.exit(1);
-  }
-  processFile(absPath)
-    .then((result) => {
-      console.log(JSON.stringify(result));
-      process.exit(result.status === "error" ? 1 : 0);
-    })
-    .catch((err) => {
-      console.log(JSON.stringify({ status: "error", file: path.basename(filePath), error: err.message }));
-      process.exit(1);
-    });
-}

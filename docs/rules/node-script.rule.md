@@ -27,6 +27,16 @@
 - 使用 `const` / `let`，**禁止 `var`**。
 - 比较用 `===`；允许 `== null` 惯用法（同时判空与未定义）。
 - 优先 `const`；只有需要重新赋值时才用 `let`。
+- **链式调用换行**：当 `.filter().forEach()` 等链式调用过长时，每个方法独占一行并缩进 4 空格：
+
+  ```js
+  // Bad
+  results.filter(r => r.status === "failed").forEach(r => console.log(`  ERR ${r.file}: ${r.error}`));
+
+  // Good
+  results.filter(r => r.status === "failed")
+      .forEach(r => console.log(`  ERR ${r.file}: ${r.error}`));
+  ```
 
 ## 3. 参数解析  [评审 + 模板]
 
@@ -89,7 +99,12 @@ if (!apiBase) {
 - 末尾输出摘要行：`console.log(\`Done. ${ok}/${total} processed\`)`。
 - （可选扩展：可用自定义规则强制 `console.log` 首参以已知前缀开头，目前为 [评审]。）
 
-## 8. 代码结构  [评审]
+## 8. 语言规范  [评审]
+
+- **注释与终端输出全部使用英文**：代码注释（行内注释、块注释、JSDoc）和 `console.log` / `console.error` 输出的文本内容必须使用英文。
+- 例外：用户提供的数据内容（如文章标题、摘要）保持原样，不强制翻译。
+
+## 9. 代码结构  [评审]
 
 ```js
 function main() {
@@ -118,7 +133,7 @@ main();
   }
   ```
 
-## 9. 退出码  [评审]
+## 10. 退出码  [评审]
 
 | 场景 | 码 |
 |------|----|
@@ -127,7 +142,7 @@ main();
 | 运行时错误 | `1` |
 | 无工作可做（空目录等） | `0` |
 
-## 10. 静态检查（ESLint）  [工具]
+## 11. 静态检查（ESLint）  [工具]
 
 配置见根目录 `eslint.config.cjs`（flat config，CommonJS）。
 
@@ -141,4 +156,4 @@ main();
 - **自定义插件规则**（`tools/eslint-plugin-penbot.js`）：
   - `penbot/no-async-fs`（error）—— 禁止异步 fs，强制同步 API（对应第 6 节）
 - **扩展方式**：在 `eslint.config.cjs` 的 `files` 数组加目录即可扩大范围；插件新增规则只需在 `tools/eslint-plugin-penbot.js` 的 `rules` 里追加，再在 config 的 `rules` 启用。
-- **注意**：第 3/4/5/7/8/9 节的语义约定 linter 无法表达，仍需代码评审；标记为 [Lint-自定义] 的条目可随插件规则增多逐步转为自动检查。
+- **注意**：第 3/4/5/7/8/9/10 节的语义约定 linter 无法表达，仍需代码评审；标记为 [Lint-自定义] 的条目可随插件规则增多逐步转为自动检查。

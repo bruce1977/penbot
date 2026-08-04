@@ -85,13 +85,21 @@ node skills/knowledge/scripts/analyze_start.js <source_dir> <target_dir> [batch_
 ### 脚本架构
 
 ```
-analyze_start.js                 ← 主入口：编排全流程
-├── lib/llm.js                   ← LLM 客户端 + 工具函数
-├── lib/content_hash.js          ← 内容 hash（3 轮 sha256，12 位 hex）
-├── analyze_extract_meta.js      ← 元数据提取（in-process 模块）
-├── analyze_extract_rate.js      ← 评分提取（in-process 模块）
-└── analyze_merge.js             ← 合并 frontmatter（in-process 模块）
+analyze_start.js                 ← Main entry: orchestrates full pipeline
+├── lib/llm.js                   ← LLM client + utility functions
+├── lib/content_hash.js          ← Content hash (3 rounds sha256, 12 hex)
+├── analyze_extract_meta.js      ← Metadata extraction (in-process module)
+├── analyze_extract_rate.js      ← Rating extraction (in-process module)
+└── analyze_frontmatter.js       ← YAML frontmatter generation (in-process module)
 ```
+
+### Module API
+
+| Module | Export | Signature | Description |
+|--------|--------|-----------|-------------|
+| `analyze_extract_meta.js` | `processFile` | `(content, targetFile, sourceName) → Promise<Result>` | Extract metadata from content, write .meta.json |
+| `analyze_extract_rate.js` | `processFile` | `(content, targetFile, sourceName) → Promise<Result>` | Extract rating from content, write .rate.json |
+| `analyze_frontmatter.js` | `generateYamlHeader` | `(meta, rate, hash) → string` | Generate YAML frontmatter string |
 
 ### 提示词与功能映射
 
@@ -105,20 +113,24 @@ analyze_start.js                 ← 主入口：编排全流程
 ```
 source_dir/*.md
   │
-  ▼  剥离 frontmatter → 写入临时文件（source_dir/{ts}_{basename}）
+  ▼  Step 1: Strip existing frontmatter
   │
-  ├──→ analyze_extract_meta.js → .meta.json（并发）
-  ├──→ analyze_extract_rate.js → .rate.json（并发）
+  ▼  Step 2: Compute content hash (3 rounds sha256, 12 hex)
   │
-  ▼
-analyze_merge.js → 合并为 frontmatter，写入 target_dir/{hash}_{title}.md
+  ├──→ Step 3 & 4: Extract metadata + Rate content (parallel)
+  │         ├──→ ${hash}.meta.json
+  │         └──→ ${hash}.rate.json
   │
-  ▼  清理：删除源 .md + .meta.json + .rate.json + 临时文件
-  ▼
-done
+  ▼  Step 5: Generate YAML header
+  │
+  ▼  Step 6: Create target file → target_dir/${hash}_${title}.md
+  │
+  ▼  Step 7: Cleanup intermediate files
+  │
+  done
 ```
 
-> 临时文件在 source_dir 内创建（`{timestamp}_{filename}`），处理完成后自动清理。
+> Steps 3 & 4 run in parallel using Promise.all for better performance.
 
 ### 元数据标准
 
@@ -129,7 +141,7 @@ done
   "title": "MoE架构：稀疏激活与大模型容量",
   "date": "2026-07-31T10:30:00+08:00",
   "auther": "科技兽",
-  "source": "https://mp.weixin.qq.com/s/...",
+  "source": "原始文件名.md",
   "tags": ["大模型", "开源", "MoE"],
   "summary": "MoE架构通过稀疏激活在同等算力下实现更大模型容量。",
   "keywords": ["MoE", "稀疏激活"],
@@ -142,7 +154,7 @@ done
 | `title` | string | 是 | 优先从文件名提取（`{fakeid}_{index}_{date}_{account}_{title}.md` 去掉前四段）；回退正文首部标题 |
 | `date` | string | 是 | **打标时刻**（ISO 8601 含时区），非文章发布时间 |
 | `auther` | string | 否 | 从正文检索作者/公众号名；无则 `""` |
-| `source` | string | 否 | 原文链接 |
+| `source` | string | 否 | 原始文档的文件名（如 `原始文章.md`） |
 | `tags` | string[] | 是 | 2-5 个标签，精准概括主题，避免泛词单独成标签 |
 | `summary` | string | 是 | 1-2 句核心摘要，覆盖关键观点与结论 |
 | `keywords` | string[] | 是 | 3-5 个关键词/短语，辅助检索 |
@@ -173,11 +185,12 @@ done
 
 ### 缓存与幂等
 
-- `.meta.json` 已存在（源目录内） → 跳过该篇元数据提取
-- `.rate.json` 已存在（源目录内） → 跳过该篇评分
+- `${hash}.meta.json` 已存在（源目录内） → 跳过该篇元数据提取
+- `${hash}.rate.json` 已存在（源目录内） → 跳过该篇评分
 - 两个缓存文件都存在 → 跳过提取，直接进入合并步骤
 - 终稿文件名 `${hash}_${title}.md`：`hash` 由正文内容计算，相同正文必产生相同文件名，天然去重（重跑会覆盖）
 - 中断后重跑：缓存文件保留在源目录，自动跳过已提取的文件，避免重复 LLM 调用
+- hash 作为中间文件的统一命名基础，确保流程幂等性
 
 ---
 
@@ -282,19 +295,19 @@ skills/knowledge/
 ├── SKILL.md
 ├── README.md
 ├── prompts/
-│   ├── meta_prompt.txt          ← 元数据提取 prompt
-│   └── rate_prompt.txt          ← 五维评分 prompt
+│   ├── meta_prompt.txt          ← Metadata extraction prompt
+│   └── rate_prompt.txt          ← Rating extraction prompt
 └── scripts/
-    ├── init_start.js            ← 功能一：初始化
-    ├── analyze_start.js         ← 功能二：分析主入口
-    ├── analyze_extract_meta.js  ← 元数据提取（in-process 模块）
-    ├── analyze_extract_rate.js  ← 评分提取（in-process 模块）
-    ├── analyze_merge.js         ← 合并 frontmatter（in-process 模块）
-    ├── weknora_start_to_sync.js ← 功能三：同步 WeKnora
-    ├── archive_start.js         ← 功能四：归档
+    ├── init_start.js            ← Feature 1: Initialization
+    ├── analyze_start.js         ← Feature 2: Analysis main entry
+    ├── analyze_extract_meta.js  ← Metadata extraction (in-process module)
+    ├── analyze_extract_rate.js  ← Rating extraction (in-process module)
+    ├── analyze_frontmatter.js   ← YAML frontmatter generation (in-process module)
+    ├── weknora_start_to_sync.js ← Feature 3: Sync to WeKnora
+    ├── archive_start.js         ← Feature 4: Archive
     └── lib/
-        ├── llm.js               ← LLM 客户端 + 工具函数
-        └── content_hash.js      ← 内容 hash（3 轮 sha256）
+        ├── llm.js               ← LLM client + utility functions
+        └── content_hash.js      ← Content hash (3 rounds sha256)
 ```
 
 Base directory for this skill: skills/knowledge
