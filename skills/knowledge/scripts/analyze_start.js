@@ -3,174 +3,176 @@ const path = require("path");
 const extractMeta = require("./analyze_extract_meta");
 const extractRate = require("./analyze_extract_rate");
 const { generateYamlHeader, sanitizeTitle, loadJSON } = require("./analyze_frontmatter");
-const { stripFrontmatter } = require("./lib/llm");
+const { stripFrontmatter, getLlmStats } = require("./lib/llm");
 const { contentHash } = require("./lib/content_hash");
+const { writeJsonFile } = require("./lib/common");
 
-const BATCH_TIMEOUT_MS = 3600000;
-const SEPARATOR = "-".repeat(60);
-
+// ─── Config ──────────────────────────────────────────────────────────────────
 const [, , sourceDir, targetDir, batchSizeArg] = process.argv;
 if (!sourceDir || !targetDir) {
-  console.error("Usage: node analyze_start.js <source_dir> <target_dir> [batch_size]");
-  process.exit(1);
-}
-const BATCH_SIZE = Number(batchSizeArg) || 30;
-
-// Derive the publish date (YYYYMMDD) embedded in the filename so batches run oldest-first.
-function extractDate(filename) {
-  const parts = filename.replace(/\.md$/, "").split("_");
-  return parts.length >= 3 && /^\d{8}$/.test(parts[2]) ? parts[2] : "99999999";
-}
-
-function selectBatch(absSource) {
-  if (!fs.existsSync(absSource)) {
-    console.error(`Error: source directory not found: ${absSource}`);
+    console.error("Usage: node analyze_start.js <source_dir> <target_dir> [batch_size]");
     process.exit(1);
-  }
-  const allFiles = fs.readdirSync(absSource).filter(f => f.endsWith(".md"));
-  if (allFiles.length === 0) {
-    console.log("No .md files in source directory");
-    process.exit(0);
-  }
-  const sorted = allFiles.sort((a, b) => {
-    const da = extractDate(a), db = extractDate(b);
-    return da < db ? -1 : da > db ? 1 : a.localeCompare(b);
-  });
-  return { sorted, batch: sorted.slice(0, BATCH_SIZE) };
 }
 
-async function processFile(f, index, total) {
-  const filePath = path.join(sourceDir, f);
-  const base = f.slice(0, -3);
-  const t0 = Date.now();
-  const prefix = `[${String(index + 1).padStart(String(total).length)}/${total}]`;
+const BATCH_SIZE = Number(batchSizeArg) || 30;
+const BATCH_TIMEOUT_MS = 3600000;
 
-  console.log(`${prefix} Processing: ${f}`);
-  console.log(SEPARATOR);
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+const pad = (n, len) => String(n).padStart(len, " ");
+const fmtMs = (ms) => ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
 
-  // Step 1: Strip existing frontmatter
-  console.log(`${prefix} Step 1: Stripping existing frontmatter`);
-  const rawContent = fs.readFileSync(filePath, "utf-8");
-  const cleanBody = stripFrontmatter(rawContent);
-
-  // Step 2: Compute content hash
-  console.log(`${prefix} Step 2: Computing content hash`);
-  const hash = contentHash(cleanBody);
-  console.log(`${prefix} hash: ${hash}`);
-
-  // Step 3 & 4: Extract metadata and rate content (parallel)
-  console.log(`${prefix} Step 3 & 4: Extracting metadata and rating content (parallel)`);
-  const metaPath = path.join(sourceDir, `${hash}.meta.json`);
-  const ratePath = path.join(sourceDir, `${hash}.rate.json`);
-
-  const metaTask = fs.existsSync(metaPath)
-      ? Promise.resolve({ status: "skip", file: f })
-      : extractMeta.processFile(cleanBody, metaPath, f);
-
-  const rateTask = fs.existsSync(ratePath)
-      ? Promise.resolve({ status: "skip", file: f })
-      : extractRate.processFile(cleanBody, ratePath, f);
-
-  const [metaResult, rateResult] = await Promise.all([metaTask, rateTask]);
-
-  if (metaResult.status === "error") {
-    console.log(`${prefix} Metadata extraction failed: ${metaResult.error}`);
-    return { file: f, status: "failed", error: `meta: ${metaResult.error}`, ms: Date.now() - t0 };
-  }
-  if (rateResult.status === "error") {
-    console.log(`${prefix} Rating failed: ${rateResult.error}`);
-    return { file: f, status: "failed", error: `rate: ${rateResult.error}`, ms: Date.now() - t0 };
-  }
-
-  // Step 5: Generate YAML header
-  console.log(`${prefix} Step 5: Generating YAML header`);
-  const meta = loadJSON(metaPath);
-  const rate = loadJSON(ratePath);
-  if (!meta) {
-    return { file: f, status: "failed", error: "failed to load meta.json", ms: Date.now() - t0 };
-  }
-  const yamlHeader = generateYamlHeader(meta, rate, hash);
-
-  // Step 6: Create target file with YAML header and content
-  console.log(`${prefix} Step 6: Creating target file`);
-  if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
-  const targetPath = path.join(targetDir, `${hash}_${sanitizeTitle(meta.title)}.md`);
-  const fileContent = `${yamlHeader}\n\n${cleanBody}`;
-  fs.writeFileSync(targetPath, fileContent, "utf-8");
-
-  // Step 7: Cleanup intermediate files
-  console.log(`${prefix} Step 7: Cleaning up intermediate files`);
-  [`${hash}.meta.json`, `${hash}.rate.json`].forEach(filename => {
-    const p = path.join(sourceDir, filename);
-    if (fs.existsSync(p)) fs.unlinkSync(p);
-  });
-  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-
-  console.log(`${prefix} Completed: ${f} → ${path.basename(targetPath)}`);
-  console.log(SEPARATOR);
-
-  return { file: f, status: "done", target: targetPath, ms: Date.now() - t0 };
-}
-
-async function runBatch(batch) {
-  const results = [];
-  const batchStart = Date.now();
-
-  for (let i = 0; i < batch.length; i++) {
-    if (Date.now() - batchStart > BATCH_TIMEOUT_MS) {
-      console.log(`Batch timeout reached, stopping (${i}/${batch.length} processed)`);
-      break;
+function cleanupFiles(files) {
+    for (const file of files) {
+        if (fs.existsSync(file)) fs.unlinkSync(file);
     }
-    const f = batch[i];
-    const r = await processFile(f, i, batch.length).catch(err => ({ file: f, status: "failed", error: err.message, ms: 0 }));
-    const mark = r.status === "done" ? "OK" : r.status === "skip" ? "SKIP" : "ERR";
-    const tail = r.status === "done" && r.target
-      ? ` -> ${path.basename(r.target)}`
-      : (r.status === "failed" ? `  ${r.error}` : "");
-    console.log(`${mark} ${f}  ${((r.ms || 0) / 1000).toFixed(0)}s${tail}`);
-    results.push(r);
-  }
-  return results;
 }
 
-function printSummary(results, sorted, batch) {
-  const done = results.filter(r => r.status === "done").length;
-  const skipped = results.filter(r => r.status === "skip").length;
-  const failed = results.filter(r => r.status === "failed").length;
-  const totalMs = results.reduce((s, r) => s + (r.ms || 0), 0);
-  const avg = results.length ? (totalMs / results.length / 1000).toFixed(1) : "0.0";
+// ─── File Selection ──────────────────────────────────────────────────────────
+function selectFiles() {
+    const dir = path.resolve(sourceDir);
+    if (!fs.existsSync(dir)) {
+        console.error(`Error: source directory not found: ${dir}`);
+        process.exit(1);
+    }
 
-  console.log("\n" + "=".repeat(60));
-  console.log("Processing Summary");
-  console.log("=".repeat(60));
-  console.log(`Done: ${done} | Skipped: ${skipped} | Failed: ${failed}`);
-  console.log(`Total time: ${(totalMs / 1000).toFixed(1)}s | Avg: ${avg}s/file`);
-  console.log(`Remaining: ${sorted.length - batch.length} files`);
+    const files = fs.readdirSync(dir).filter((name) => name.endsWith(".md"));
+    if (files.length === 0) {
+        console.log("No .md files in source directory");
+        process.exit(0);
+    }
 
-  if (failed > 0) {
-    console.log("\nFailed files:");
-    results.filter(r => r.status === "failed")
-        .forEach(r => console.log(`  ERR ${r.file}: ${r.error}`));
-  }
-  console.log("=".repeat(60));
+    const dateOf = (name) => name.replace(/\.md$/, "").split("_")[2] || "";
+    return files.sort((a, b) => dateOf(a).localeCompare(dateOf(b)));
 }
+
+// ─── File Processing ─────────────────────────────────────────────────────────
+async function processFile(filename) {
+    const filePath = path.join(sourceDir, filename);
+    const fileStart = Date.now();
+
+    const track = async (phase, fn) => {
+        const start = Date.now();
+        try {
+            return await fn();
+        } finally {
+            console.log(`... ${phase.padEnd(10)} ${fmtMs(Date.now() - start)}`);
+        }
+    };
+
+    // PREP: read file and compute hash
+    const cleanBody = await track("PREP", () => {
+        const raw = fs.readFileSync(filePath, "utf-8");
+        return stripFrontmatter(raw);
+    });
+
+    const hash = contentHash(cleanBody);
+    const metaPath = path.join(sourceDir, `${hash}.meta.json`);
+    const ratePath = path.join(sourceDir, `${hash}.rate.json`);
+
+    try {
+        // META: extract metadata
+        if (!fs.existsSync(metaPath)) {
+            await track("META", () => extractMeta.processFile(cleanBody, metaPath));
+            const meta = loadJSON(metaPath);
+            meta.source = filename;
+            writeJsonFile(metaPath, meta);
+        }
+
+        // RATE: extract rating
+        if (!fs.existsSync(ratePath)) {
+            await track("RATE", () => extractRate.processFile(cleanBody, ratePath));
+        }
+
+        // ASSEMBLE: generate output file
+        await track("ASSEMBLE", () => {
+            const meta = loadJSON(metaPath);
+            if (!meta) throw new Error(`failed to load ${metaPath}`);
+
+            const rate = loadJSON(ratePath);
+            if (!rate) throw new Error(`failed to load ${ratePath}`);
+
+            const metaHeader = generateYamlHeader(meta, rate, hash);
+            if (!fs.existsSync(targetDir)) {
+                fs.mkdirSync(targetDir, { recursive: true });
+            }
+
+            const targetFile = path.join(targetDir, `${hash}_${sanitizeTitle(meta.title)}.md`);
+            if (fs.existsSync(targetFile)) {
+                fs.unlinkSync(targetFile, { force: true });
+            }
+            fs.writeFileSync(targetFile, `${metaHeader}\n\n${cleanBody}`, "utf-8");
+        });
+
+        const ms = Date.now() - fileStart;
+        console.log(`... Processed file: ${filename}, spent ${fmtMs(ms)}`);
+
+        return { status: "done", ms };
+    } finally {
+        // Clean up intermediate files
+        cleanupFiles([metaPath, ratePath]);
+    }
+}
+
+// ─── Summary ─────────────────────────────────────────────────────────────────
+
+function printSummary(results) {
+    const entries = Object.values(results);
+    const done = entries.filter((r) => r.status === "done").length;
+    const failed = entries.length - done;
+    const totalMs = entries.reduce((sum, r) => sum + (r.ms || 0), 0);
+    const avg = entries.length ? (totalMs / entries.length / 1000).toFixed(1) : "0.0";
+    const llm = getLlmStats();
+
+    console.log([
+        "",
+        "=".repeat(60),
+        `Done: ${done}  Failed: ${failed}  Total: ${fmtMs(totalMs)}  Avg: ${avg}s/file`,
+        `LLM: ${llm.calls} calls, ${llm.retries} retries`,
+        "=".repeat(60),
+    ].join("\n"));
+}
+
+// ─── Main ────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const { sorted, batch } = selectBatch(path.resolve(sourceDir));
-  console.log("\n" + "=".repeat(60));
-  console.log("Knowledge Document Analysis");
-  console.log("=".repeat(60));
-  console.log(`Source: ${sourceDir}`);
-  console.log(`Target: ${targetDir}`);
-  console.log(`Batch size: ${batch.length}/${sorted.length}`);
-  console.log(`Timeout: ${BATCH_TIMEOUT_MS / 1000}s`);
-  console.log("=".repeat(60) + "\n");
+    // Get all eligible files from source directory
+    const allFiles = selectFiles();
+    const batch = allFiles.slice(0, BATCH_SIZE);
 
-  const results = await runBatch(batch);
-  printSummary(results, sorted, batch);
+    console.log(`\nKnowledge Analysis  ${batch.length}/${allFiles.length} files  timeout ${BATCH_TIMEOUT_MS / 1000}s`);
+
+    // Process each file
+    const results = {};
+    const batchStart = Date.now();
+    for (const filename of batch) {
+        // Check timeout
+        if (Date.now() - batchStart > BATCH_TIMEOUT_MS) {
+            console.log("\nBatch timeout reached, stopping");
+            break;
+        }
+
+        console.log(`\n[${pad(Object.keys(results).length + 1, String(batch.length).length)}/${batch.length}] ${filename}`);
+
+        try {
+            // Process file
+            results[filename] = await processFile(filename);
+
+            // Delete source file on success
+            if (results[filename].status === "done") {
+                fs.unlinkSync(path.join(sourceDir, filename));
+            }
+        } catch (err) {
+            console.error(`... Processing ${filename} failed, details: ${err.message}`);
+
+            results[filename] = { status: "failed", error: err.message, ms: 0 };
+        }
+    }
+
+    // Print summary report
+    printSummary(results);
 }
 
-main().catch(err => {
-  console.error(JSON.stringify({ error: err.message }));
-  process.exit(1);
+main().catch((err) => {
+    console.error(JSON.stringify({ error: err.message }));
+    process.exit(1);
 });

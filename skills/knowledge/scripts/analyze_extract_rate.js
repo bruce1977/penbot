@@ -1,81 +1,122 @@
-const fs = require("fs");
 const path = require("path");
-const { llmChat, extractJSON, loadPrompt } = require("./lib/llm");
+const { llmChat, extractJSON } = require("./lib/llm");
+const { sleep, toNum, writeJsonFile, validateWithSchema } = require("./lib/common");
+
+// ─── Constants ───────────────────────────────────────────────────────────────
 
 const MODEL = process.env.KB_LLM_RATE_MODEL || process.env.KB_LLM_MODEL || "qwen2.5:3b";
 const SCRIPT_DIR = path.dirname(__filename || __dirname);
 const PROMPT_DIR = path.resolve(SCRIPT_DIR, "..", "prompts");
-const SYSTEM_PROMPT = "You are a structured rater. Output pure JSON only, no additional text.";
+const MAX_ATTEMPTS = 3;
+
+const SCHEMA_PATH = path.join(PROMPT_DIR, "rate.schema.json");
+
+// Per-process nonce: unique per invocation, defeats Ollama serving cached completions.
+function genNonce() {
+    return Math.random().toString(36).slice(2, 12);
+}
+
+// ─── Prompt Loading ──────────────────────────────────────────────────────────
+
+const prompts = require(path.join(PROMPT_DIR, "rate.prompt.json"));
+
+// ─── Prompt Building ─────────────────────────────────────────────────────────
 
 function buildPrompt(content) {
-  return loadPrompt(path.join(PROMPT_DIR, "rate_prompt.txt"), {
-    content: content.slice(0, 6000),
-  });
+    const userPrompt = prompts.user.replace("{{content}}", content.slice(0, 6000));
+
+    return `[run-id:${genNonce()}]\n\n${userPrompt}`;
 }
 
-// Coerce a parsed value to a number, or null when missing/invalid (handled by validateRate).
-function toNum(v) {
-  return typeof v === "number" ? v : null;
+function buildRetryPrompt(retryTag, errors) {
+    const errorList = errors.map((e) => `- ${e}`).join("\n");
+    return prompts.retry
+        .replace("{{retry_tag}}", retryTag)
+        .replace("{{errors}}", errorList);
 }
+
+// ─── Rating Construction ─────────────────────────────────────────────────────
 
 function buildRate(parsed) {
-  return {
-    ratings: {
-      value: toNum(parsed.value),
-      tech: toNum(parsed.tech),
-      public: toNum(parsed.public),
-      academic: toNum(parsed.academic),
-      ethics: toNum(parsed.ethics),
-    },
-    model: MODEL,
-  };
+    return {
+        ratings: {
+            value: toNum(parsed.value),
+            tech: toNum(parsed.tech),
+            public: toNum(parsed.public),
+            academic: toNum(parsed.academic),
+            ethics: toNum(parsed.ethics),
+        },
+        model: MODEL,
+    };
 }
 
-function validateRate(rate) {
-  const errors = [];
-  const dims = ["value", "tech", "public", "academic", "ethics"];
-  for (const dim of dims) {
-    const v = rate.ratings[dim];
-    // null/undefined is treated as a failure: rate_prompt already forbids the model from
-    // outputting null and requires a 0.5-5 estimate for every dimension. Therefore a null
-    // indicates the model disregarded instructions (a real error) and should trigger a
-    // retry, rather than being written into the result.
-    if (v === null || v === undefined) {
-      errors.push(`${dim} is null/undefined (must be 0.5-5)`);
-    } else if (typeof v !== "number" || v < 0.5 || v > 5) {
-      errors.push(`${dim}=${v} out of range [0.5, 5]`);
+// ─── LLM Extraction with Retry ──────────────────────────────────────────────
+
+async function extractWithRetry(content) {
+    let lastErrors = [];
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        let userPrompt = buildPrompt(content);
+
+        // Prepend error feedback on retries.
+        if (attempt > 1 && lastErrors.length > 0) {
+            const retryTag = attempt === 2 ? "2nd retry" : "3rd retry";
+            const errorBlock = buildRetryPrompt(retryTag, lastErrors);
+            userPrompt = `${errorBlock}\n\n${userPrompt}`;
+        }
+
+        // Temperature jitter: 0.1 -> 0.2 -> 0.5 to break greedy determinism.
+        const temperature = attempt === 1 ? 0.1 : attempt === 2 ? 0.2 : 0.5;
+
+        if (attempt > 1) {
+            console.log(`... [rate] requesting LLM (attempt ${attempt}/${MAX_ATTEMPTS})...`);
+        }
+
+
+        let raw;
+        try {
+            raw = await llmChat(prompts.system, userPrompt, MODEL, { temperature });
+        } catch (e) {
+            if (attempt < MAX_ATTEMPTS) {
+                await sleep(1000);
+            }
+
+            continue;
+        }
+
+        let candidate;
+        try {
+            candidate = buildRate(extractJSON(raw.trim()));
+        } catch (e) {
+            lastErrors = [`Output is not valid JSON: ${e.message}`];
+            continue;
+        }
+
+        // Schema validation
+        const schemaErrors = validateWithSchema(candidate, SCHEMA_PATH);
+        if (schemaErrors.length > 0) {
+            lastErrors = schemaErrors;
+            continue;
+        }
+
+        return candidate;
     }
-  }
-  return errors;
+
+    throw new Error(`Validation failed after ${MAX_ATTEMPTS} attempts: ${lastErrors.join("; ")}`);
 }
+
+// ─── Main Entry Point ────────────────────────────────────────────────────────
 
 // Extract rating from content and write to target file.
 // @param {string} content - markdown content to rate
 // @param {string} targetFile - path to write .rate.json output
-// @param {string} sourceName - source file name for logging
-// @returns {Promise<{status: string, file?: string, error?: string, ratePath?: string}>}
-async function processFile(content, targetFile, sourceName) {
-  let rate = null;
-  let lastErrors = [];
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    const raw = await llmChat(SYSTEM_PROMPT, buildPrompt(content), MODEL);
-    const candidate = buildRate(extractJSON(raw));
-    lastErrors = validateRate(candidate);
-    if (lastErrors.length === 0) {
-      rate = candidate;
-      break;
-    }
-    if (attempt < 3) await new Promise(r => setTimeout(r, 1000));
-  }
-
-  if (!rate) {
-    return { status: "error", file: sourceName, error: `validation failed: ${lastErrors.join("; ")}` };
-  }
-
-  const targetDir = path.dirname(targetFile);
-  if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
-  fs.writeFileSync(targetFile, JSON.stringify(rate, null, 2), "utf-8");
-  return { status: "ok", file: sourceName, ratePath: targetFile };
+// @returns {Promise<void>}
+// @throws {Error} if extraction or validation fails
+async function processFile(content, targetFile) {
+    const rate = await extractWithRetry(content);
+    writeJsonFile(targetFile, rate);
 }
 
-module.exports = { processFile, buildRate, validateRate, MODEL };
+// ─── Exports ─────────────────────────────────────────────────────────────────
+
+module.exports = { processFile };

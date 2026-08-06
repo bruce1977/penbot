@@ -1,26 +1,40 @@
 const fs = require("fs");
-const path = require("path");
 
-const RATE_KEY_MAP = { value: "business", tech: "technical", public: "social", academic: "academic", ethics: "ethics" };
+// ─── Constants ───────────────────────────────────────────────────────────────
 
-// Replace filename-illegal characters and cap length so the target name stays valid on any OS.
+// Maps internal rating keys to YAML output keys.
+const RATE_KEY_MAP = {
+    value: "business",
+    tech: "technical",
+    public: "social",
+    academic: "academic",
+    ethics: "ethics",
+};
+
+// ─── String Helpers ──────────────────────────────────────────────────────────
+
+// Sanitize a title for use as a filename: replace illegal chars and cap length.
 function sanitizeTitle(title) {
-  return String(title || "untitled")
-    .replace(/[\\/:*?"<>|]/g, "_")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 80) || "untitled";
+    return String(title || "untitled")
+        .replace(/[\\/:*?"<>|]/g, "_")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 80) || "untitled";
 }
 
+// Format a value as a YAML string.
 function yamlStr(s) {
-  if (s == null) return '""';
-  return JSON.stringify(String(s));
+    if (s == null) return '""';
+    return JSON.stringify(String(s));
 }
 
+// Format an array as a YAML array.
 function yamlArr(arr) {
-  if (!Array.isArray(arr)) arr = [];
-  return "[" + arr.map(x => JSON.stringify(String(x))).join(", ") + "]";
+    if (!Array.isArray(arr)) arr = [];
+    return "[" + arr.map((x) => JSON.stringify(String(x))).join(", ") + "]";
 }
+
+// ─── YAML Frontmatter Generation ─────────────────────────────────────────────
 
 // Generate YAML frontmatter header from metadata and rating.
 // @param {Object} meta - metadata object
@@ -28,36 +42,47 @@ function yamlArr(arr) {
 // @param {string} hash - content hash
 // @returns {string} YAML frontmatter string (with --- delimiters)
 function generateYamlHeader(meta, rate, hash) {
-  const raw = (rate && rate.ratings) || {};
-  const ratings = {};
-  for (const [k, v] of Object.entries(RATE_KEY_MAP)) {
-    ratings[v] = typeof raw[k] === "number" ? raw[k] : null;
-  }
-  const lines = [
-    "---",
-    `hash: ${yamlStr(hash)}`,
-    `title: ${yamlStr(meta.title || "")}`,
-    `auther: ${yamlStr(meta.auther || "")}`,
-    `date: ${yamlStr(meta.date || "")}`,
-    `source: ${yamlStr(meta.source || "")}`,
-    `tags: ${yamlArr(meta.tags)}`,
-    `keywords: ${yamlArr(meta.keywords)}`,
-    `summary: ${yamlStr(meta.summary || "")}`,
-    `model: ${yamlStr(meta.model || "")}`,
-    "rating:",
-    `  business: ${ratings.business}`,
-    `  technical: ${ratings.technical}`,
-    `  social: ${ratings.social}`,
-    `  academic: ${ratings.academic}`,
-    `  ethics: ${ratings.ethics}`,
-    "---",
-  ];
-  return lines.join("\n");
+    const raw = (rate && rate.ratings) || {};
+    const ratings = {};
+
+    for (const [k, v] of Object.entries(RATE_KEY_MAP)) {
+        ratings[v] = typeof raw[k] === "number" ? raw[k] : null;
+    }
+
+    const lines = [
+        "---",
+        `hash: ${yamlStr(hash)}`,
+        `title: ${yamlStr(meta.title || "")}`,
+        `auther: ${yamlStr(meta.auther || "")}`,
+        `date: ${yamlStr(meta.date || "")}`,
+        `source: ${yamlStr(meta.source || "")}`,
+        `tags: ${yamlArr(meta.tags)}`,
+        `keywords: ${yamlArr(meta.keywords)}`,
+        `summary: ${yamlStr(meta.summary || "")}`,
+        `model: ${yamlStr(meta.model || "")}`,
+        "rating:",
+        `  business: ${ratings.business}`,
+        `  technical: ${ratings.technical}`,
+        `  social: ${ratings.social}`,
+        `  academic: ${ratings.academic}`,
+        `  ethics: ${ratings.ethics}`,
+        "---",
+    ];
+
+    return lines.join("\n");
 }
+
+// ─── File Utilities ──────────────────────────────────────────────────────────
 
 // Load JSON file safely.
 function loadJSON(p) {
-  try { return JSON.parse(fs.readFileSync(p, "utf-8")); } catch { return null; }
+    try {
+        return JSON.parse(fs.readFileSync(p, "utf-8"));
+    } catch {
+        return null;
+    }
 }
+
+// ─── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = { generateYamlHeader, sanitizeTitle, loadJSON, RATE_KEY_MAP };

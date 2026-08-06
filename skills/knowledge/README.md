@@ -49,6 +49,7 @@ node skills/knowledge/scripts/archive_start.js <source_dir> <target_dir> [days]
 | `KB_LLM_META_MODEL` | 继承 `KB_LLM_MODEL` | 元数据提取专用模型 |
 | `KB_LLM_RATE_MODEL` | 继承 `KB_LLM_MODEL` | 评分提取专用模型 |
 | `KB_LLM_TIMEOUT_MS` | `120000` | 单次 LLM 请求超时 |
+| `KB_LLM_PROVIDER` | `auto` | 后端类型：`auto`（按 `KB_LLM_BASE_URL` 是否含 `11434`/`ollama` 自动识别）/`ollama`/`openai`。决定本次请求是否附加 Ollama 专属参数 |
 
 ### 同步功能
 
@@ -58,6 +59,40 @@ node skills/knowledge/scripts/archive_start.js <source_dir> <target_dir> [days]
 | `WEKNORA_API_KEY` | 必填 | API 密钥 |
 | `SUBMIT_INTERVAL_MS` | `10000` | 提交间隔 |
 | `SYNC_SCRIPT_TIMEOUT_MS` | `600000` | 脚本整体超时 |
+
+## 跨厂商配置（LLM 后端）
+
+LLM 客户端（`scripts/lib/llm.js`）使用 **OpenAI 兼容的 `/v1/chat/completions` 协议**，因此可对接任意兼容该协议的后端。参数按后端类型动态下发：
+
+- **Ollama（`provider=ollama` 或 auto 命中）**：除通用参数（`temperature`、`max_tokens`）外，额外发送 Ollama 专属参数——`num_predict`（输出上限）、`num_ctx`（上下文窗口）、`top_k`、`repeat_penalty`、`keep_alive=-1`（模型常驻，批处理时前缀 KV cache 可跨文件复用）。这是本地 CPU 推理性能优化的关键。
+- **OpenAI 兼容（`provider=openai`，如 OpenAI / Azure / 通义 / DeepSeek / vLLM / LM Studio）**：仅发送通用参数（`temperature`、`max_tokens`），不含任何 Ollama 专属字段，避免未知字段报错；`max_tokens=400` 生效，防止输出跑飞。
+
+### 切换示例
+
+**默认——本地 Ollama**
+
+```bash
+KB_LLM_BASE_URL=http://localhost:11434/v1
+KB_LLM_MODEL=qwen2.5:3b
+# KB_LLM_PROVIDER 省略即 auto，按 base_url 自动识别为 ollama
+```
+
+**换 Ollama 上的其他模型**（仅改模型名，其余不变）
+
+```bash
+KB_LLM_MODEL=qwen2.5:7b
+```
+
+**对接 OpenAI / Azure / 通义 / DeepSeek 等**
+
+```bash
+KB_LLM_PROVIDER=openai
+KB_LLM_BASE_URL=https://<your-provider>/v1      # 如 https://api.openai.com/v1
+KB_LLM_MODEL=gpt-4o-mini                         # 使用对方模型名
+KB_LLM_API_KEY=<your-api-key>                    # 必需
+```
+
+> 注：`KB_LLM_META_MODEL` / `KB_LLM_RATE_MODEL` 可在 analyze 阶段为「元数据提取」与「评分提取」分别指定不同模型（继承自 `KB_LLM_MODEL`），与后端切换相互独立。
 
 ## 脚本结构
 

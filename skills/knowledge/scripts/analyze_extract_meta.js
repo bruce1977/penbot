@@ -1,77 +1,119 @@
-const fs = require("fs");
 const path = require("path");
-const { llmChat, extractJSON, loadPrompt, nowIso } = require("./lib/llm");
+const { llmChat, extractJSON, nowIso } = require("./lib/llm");
+const { sleep, normalizeTitle, toStrArray, writeJsonFile, validateWithSchema } = require("./lib/common");
+
+// ─── Constants ───────────────────────────────────────────────────────────────
 
 const MODEL = process.env.KB_LLM_META_MODEL || process.env.KB_LLM_MODEL || "qwen2.5:3b";
 const SCRIPT_DIR = path.dirname(__filename || __dirname);
 const PROMPT_DIR = path.resolve(SCRIPT_DIR, "..", "prompts");
-const SYSTEM_PROMPT = "You are a structured information extractor. Output must be pure JSON. Do not start with words like 'this article' or 'the article'. Summaries should begin directly with the subject (person/company/product).";
+const MAX_ATTEMPTS = 3;
 
-// Pull the candidate title from the filename (text after the 4th underscore segment).
-function titleFromFilename(baseName) {
-  const parts = baseName.split("_");
-  return parts.length > 4 ? parts.slice(4).join("_") : "";
+const SCHEMA_PATH = path.join(PROMPT_DIR, "meta.schema.json");
+
+// Per-process nonce: unique per invocation, defeats Ollama serving cached completions.
+function genNonce() {
+    return Math.random().toString(36).slice(2, 12);
 }
 
-function buildPrompt(candidateTitle, content) {
-  return loadPrompt(path.join(PROMPT_DIR, "meta_prompt.txt"), {
-    title: candidateTitle,
-    content: content.slice(0, 8000),
-  });
+// ─── Prompt Loading ──────────────────────────────────────────────────────────
+
+const prompts = require(path.join(PROMPT_DIR, "meta.prompt.json"));
+
+// ─── Prompt Building ─────────────────────────────────────────────────────────
+
+function buildPrompt(content) {
+    const userPrompt = prompts.user.replace("{{content}}", content.slice(0, 8000));
+    return `[run-id:${genNonce()}]\n\n${userPrompt}`;
 }
 
-function buildMeta(parsed, candidateTitle) {
-  return {
-    title: String(parsed.title || candidateTitle || ""),
-    date: nowIso(),
-    auther: String(parsed.auther || ""),
-    source: String(parsed.source || ""),
-    tags: Array.isArray(parsed.tags) ? parsed.tags.map(String) : [],
-    summary: String(parsed.summary || ""),
-    keywords: Array.isArray(parsed.keywords) ? parsed.keywords.map(String) : [],
-    model: MODEL,
-  };
+function buildRetryPrompt(retryTag, errors) {
+    const errorList = errors.map((e) => `- ${e}`).join("\n");
+    return prompts.retry
+        .replace("{{retry_tag}}", retryTag)
+        .replace("{{errors}}", errorList);
 }
 
-function validateMeta(meta) {
-  const errors = [];
-  if (!meta.title || meta.title.trim().length === 0) errors.push("title is empty");
-  if (!Array.isArray(meta.tags) || meta.tags.length < 2 || meta.tags.length > 5) errors.push(`tags should be 2-5 items, got ${meta.tags ? meta.tags.length : 0}`);
-  if (!meta.summary || meta.summary.trim().length < 20) errors.push("summary is too short");
-  if (!Array.isArray(meta.keywords) || meta.keywords.length < 3 || meta.keywords.length > 5) errors.push(`keywords should be 3-5 items, got ${meta.keywords ? meta.keywords.length : 0}`);
-  return errors;
+// ─── Metadata Construction ───────────────────────────────────────────────────
+
+function buildMeta(parsed) {
+    return {
+        title: normalizeTitle(parsed.title || ""),
+        date: nowIso(),
+        auther: String(parsed.auther || ""),
+        tags: toStrArray(parsed.tags),
+        summary: String(parsed.summary || ""),
+        keywords: toStrArray(parsed.keywords),
+        model: MODEL,
+    };
 }
+
+// ─── LLM Extraction with Retry ──────────────────────────────────────────────
+
+async function extractWithRetry(content) {
+    let lastErrors = [];
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        let userPrompt = buildPrompt(content);
+
+        // Prepend error feedback on retries.
+        if (attempt > 1 && lastErrors.length > 0) {
+            const retryTag = attempt === 2 ? "2nd retry" : "3rd retry";
+            const errorBlock = buildRetryPrompt(retryTag, lastErrors);
+            userPrompt = `${errorBlock}\n\n${userPrompt}`;
+        }
+
+        // Temperature jitter: 0.1 -> 0.2 -> 0.5 to break greedy determinism.
+        const temperature = attempt === 1 ? 0.1 : attempt === 2 ? 0.2 : 0.5;
+        if (attempt > 1) {
+            console.log(`... [meta] requesting LLM (attempt ${attempt}/${MAX_ATTEMPTS})...`);
+        }
+
+        let raw;
+        try {
+            raw = await llmChat(prompts.system, userPrompt, MODEL, { temperature });
+        } catch (e) {
+            if (attempt < MAX_ATTEMPTS) {
+                await sleep(1000);
+            }
+
+            continue;
+        }
+
+        let candidate;
+        try {
+            candidate = buildMeta(extractJSON(raw.trim()));
+        } catch (e) {
+            lastErrors = [`Output is not valid JSON: ${e.message}`];
+            continue;
+        }
+
+        // Schema validation
+        const schemaErrors = validateWithSchema(candidate, SCHEMA_PATH);
+        if (schemaErrors.length > 0) {
+            lastErrors = schemaErrors;
+            continue;
+        }
+
+        return candidate;
+    }
+
+    throw new Error(`Validation failed after ${MAX_ATTEMPTS} attempts: ${lastErrors.join("; ")}`);
+}
+
+// ─── Main Entry Point ────────────────────────────────────────────────────────
 
 // Extract metadata from content and write to target file.
 // @param {string} content - markdown content to extract metadata from
 // @param {string} targetFile - path to write .meta.json output
-// @param {string} sourceName - source file name for title extraction and logging
-// @returns {Promise<{status: string, file?: string, error?: string, metaPath?: string}>}
-async function processFile(content, targetFile, sourceName) {
-  const base = path.basename(sourceName, ".md");
-  const candidateTitle = titleFromFilename(base);
+// @returns {Promise<void>}
+// @throws {Error} if extraction or validation fails
+async function processFile(content, targetFile) {
+    const meta = await extractWithRetry(content);
 
-  let meta = null;
-  let lastErrors = [];
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    const raw = await llmChat(SYSTEM_PROMPT, buildPrompt(candidateTitle, content), MODEL);
-    const candidate = buildMeta(extractJSON(raw), candidateTitle);
-    lastErrors = validateMeta(candidate);
-    if (lastErrors.length === 0) {
-      meta = candidate;
-      break;
-    }
-    if (attempt < 3) await new Promise(r => setTimeout(r, 1000));
-  }
-
-  if (!meta) {
-    return { status: "error", file: sourceName, error: `validation failed: ${lastErrors.join("; ")}` };
-  }
-
-  const targetDir = path.dirname(targetFile);
-  if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
-  fs.writeFileSync(targetFile, JSON.stringify(meta, null, 2), "utf-8");
-  return { status: "ok", file: sourceName, metaPath: targetFile };
+    writeJsonFile(targetFile, meta);
 }
 
-module.exports = { processFile, buildMeta, validateMeta, MODEL };
+// ─── Exports ─────────────────────────────────────────────────────────────────
+
+module.exports = { processFile };
