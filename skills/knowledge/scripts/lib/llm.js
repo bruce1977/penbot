@@ -106,8 +106,9 @@ async function llmChat(systemPrompt, userPrompt, model, opts = {}) {
       lastErr = err;
       if (i < MAX_RETRIES) {
         _llmStats.retries += 1;
-        console.log(`LLM request failed (${i}/${MAX_RETRIES}): ${err.message}, retrying in ${2000 * i}ms...`);
-        await sleep(2000 * i);
+        console.log(`LLM request failed (${i}/${MAX_RETRIES}): ${err.message}, retrying in ${1000 * i}ms...`);
+
+        await sleep(1000 * i);
       }
     } finally {
       clearTimeout(timer);

@@ -146,7 +146,8 @@ async function main() {
     const batchStart = Date.now();
     for (const filename of batch) {
         // Check timeout
-        if (Date.now() - batchStart > BATCH_TIMEOUT_MS) {
+        const fileStart = Date.now();
+        if (fileStart - batchStart > BATCH_TIMEOUT_MS) {
             console.log("\nBatch timeout reached, stopping");
             break;
         }
@@ -155,16 +156,22 @@ async function main() {
 
         try {
             // Process file
-            results[filename] = await processFile(filename);
+            const result = await processFile(filename);
 
             // Delete source file on success
-            if (results[filename].status === "done") {
-                fs.unlinkSync(path.join(sourceDir, filename));
+            if (result) {
+                if (result.status === "done") {
+                    fs.unlinkSync(path.join(sourceDir, filename));
+                }
+            
+                result.ms = Date.now() - fileStart;
             }
+
+            results[filename] = result;
         } catch (err) {
             console.error(`... Processing ${filename} failed, details: ${err.message}`);
 
-            results[filename] = { status: "failed", error: err.message, ms: 0 };
+            results[filename] = { status: "failed", error: err.message, ms: Date.now() - fileStart };
         }
     }
 
