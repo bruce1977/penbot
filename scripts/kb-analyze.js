@@ -8,9 +8,13 @@
  *   npm run kb:analyze -- ai 10
  *
  * Directory convention (overridable via env vars):
- *   KB_ARTICLES_DIR  article root dir, default D:\knowledge\articles
+ *   PB_KNOWLEDGE_BASE_PATH  article root dir (required)
  *   -> <KB_ARTICLES_DIR>/<profile>/inbox   input (raw .md to analyze)
  *   -> <KB_ARTICLES_DIR>/<profile>/marked  output (final .md with frontmatter)
+ *
+ * Config file:
+ *   <KB_ARTICLES_DIR>/<profile>/config.json  (optional)
+ *   Analyze-specific overrides: source_folder, target_folder, batch_size
  *
  * Env vars (read by lib/llm.js, all optional, all have defaults):
  *   KB_LLM_BASE_URL    default http://localhost:11434/v1
@@ -22,10 +26,11 @@
  * To load the above from .env: npx dotenv-cli -e .env -- node scripts/kb-analyze.js ai
  */
 const { spawnSync } = require("child_process");
+const fs = require("fs");
 const path = require("path");
 
 const profile = process.argv[2];
-const batchSize = process.argv[3] || "30";
+const cliBatchSize = process.argv[3];
 
 if (!profile) {
   console.error("Usage: node scripts/kb-analyze.js <profile> [batchSize]");
@@ -33,9 +38,39 @@ if (!profile) {
   process.exit(1);
 }
 
-const base = process.env.KB_ARTICLES_DIR || "D:\\knowledge\\articles";
-const sourceDir = path.join(base, profile, "inbox");
-const targetDir = path.join(base, profile, "marked");
+const base = process.env.PB_KNOWLEDGE_BASE_PATH;
+if (!base) {
+  console.error("Error: env PB_KNOWLEDGE_BASE_PATH is not set");
+  process.exit(1);
+}
+
+const configPath = path.join(base, profile, "config.json");
+if (!fs.existsSync(configPath)) {
+  console.error(`Error: config file not found: ${configPath}`);
+  process.exit(1);
+}
+
+let cfg;
+try {
+  cfg = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+} catch (e) {
+  console.error(`Error: failed to parse ${configPath}: ${e.message}`);
+  process.exit(1);
+}
+
+if (!cfg.analyze) {
+  console.error(`Error: missing "analyze" section in ${configPath}`);
+  process.exit(1);
+}
+
+const sourceFolder = cfg.analyze.source_folder || "inbox";
+const targetFolder = cfg.analyze.target_folder || "marked";
+let batchSize = cfg.analyze.batch_size != null ? cfg.analyze.batch_size : 30;
+
+if (cliBatchSize != null) batchSize = Number(cliBatchSize);
+
+const sourceDir = path.join(base, profile, sourceFolder);
+const targetDir = path.join(base, profile, targetFolder);
 
 // Resolve the real analyze_start.js (located at skills/knowledge/scripts/)
 const analyze = path.resolve(

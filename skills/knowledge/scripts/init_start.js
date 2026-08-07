@@ -3,13 +3,25 @@ const path = require("path");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const DIRS = ["inbox", "marked", "weknora", "archive"];
+const DIRS = ["inbox", "marked", "weknora", "archive", "archived"];
 
 const DEFAULT_CONFIG = {
-    weknora: { category_id: "", sync_enabled: true },
-    archive: { days: 90 },
-    analyze: { batch_size: 30 },
-    sync: { submit_interval_ms: 10000 },
+    analyze: {
+        source_folder: "inbox",
+        target_folder: "marked",
+        batch_size: 30,
+    },
+    weknora: {
+        source_folder: "marked",
+        target_folder: "weknora",
+        kb_id: "${your weknora kb-id}",
+        submit_interval_ms: 10000,
+    },
+    archive: {
+        orginal_folder: "archived",
+        target_folder: "marked",
+        days: 90,
+    },
 };
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────

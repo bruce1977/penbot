@@ -6,6 +6,7 @@ const { generateYamlHeader, sanitizeTitle, loadJSON } = require("./analyze_front
 const { stripFrontmatter, getLlmStats } = require("./lib/llm");
 const { contentHash } = require("./lib/content_hash");
 const { writeJsonFile } = require("./lib/common");
+const { validateMd, moveToError } = require("./lib/validate_md");
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 const [, , sourceDir, targetDir, batchSizeArg] = process.argv;
@@ -118,7 +119,8 @@ async function processFile(filename) {
 function printSummary(results) {
     const entries = Object.values(results);
     const done = entries.filter((r) => r.status === "done").length;
-    const failed = entries.length - done;
+    const failed = entries.filter((r) => r.status === "failed").length;
+    const skipped = entries.filter((r) => r.status === "skipped").length;
     const totalMs = entries.reduce((sum, r) => sum + (r.ms || 0), 0);
     const avg = entries.length ? (totalMs / entries.length / 1000).toFixed(1) : "0.0";
     const llm = getLlmStats();
@@ -126,7 +128,7 @@ function printSummary(results) {
     console.log([
         "",
         "=".repeat(60),
-        `Done: ${done}  Failed: ${failed}  Total: ${fmtMs(totalMs)}  Avg: ${avg}s/file`,
+        `Done: ${done}  Failed: ${failed}  Skipped: ${skipped}  Total: ${fmtMs(totalMs)}  Avg: ${avg}s/file`,
         `LLM: ${llm.calls} calls, ${llm.retries} retries`,
         "=".repeat(60),
     ].join("\n"));
@@ -155,6 +157,18 @@ async function main() {
         console.log(`\n[${pad(Object.keys(results).length + 1, String(batch.length).length)}/${batch.length}] ${filename}`);
 
         try {
+            // Validate document format before processing
+            const filePath = path.join(sourceDir, filename);
+            const validationErrors = validateMd(filePath);
+            if (validationErrors.length > 0) {
+                const errorDir = path.join(sourceDir, "error");
+                const moved = moveToError(filePath, errorDir);
+                console.log(`... SKIP ${filename}: ${validationErrors.join("; ")}`);
+                console.log(`... Moved to ${path.relative(sourceDir, moved)}`);
+                results[filename] = { status: "skipped", error: validationErrors.join("; "), ms: 0 };
+                continue;
+            }
+
             // Process file
             const result = await processFile(filename);
 

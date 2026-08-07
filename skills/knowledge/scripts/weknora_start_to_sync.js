@@ -1,24 +1,26 @@
 const fs = require("fs");
 const path = require("path");
-const { sleep, titleKey, moveFile } = require("./lib/common");
+const { sleep, moveFile } = require("./lib/common");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const REQUEST_TIMEOUT_MS = 30000;
 const SCRIPT_TIMEOUT_MS = parseInt(process.env.SYNC_SCRIPT_TIMEOUT_MS || "600000", 10);
-const SUBMIT_INTERVAL_MS = parseInt(process.env.SUBMIT_INTERVAL_MS || "10000", 10);
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
 
-const [, , sourceDir, targetDir, categoryId] = process.argv;
+const [, , sourceDir, targetDir, kbId, submitIntervalArg] = process.argv;
 
-if (!sourceDir || !targetDir || !categoryId) {
-    console.error("Usage: node weknora_start_to_sync.js <source_dir> <target_dir> <category_id>");
-    console.error("  source_dir:  directory of final docs with frontmatter (e.g. marked/)");
-    console.error("  target_dir:  destination for synced articles (moved here after import)");
-    console.error("  category_id: WeKnora knowledge base category ID");
+if (!sourceDir || !targetDir || !kbId) {
+    console.error("Usage: node weknora_start_to_sync.js <source_dir> <target_dir> <kb_id> [submit_interval_ms]");
+    console.error("  source_dir:        directory of final docs with frontmatter (e.g. marked/)");
+    console.error("  target_dir:        destination for synced articles (moved here after import)");
+    console.error("  kb_id:             WeKnora knowledge base ID");
+    console.error("  submit_interval_ms: delay between submissions (default 6000)");
     process.exit(1);
 }
+
+const SUBMIT_INTERVAL_MS = submitIntervalArg ? parseInt(submitIntervalArg, 10) : 6000;
 
 // ─── Environment Variables ───────────────────────────────────────────────────
 
@@ -63,32 +65,37 @@ async function wkRequest(method, url, body) {
 // ─── Tag Management ──────────────────────────────────────────────────────────
 
 async function ensureTag(tagName) {
-    const listRes = await wkRequest("GET", `${apiBase}/knowledge-bases/${categoryId}/tags?page=1&page_size=200`);
+    const listRes = await wkRequest("GET", `${apiBase}/knowledge-bases/${kbId}/tags?page=1&page_size=200`);
     const tags = (listRes.data?.data) || [];
     const found = tags.find((t) => t.name === tagName);
 
     if (found) return found.id;
 
-    const created = await wkRequest("POST", `${apiBase}/knowledge-bases/${categoryId}/tags`, { name: tagName });
+    const created = await wkRequest("POST", `${apiBase}/knowledge-bases/${kbId}/tags`, { name: tagName });
     return created.data.id;
 }
 
 // ─── Dedup Helpers ───────────────────────────────────────────────────────────
 
-async function fetchExistingTitles() {
-    const titles = new Set();
-    const keys = new Set();
+async function fetchExistingHashes() {
+    const hashes = new Set();
     let page = 1;
     const pageSize = 200;
 
     while (true) {
-        const res = await wkRequest("GET", `${apiBase}/knowledge-bases/${categoryId}/knowledge?page=${page}&page_size=${pageSize}`);
+        const res = await wkRequest("GET", `${apiBase}/knowledge-bases/${kbId}/knowledge?page=${page}&page_size=${pageSize}`);
         const items = res.data || [];
 
         for (const it of items) {
+            // Title format: {hash}_{title} — extract hash prefix
             if (it.title) {
-                titles.add(it.title);
-                keys.add(titleKey(it.title));
+                const sep = it.title.indexOf("_");
+                if (sep > 0 && sep <= 16) {
+                    const prefix = it.title.slice(0, sep);
+                    if (/^[a-f0-9]{8,}$/i.test(prefix)) {
+                        hashes.add(prefix);
+                    }
+                }
             }
         }
 
@@ -96,7 +103,7 @@ async function fetchExistingTitles() {
         page++;
     }
 
-    return { titles, keys };
+    return hashes;
 }
 
 // ─── Frontmatter Parsing ─────────────────────────────────────────────────────
@@ -143,10 +150,13 @@ async function main() {
 
     if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
 
-    console.log(`Using KB: ${categoryId} (submit interval: ${SUBMIT_INTERVAL_MS}ms)`);
+    console.log(`Using KB: ${kbId} (submit interval: ${SUBMIT_INTERVAL_MS}ms)`);
 
-    const { titles: existingTitles, keys: existingKeys } = await fetchExistingTitles();
-    console.log(`[dedup] loaded ${existingTitles.size} existing titles from KB`);
+    const existingHashes = await fetchExistingHashes();
+    console.log(`[dedup] loaded ${existingHashes.size} existing hashes from KB`);
+
+    const duplDir = path.join(sourceDir, "dupl");
+    if (!fs.existsSync(duplDir)) fs.mkdirSync(duplDir, { recursive: true });
 
     const files = fs.readdirSync(sourceDir)
         .filter((f) => f.endsWith(".md"))
@@ -165,6 +175,7 @@ async function main() {
         const f = files[i];
         const srcPath = path.join(sourceDir, f);
         const dstPath = path.join(targetDir, f);
+        const duplPath = path.join(duplDir, f);
 
         try {
             const content = fs.readFileSync(srcPath, "utf-8");
@@ -172,10 +183,10 @@ async function main() {
             const finalTitle = title || f.replace(/\.md$/i, "");
             const submitTitle = hash ? `${hash}_${finalTitle}` : finalTitle;
 
-            // Dedup: skip if normalized title key already exists.
-            if (existingKeys.has(titleKey(submitTitle))) {
-                moveFile(srcPath, dstPath);
-                console.log(`  SKIP ${f}: already exists in KB ("${submitTitle}")`);
+            // Dedup: skip if hash already exists in KB.
+            if (hash && existingHashes.has(hash)) {
+                moveFile(srcPath, duplPath);
+                console.log(`  DUP ${f}: hash "${hash}" already exists in KB`);
                 skipped++;
                 continue;
             }
@@ -189,11 +200,10 @@ async function main() {
             // Import article.
             const payload = { title: submitTitle, content: body, status: "publish" };
             if (tagIds.length > 0) payload.tag_ids = tagIds;
-            await wkRequest("POST", `${apiBase}/knowledge-bases/${categoryId}/knowledge/manual`, payload);
+            await wkRequest("POST", `${apiBase}/knowledge-bases/${kbId}/knowledge/manual`, payload);
 
-            // Import succeeded: update local dedup sets + move file.
-            existingTitles.add(submitTitle);
-            existingKeys.add(titleKey(submitTitle));
+            // Import succeeded: update local dedup set + move file.
+            if (hash) existingHashes.add(hash);
             moveFile(srcPath, dstPath);
             console.log(`  SYNCED ${f} (tags: ${tags.length}, title: "${submitTitle}")`);
             synced++;

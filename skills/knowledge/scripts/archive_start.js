@@ -8,11 +8,13 @@ const MS_PER_DAY = 86400 * 1000;
 
 // ─── Argument Parsing ────────────────────────────────────────────────────────
 
-const [, , srcDir, dstDir, daysStr] = process.argv;
+const [, , sourceDir, targetDir, daysStr] = process.argv;
 
-if (!srcDir || !dstDir) {
-    console.error("Usage: node archive_start.js <source_dir> <archive_dir> [days]");
-    console.error("  days: file age threshold in days (default 90), based on file mtime");
+if (!sourceDir || !targetDir) {
+    console.error("Usage: node archive_start.js <source_folder> <target_folder> [days]");
+    console.error("  source_folder: directory of files to archive");
+    console.error("  target_folder: destination for archived files");
+    console.error("  days:          file age threshold in days (default 90), based on file mtime");
     process.exit(1);
 }
 
@@ -26,16 +28,16 @@ const cutoff = Date.now() - DAYS * MS_PER_DAY;
 
 // ─── Directory Validation ────────────────────────────────────────────────────
 
-if (!fs.existsSync(srcDir)) {
-    console.error(`Error: source directory not found: ${srcDir}`);
+if (!fs.existsSync(sourceDir)) {
+    console.error(`Error: source directory not found: ${sourceDir}`);
     process.exit(1);
 }
 
-if (!fs.existsSync(dstDir)) fs.mkdirSync(dstDir, { recursive: true });
+if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
 
 // ─── Main Processing ─────────────────────────────────────────────────────────
 
-const files = fs.readdirSync(srcDir)
+const files = fs.readdirSync(sourceDir)
     .filter((f) => f.endsWith(".md"))
     .sort();
 
@@ -48,11 +50,11 @@ let archived = 0;
 let kept = 0;
 
 for (const f of files) {
-    const srcPath = path.join(srcDir, f);
+    const srcPath = path.join(sourceDir, f);
     const stat = fs.statSync(srcPath);
 
     if (stat.mtimeMs < cutoff) {
-        moveFile(srcPath, path.join(dstDir, f));
+        moveFile(srcPath, path.join(targetDir, f));
         console.log(`  ARCHIVED ${f} (mtime ${stat.mtime.toISOString().slice(0, 10)})`);
         archived++;
     } else {
