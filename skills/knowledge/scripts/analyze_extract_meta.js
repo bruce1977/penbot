@@ -1,5 +1,5 @@
 const path = require("path");
-const { llmChat, extractJSON, nowIso } = require("./lib/llm");
+const { llmChat, extractJSON, nowIso, getModelTemperature } = require("./lib/llm");
 const { sleep, normalizeTitle, toStrArray, writeJsonFile, validateWithSchema } = require("./lib/common");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -63,8 +63,8 @@ async function extractWithRetry(content) {
             userPrompt = `${errorBlock}\n\n${userPrompt}`;
         }
 
-        // Temperature jitter: 0.1 -> 0.2 -> 0.5 to break greedy determinism.
-        const temperature = attempt === 1 ? 0.1 : attempt === 2 ? 0.2 : 0.5;
+        // Temperature from model-specific scheme.
+        const temperature = getModelTemperature(MODEL, attempt);
         if (attempt > 1) {
             console.log(`... [meta] requesting LLM (attempt ${attempt}/${MAX_ATTEMPTS})...`);
         }

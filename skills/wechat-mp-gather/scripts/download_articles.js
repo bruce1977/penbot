@@ -22,12 +22,28 @@ const USER_AGENTS = [
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
+// Drop WeChat scraping residue: injected CSS, reader UI buttons, and
+// javascript:void(0) links, keeping content from the cover image onward.
 function cleanContent(text) {
+  // Keep only content starting at the cover image marker (drops head CSS).
   const idx = text.indexOf("![cover_image]");
-  if (idx > 0) {
-    return text.slice(idx);
-  }
-  return text;
+  const body = idx > 0 ? text.slice(idx) : text;
+
+  // Drop lines that contain CSS rule blocks.
+  const cssLineRe = /(?:^|\s)(?:[#.]|(?:[a-z]+\s*)?[a-z]{2,}\s)\S*\{[^}]*;[^}]*\}/;
+  return body
+    // Drop javascript:void(0) links (keep link text), incl. escaped parens.
+    .replace(/\[([^\]]*)\]\(javascript:void[\\(]*[^)]*[)\\]*;?\)*/gi, "$1")
+    // Drop reader UI button lines.
+    .replace(/^\s*在小说阅读器读本章\s*$/gm, "")
+    .replace(/^\s*在小说阅读器中沉浸阅读\s*$/gm, "")
+    .replace(/^\s*去阅读\s*$/gm, "")
+    .split("\n")
+    .filter((line) => !cssLineRe.test(line))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/^\n+/, "")
+    .trim();
 }
 
 function parseArgs() {

@@ -3,7 +3,7 @@ const path = require("path");
 const extractMeta = require("./analyze_extract_meta");
 const extractRate = require("./analyze_extract_rate");
 const { generateYamlHeader, sanitizeTitle, loadJSON } = require("./analyze_frontmatter");
-const { stripFrontmatter, getLlmStats } = require("./lib/llm");
+const { stripFrontmatter, cleanWechatContent, getLlmStats } = require("./lib/llm");
 const { contentHash } = require("./lib/content_hash");
 const { writeJsonFile } = require("./lib/common");
 const { validateMd, moveToError } = require("./lib/validate_md");
@@ -60,10 +60,10 @@ async function processFile(filename) {
         }
     };
 
-    // PREP: read file and compute hash
+    // PREP: read file, strip frontmatter and clean scraping residue
     const cleanBody = await track("PREP", () => {
         const raw = fs.readFileSync(filePath, "utf-8");
-        return stripFrontmatter(raw);
+        return cleanWechatContent(stripFrontmatter(raw));
     });
 
     const hash = contentHash(cleanBody);
