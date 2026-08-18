@@ -13,7 +13,7 @@ const KB_LLM_PROVIDER = (process.env.KB_LLM_PROVIDER || "auto").toLowerCase();
 const REQUEST_TIMEOUT_MS = Number(process.env.KB_LLM_TIMEOUT_MS || 300000);
 
 // Caller already retries 3x on validation failure; this only guards transport errors.
-const MAX_RETRIES = 3;
+const MAX_RETRIES = 2;
 
 // ─── Statistics ──────────────────────────────────────────────────────────────
 
