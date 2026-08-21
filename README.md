@@ -176,3 +176,6 @@ config.json + date
 ├── .env                       # 环境变量（不提交）
 └── opencode.json              # opencode 配置
 ```
+
+
+Good
