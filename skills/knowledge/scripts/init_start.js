@@ -1,9 +1,10 @@
-const fs = require("fs");
+﻿const fs = require("fs");
 const path = require("path");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const DIRS = ["inbox", "marked", "weknora", "archive", "archived"];
+const CONFIG_DIR = ".config";
 
 const DEFAULT_CONFIG = {
     analyze: {
@@ -14,8 +15,18 @@ const DEFAULT_CONFIG = {
     weknora: {
         source_folder: "marked",
         target_folder: "weknora",
-        kb_id: "${your weknora kb-id}",
-        submit_interval_ms: 10000,
+        kb_id: "",
+        wiki_kb_id: "",
+        score_threshold: 3.5,
+        max_pages: 3,
+        sync_enabled: true,
+        custom_metas: {
+            source: "$source",
+            author: "$auther",
+            aliases: "$aliases",
+            score: "$score",
+            channel: "wechat-mp",
+        },
     },
     archive: {
         orginal_folder: "archived",
@@ -47,12 +58,21 @@ for (const d of DIRS) {
     }
 }
 
+// ─── Config Directory Creation ───────────────────────────────────────────────
+
+const configDir = path.join(baseDir, CONFIG_DIR);
+if (!fs.existsSync(configDir)) {
+    fs.mkdirSync(configDir, { recursive: true });
+    console.log(`  CREATED ${CONFIG_DIR}/`);
+    created++;
+}
+
 // ─── Config File Creation ────────────────────────────────────────────────────
 
-const configPath = path.join(baseDir, "config.json");
+const configPath = path.join(configDir, "config.json");
 if (!fs.existsSync(configPath)) {
     fs.writeFileSync(configPath, JSON.stringify(DEFAULT_CONFIG, null, 2) + "\n");
-    console.log("  CREATED config.json (default)");
+    console.log("  CREATED .config/config.json (default)");
     created++;
 }
 

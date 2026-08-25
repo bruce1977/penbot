@@ -1,3 +1,4 @@
+﻿const fs = require("fs");
 const path = require("path");
 const { llmChat, extractJSON, getModelTemperature } = require("./lib/llm");
 const { sleep, toNum, writeJsonFile, validateWithSchema } = require("./lib/common");
@@ -6,19 +7,43 @@ const { sleep, toNum, writeJsonFile, validateWithSchema } = require("./lib/commo
 
 const MODEL = process.env.KB_LLM_RATE_MODEL || process.env.KB_LLM_MODEL || "qwen2.5:3b";
 const SCRIPT_DIR = path.dirname(__filename || __dirname);
-const PROMPT_DIR = path.resolve(SCRIPT_DIR, "..", "prompts");
+const SKILL_DIR = path.resolve(SCRIPT_DIR, "..");
+const DEFAULT_PROMPT_DIR = path.join(SKILL_DIR, "prompts");
+const DEFAULT_SCHEMA_DIR = path.join(SKILL_DIR, "schemas");
 const MAX_ATTEMPTS = 3;
 
-const SCHEMA_PATH = path.join(PROMPT_DIR, "rate.schema.json");
+// Resolve custom dirs from profile
+function getCustomDirs() {
+    const profileDir = process.env.KB_PROFILE_DIR;
+    if (!profileDir) return { promptDir: DEFAULT_PROMPT_DIR, schemaDir: DEFAULT_SCHEMA_DIR };
+    const cfgDir = path.join(profileDir, ".config");
+    const promptDir = path.join(cfgDir, "prompts");
+    const schemaDir = path.join(cfgDir, "schema");
+    return {
+        promptDir: fs.existsSync(promptDir) ? promptDir : DEFAULT_PROMPT_DIR,
+        schemaDir: fs.existsSync(schemaDir) ? schemaDir : DEFAULT_SCHEMA_DIR,
+    };
+}
+
+const _dirs = getCustomDirs();
+
+// Load prompts (custom or default)
+function loadPrompt(name) {
+    return require(path.join(_dirs.promptDir, name + ".json"));
+}
+
+// Load schema (custom or default)
+function loadSchema(name) {
+    return path.join(_dirs.schemaDir, name + ".json");
+}
+
+const SCHEMA_PATH = loadSchema("rate");
+const prompts = loadPrompt("rate");
 
 // Per-process nonce: unique per invocation, defeats Ollama serving cached completions.
 function genNonce() {
     return Math.random().toString(36).slice(2, 12);
 }
-
-// ─── Prompt Loading ──────────────────────────────────────────────────────────
-
-const prompts = require(path.join(PROMPT_DIR, "rate.prompt.json"));
 
 // ─── Prompt Building ─────────────────────────────────────────────────────────
 
@@ -38,16 +63,18 @@ function buildRetryPrompt(retryTag, errors) {
 // ─── Rating Construction ─────────────────────────────────────────────────────
 
 function buildRate(parsed) {
-    return {
-        ratings: {
-            value: toNum(parsed.value),
-            tech: toNum(parsed.tech),
-            public: toNum(parsed.public),
-            academic: toNum(parsed.academic),
-            ethics: toNum(parsed.ethics),
-        },
-        model: MODEL,
+    const ratings = {
+        value: toNum(parsed.value),
+        tech: toNum(parsed.tech),
+        public: toNum(parsed.public),
+        academic: toNum(parsed.academic),
+        ethics: toNum(parsed.ethics),
     };
+
+    const sum = ratings.value + ratings.tech + ratings.public + ratings.academic + ratings.ethics;
+    const score = Math.round((sum / 5) * 10) / 10;  // average of 5 dims  // 1 decimal, lossless for 0.5-step dims
+
+    return { ratings, score, model: MODEL };
 }
 
 // ─── LLM Extraction with Retry ──────────────────────────────────────────────
@@ -71,7 +98,6 @@ async function extractWithRetry(content) {
         if (attempt > 1) {
             console.log(`... [rate] requesting LLM (attempt ${attempt}/${MAX_ATTEMPTS})...`);
         }
-
 
         let raw;
         try {

@@ -5,6 +5,7 @@
     "type": "object",
     "required": [
         "ratings",
+        "score",
         "model"
     ],
     "properties": {
@@ -20,30 +21,35 @@
             "properties": {
                 "value": {
                     "type": "number",
-                    "minimum": 0.5,
-                    "maximum": 5
+                    "minimum": 1,
+                    "maximum": 10
                 },
                 "tech": {
                     "type": "number",
-                    "minimum": 0.5,
-                    "maximum": 5
+                    "minimum": 1,
+                    "maximum": 10
                 },
                 "public": {
                     "type": "number",
-                    "minimum": 0.5,
-                    "maximum": 5
+                    "minimum": 1,
+                    "maximum": 10
                 },
                 "academic": {
                     "type": "number",
-                    "minimum": 0.5,
-                    "maximum": 5
+                    "minimum": 1,
+                    "maximum": 10
                 },
                 "ethics": {
                     "type": "number",
-                    "minimum": 0.5,
-                    "maximum": 5
+                    "minimum": 1,
+                    "maximum": 10
                 }
             }
+        },
+        "score": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 10
         },
         "model": {
             "type": "string"

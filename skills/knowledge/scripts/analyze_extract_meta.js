@@ -1,3 +1,4 @@
+const fs = require("fs");
 const path = require("path");
 const { llmChat, extractJSON, nowIso, getModelTemperature } = require("./lib/llm");
 const { sleep, normalizeTitle, toStrArray, writeJsonFile, validateWithSchema } = require("./lib/common");
@@ -6,19 +7,43 @@ const { sleep, normalizeTitle, toStrArray, writeJsonFile, validateWithSchema } =
 
 const MODEL = process.env.KB_LLM_META_MODEL || process.env.KB_LLM_MODEL || "qwen2.5:3b";
 const SCRIPT_DIR = path.dirname(__filename || __dirname);
-const PROMPT_DIR = path.resolve(SCRIPT_DIR, "..", "prompts");
+const SKILL_DIR = path.resolve(SCRIPT_DIR, "..");
+const DEFAULT_PROMPT_DIR = path.join(SKILL_DIR, "prompts");
+const DEFAULT_SCHEMA_DIR = path.join(SKILL_DIR, "schemas");
 const MAX_ATTEMPTS = 3;
 
-const SCHEMA_PATH = path.join(PROMPT_DIR, "meta.schema.json");
+// Resolve custom dirs from profile
+function getCustomDirs() {
+    const profileDir = process.env.KB_PROFILE_DIR;
+    if (!profileDir) return { promptDir: DEFAULT_PROMPT_DIR, schemaDir: DEFAULT_SCHEMA_DIR };
+    const cfgDir = path.join(profileDir, ".config");
+    const promptDir = path.join(cfgDir, "prompts");
+    const schemaDir = path.join(cfgDir, "schema");
+    return {
+        promptDir: fs.existsSync(promptDir) ? promptDir : DEFAULT_PROMPT_DIR,
+        schemaDir: fs.existsSync(schemaDir) ? schemaDir : DEFAULT_SCHEMA_DIR,
+    };
+}
+
+const _dirs = getCustomDirs();
+
+// Load prompts (custom or default)
+function loadPrompt(name) {
+    return require(path.join(_dirs.promptDir, name + ".json"));
+}
+
+// Load schema (custom or default)
+function loadSchema(name) {
+    return path.join(_dirs.schemaDir, name + ".json");
+}
+
+const SCHEMA_PATH = loadSchema("meta");
+const prompts = loadPrompt("meta");
 
 // Per-process nonce: unique per invocation, defeats Ollama serving cached completions.
 function genNonce() {
     return Math.random().toString(36).slice(2, 12);
 }
-
-// ─── Prompt Loading ──────────────────────────────────────────────────────────
-
-const prompts = require(path.join(PROMPT_DIR, "meta.prompt.json"));
 
 // ─── Prompt Building ─────────────────────────────────────────────────────────
 
@@ -37,13 +62,17 @@ function buildRetryPrompt(retryTag, errors) {
 // ─── Metadata Construction ───────────────────────────────────────────────────
 
 function buildMeta(parsed) {
+    // keywords: keep as comma-separated string (LLM outputs "word1,word2,word3")
+    const rawKeywords = String(parsed.keywords || "").trim();
+
     return {
         title: normalizeTitle(parsed.title || ""),
         date: nowIso(),
         auther: String(parsed.auther || ""),
         tags: toStrArray(parsed.tags),
         summary: String(parsed.summary || ""),
-        keywords: toStrArray(parsed.keywords),
+        keywords: rawKeywords,
+        aliases: toStrArray(parsed.aliases),
         model: MODEL,
     };
 }

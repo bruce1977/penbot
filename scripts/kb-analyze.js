@@ -13,7 +13,7 @@
  *   -> <KB_ARTICLES_DIR>/<profile>/marked  output (final .md with frontmatter)
  *
  * Config file:
- *   <KB_ARTICLES_DIR>/<profile>/config.json  (optional)
+ *   <KB_ARTICLES_DIR>/<profile>/.config/config.json  (optional)
  *   Analyze-specific overrides: source_folder, target_folder, batch_size
  *
  * Env vars (read by lib/llm.js, all optional, all have defaults):
@@ -44,7 +44,7 @@ if (!base) {
   process.exit(1);
 }
 
-const configPath = path.join(base, profile, "config.json");
+const configPath = path.join(base, profile, ".config", "config.json");
 if (!fs.existsSync(configPath)) {
   console.error(`Error: config file not found: ${configPath}`);
   process.exit(1);

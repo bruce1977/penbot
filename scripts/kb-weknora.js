@@ -13,7 +13,7 @@
  *   -> <KB_ARTICLES_DIR>/<profile>/weknora  output (synced articles moved here)
  *
  * Config file (required):
- *   <KB_ARTICLES_DIR>/<profile>/config.json
+ *   <KB_ARTICLES_DIR>/<profile>/.config/config.json
  *   Weknora-specific: source_folder, target_folder, kb_id, submit_interval_ms
  *
  * Env vars:
@@ -41,7 +41,7 @@ if (!base) {
   process.exit(1);
 }
 
-const configPath = path.join(base, profile, "config.json");
+const configPath = path.join(base, profile, ".config", "config.json");
 if (!fs.existsSync(configPath)) {
   console.error(`Error: config file not found: ${configPath}`);
   process.exit(1);

@@ -1,4 +1,4 @@
----
+﻿---
 name: workflow-knowledge
 ---
 
@@ -29,28 +29,42 @@ name: workflow-knowledge
 ```json
 {
   "weknora": {
-    "category_id": "",
-    "sync_enabled": true
+    "source_folder": "marked",
+    "target_folder": "weknora",
+    "kb_id": "",
+    "wiki_kb_id": "",
+    "score_threshold": 3.5,
+    "submit_interval_ms": 6000,
+    "sync_enabled": true,
+    "custom_metas": {
+      "source": "$source",
+      "author": "$auther",
+      "aliases": "$aliases",
+      "score": "$score",
+      "channel": "wechat-mp"
+    }
   },
   "archive": {
     "days": 90
   },
   "analyze": {
     "batch_size": 30
-  },
-  "sync": {
-    "submit_interval_ms": 10000
   }
 }
 ```
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `weknora.category_id` | string | `""` | WeKnora 知识库 ID |
+| `weknora.source_folder` | string | `"marked"` | 待同步文档目录 |
+| `weknora.target_folder` | string | `"weknora"` | 已同步文档目录 |
+| `weknora.kb_id` | string | `""` | 目标知识库 ID |
+| `weknora.wiki_kb_id` | string | `""` | wiki 知识库 ID（可选，配了启用评分分流） |
+| `weknora.score_threshold` | number | `0` | 评分阈值（score ≥ 阈值 → wiki） |
+| `weknora.submit_interval_ms` | number | `6000` | 每篇提交间隔（毫秒） |
 | `weknora.sync_enabled` | boolean | `true` | 是否启用 WeKnora 同步 |
+| `weknora.custom_metas` | object | `{}` | 自定义元数据字段映射 |
 | `archive.days` | number | `90` | 归档文件年龄阈值（天） |
 | `analyze.batch_size` | number | `30` | 分析批处理文件数上限 |
-| `sync.submit_interval_ms` | number | `10000` | 每篇同步提交后等待间隔（毫秒） |
 
 ---
 
@@ -129,14 +143,14 @@ node skills/knowledge/scripts/analyze_start.js \
 
 ## 流程四：同步导入 WeKnora
 
-将 `{marked}/` 中带 frontmatter 的终稿逐篇导入 WeKnora（文章 + 标签），导入成功后移动到 `{weknora}/`。
+将 `{marked}/` 中带 frontmatter 的终稿逐篇导入 WeKnora：创建临时库（无摘要模型）→ 导入解析 → PUT 本地摘要/元数据 → 按评分分流到目标库 → 删除临时库。
 
-> 前置条件：`config.json → weknora.category_id` 非空且 `weknora.sync_enabled` 为 `true`。
+> 前置条件：`config.json → weknora.kb_id` 非空且 `weknora.sync_enabled` 为 `true`。
 
 ### 脚本
 
 ```bash
-node skills/knowledge/scripts/weknora_start_to_sync.js <source_dir> <target_dir> <category_id>
+node skills/knowledge/scripts/weknora_start_to_sync.js <source_dir> <target_dir> <config.json>
 ```
 
 ### 示例
@@ -145,7 +159,24 @@ node skills/knowledge/scripts/weknora_start_to_sync.js <source_dir> <target_dir>
 node skills/knowledge/scripts/weknora_start_to_sync.js \
   D:/knowledge/articles/ai/marked \
   D:/knowledge/articles/ai/weknora \
-  <category_id>
+  D:/knowledge/articles/ai/config.json
+```
+
+### config.json 结构
+
+```json
+{
+  "kb_id": "目标知识库 ID",
+  "wiki_kb_id": "wiki 知识库 ID（可选）",
+  "score_threshold": 3.5,
+  "custom_metas": {
+    "source": "$source",
+    "author": "$auther",
+    "aliases": "$aliases",
+    "score": "$score",
+    "channel": "wechat-mp"
+  }
+}
 ```
 
 ### 参数说明
@@ -154,25 +185,31 @@ node skills/knowledge/scripts/weknora_start_to_sync.js \
 |------|------|------|---------|
 | `<source_dir>` | 是 | 带 frontmatter 的终稿目录 | 固定为 `{profile}/marked` |
 | `<target_dir>` | 是 | 已同步文章存放目录 | 固定为 `{profile}/weknora` |
-| `<category_id>` | 是 | WeKnora 知识库 ID | `config.json → weknora.category_id` |
+| `<config.json>` | 是 | 配置文件路径 | `config.json → weknora` 字段 |
 
 ### 环境变量
 
 | 变量 | 必填 | 默认值 | 说明 |
 |------|------|--------|------|
 | `WEKNORA_BASE_URL` | 是 | — | WeKnora API 基础地址 |
-| `WEKNORA_API_KEY` | 是 | — | API 密钥 |
-| `SUBMIT_INTERVAL_MS` | 否 | `10000` | 每篇提交后等待间隔（毫秒） |
+| `WEKNORA_API_KEY` | 是 | — | API 密钥（导入/PUT/临时库创建删除均使用此 key） |
+| `SYNC_POLL_INTERVAL_MS` | 否 | `10` | 解析状态轮询间隔（毫秒） |
+| `SYNC_POLL_TIMEOUT_MS` | 否 | `30000` | 单篇解析超时（毫秒） |
 | `SYNC_SCRIPT_TIMEOUT_MS` | 否 | `600000` | 脚本整体超时 |
 
 ### 执行步骤
 
-1. 分页拉取库内已有标题，建立标题集合
-2. 遍历 `{source}/*.md`，每篇：
-   - 解析 frontmatter：`hash`、`title`、`tags`、正文 body
-   - 提交标题 = `${hash}_${title}`；若已存在 → SKIP 并移动
-   - 创建/复用标签 → 导入文章 → 成功后 Move 到 `{target}/`
-3. 失败篇保留在 `{source}` 待重试
+1. 创建临时库（无摘要模型，零 LLM 调用）
+2. 分页拉取目标库已有 hash，建立去重集合
+3. 遍历 `{source}/*.md`，每篇：
+   - 解析 frontmatter → title = `${title}_${hash}`
+   - `POST /knowledge/manual` 导入临时库
+   - 轮询 parse_status（10ms/30s）直到向量化完成
+   - `PUT /knowledge/:id` 上传 description + custom_metadata
+   - 记录目标库（score ≥ threshold → wiki_kb_id，否则 → kb_id）
+4. 按目标库分组，批量 `POST /knowledge/move`（reuse_vectors）
+5. 删除临时库
+6. 失败篇保留在 `{source}` 待重试
 
 ---
 

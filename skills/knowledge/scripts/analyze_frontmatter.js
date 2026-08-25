@@ -49,6 +49,14 @@ function generateYamlHeader(meta, rate, hash) {
         ratings[v] = typeof raw[k] === "number" ? raw[k] : null;
     }
 
+    // Script-computed score (average), fallback for backward compat with old .rate.json
+    let avg = rate?.score;
+    if (typeof avg !== "number") {
+        const vals = [ratings.business, ratings.technical, ratings.social, ratings.academic, ratings.ethics]
+            .filter((v) => typeof v === "number");
+        avg = vals.length > 0 ? Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10 : null;
+    }
+
     const lines = [
         "---",
         `hash: ${yamlStr(hash)}`,
@@ -57,9 +65,11 @@ function generateYamlHeader(meta, rate, hash) {
         `date: ${yamlStr(meta.date || "")}`,
         `source: ${yamlStr(meta.source || "")}`,
         `tags: ${yamlArr(meta.tags)}`,
-        `keywords: ${yamlArr(meta.keywords)}`,
+        `keywords: ${yamlStr(meta.keywords)}`,
+        `aliases: ${yamlArr(meta.aliases)}`,
         `summary: ${yamlStr(meta.summary || "")}`,
         `model: ${yamlStr(meta.model || "")}`,
+        `score: ${avg}`,
         "rating:",
         `  business: ${ratings.business}`,
         `  technical: ${ratings.technical}`,

@@ -15,8 +15,12 @@ if (!sourceDir || !targetDir) {
     process.exit(1);
 }
 
+// Derive profile dir from sourceDir (e.g. inbox/ -> profile root)
+const profileDir = path.resolve(sourceDir, "..");
+process.env.KB_PROFILE_DIR = profileDir;
+
 const BATCH_SIZE = Number(batchSizeArg) || 30;
-const BATCH_TIMEOUT_MS = 3600000;
+const BATCH_TIMEOUT_MS = 300000 * BATCH_SIZE;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const pad = (n, len) => String(n).padStart(len, " ");
@@ -97,7 +101,7 @@ async function processFile(filename) {
                 fs.mkdirSync(targetDir, { recursive: true });
             }
 
-            const targetFile = path.join(targetDir, `${hash}_${sanitizeTitle(meta.title)}.md`);
+            const targetFile = path.join(targetDir, `${sanitizeTitle(meta.title)}_${hash}.md`);
             if (fs.existsSync(targetFile)) {
                 fs.unlinkSync(targetFile, { force: true });
             }
@@ -177,7 +181,6 @@ async function main() {
                 if (result.status === "done") {
                     fs.unlinkSync(path.join(sourceDir, filename));
                 }
-            
                 result.ms = Date.now() - fileStart;
             }
 
