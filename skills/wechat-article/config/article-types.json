@@ -9,7 +9,8 @@
     "local": {
       "provider": "ollama",
       "base_url": "${PB_OLLAMA_BASE_URL:-http://localhost:11434}",
-      "model": "${PB_OLLAMA_MODEL:-qwen3.5:4b}",
+      "model": "${PB_OLLAMA_MODEL_NAME:-qwen3.5:4b}",
+      "api_key": "${PB_OLLAMA_API_KEY}",
       "timeout_ms": 300000,
       "temperature": 0.7,
       "num_ctx": 32768,
@@ -18,7 +19,8 @@
     "local-9b": {
       "provider": "ollama",
       "base_url": "${PB_OLLAMA_BASE_URL:-http://localhost:11434}",
-      "model": "${PB_OLLAMA_LARGE_MODEL:-nimble:latest}",
+      "model": "${PB_OLLAMA_LARGE_MODEL_NAME:-nimble:latest}",
+      "api_key": "${PB_OLLAMA_API_KEY}",
       "timeout_ms": 600000,
       "temperature": 0.7,
       "num_ctx": 32768,
@@ -64,10 +66,18 @@
       }
     },
     "knowledge": {
+      "source": "local",
       "max_sources": 8,
       "excerpt_chars": 1800,
       "lookback_days": 365,
-      "max_file_bytes": 400000
+      "max_file_bytes": 400000,
+      "weknora": {
+        "base_url": "${WEKNORA_BASE_URL}",
+        "api_key": "${WEKNORA_API_KEY}",
+        "auth_header": "X-API-Key",
+        "match_count": 8,
+        "timeout_ms": 30000
+      }
     },
     "illustrations": {
       "min": 1,
@@ -124,6 +134,12 @@
       "enabled": true,
       "description": "围绕 AI 领域的一个判断展开，用知识库中的事实和案例支撑，强调观点密度与可读性。",
       "knowledge_dirs": ["D:/knowledge/obsidian/ai"],
+      "knowledge": {
+        "weknora": {
+          "kb_ids": ["992dfd14-02ba-4ab6-bdbc-26440b116263"],
+          "kb_names": { "992dfd14-02ba-4ab6-bdbc-26440b116263": "AI 知识荟萃" }
+        }
+      },
       "style": {
         "persona": "长期跟踪 AI 产业的观察者，既懂技术也懂落地，不贩卖焦虑。",
         "tone": "冷静、克制、有判断，允许少量口语化表达。",
@@ -206,6 +222,12 @@
       "enabled": true,
       "description": "针对单条 AI 新闻的快速解读，强调时效、信息密度和明确态度。",
       "knowledge_dirs": ["D:/knowledge/obsidian/ai"],
+      "knowledge": {
+        "weknora": {
+          "kb_ids": ["992dfd14-02ba-4ab6-bdbc-26440b116263"],
+          "kb_names": { "992dfd14-02ba-4ab6-bdbc-26440b116263": "AI 知识荟萃" }
+        }
+      },
       "style": {
         "persona": "科技媒体主编，能在信息噪音里快速指出真正重要的变化。",
         "tone": "干脆、直接、信息密度高，少铺垫。",
@@ -248,6 +270,18 @@
       "enabled": true,
       "description": "把一个技术概念、论文或工程实践讲清楚，由浅入深，重视类比和可复现细节。",
       "knowledge_dirs": ["D:/knowledge/obsidian/ai", "D:/knowledge/obsidian/homelab"],
+      "knowledge": {
+        "weknora": {
+          "kb_ids": [
+            "992dfd14-02ba-4ab6-bdbc-26440b116263",
+            "40e2a500-30b1-447e-a275-d376b1599069"
+          ],
+          "kb_names": {
+            "992dfd14-02ba-4ab6-bdbc-26440b116263": "AI 知识荟萃",
+            "40e2a500-30b1-447e-a275-d376b1599069": "AI 知识荟萃(WIKI)"
+          }
+        }
+      },
       "style": {
         "persona": "一线工程师兼技术作者，习惯用可运行的例子解释抽象概念。",
         "tone": "耐心、准确、少炫技。",
@@ -295,6 +329,12 @@
       "enabled": true,
       "description": "记录家庭实验室 / 自托管项目的搭建、踩坑与取舍，强调可复现和真实成本。",
       "knowledge_dirs": ["D:/knowledge/obsidian/homelab"],
+      "knowledge": {
+        "weknora": {
+          "kb_ids": ["1f0bca1f-6ef9-42b2-ad9c-b1eea3963314"],
+          "kb_names": { "1f0bca1f-6ef9-42b2-ad9c-b1eea3963314": "家庭服务器折腾指南(WIKI)" }
+        }
+      },
       "style": {
         "persona": "喜欢折腾家庭服务器的实践者，愿意公开失败过程和真实开销。",
         "tone": "务实、坦诚、带一点自嘲。",

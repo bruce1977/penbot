@@ -19,7 +19,15 @@ import {
 } from "../scripts/lib/markdown.mjs";
 import { parseJsonFromText, extractAgentText } from "../scripts/lib/models.mjs";
 import { normalizeConfig, validateConfig, deepMerge } from "../scripts/lib/config.mjs";
-import { indexKnowledge, pickRecent, searchKnowledge, buildTerms, extractExcerpts } from "../scripts/lib/knowledge.mjs";
+import {
+  indexKnowledge,
+  pickRecent,
+  searchKnowledge,
+  searchWeKnora,
+  collectSources,
+  buildTerms,
+  extractExcerpts,
+} from "../scripts/lib/knowledge.mjs";
 import { normalizeIssues, applyCorrections } from "../scripts/lib/corrector.mjs";
 import { composePrompt, resolveImageCount, planImages } from "../scripts/lib/illustrate.mjs";
 import { bodyOnly, emailShell, markdownToHtml } from "../scripts/lib/publish.mjs";
@@ -214,6 +222,36 @@ test("validateConfig reports missing knowledge dirs and unknown models", () => {
   assert.ok(issues.some((i) => i.includes('model "ghost"')));
 });
 
+test("normalizeConfig resolves knowledge.source and WeKnora defaults", () => {
+  const dir = tempDir("wa-cfg-");
+  const raw = rawConfig(dir);
+  raw.defaults.knowledge = { weknora: { base_url: "http://wk/api/v1", api_key: "k" } };
+  raw.types[0].knowledge = { source: "weknora", weknora: { kb_ids: "kb1" } };
+  const type = normalizeConfig(raw, dir).types[0];
+  assert.equal(type.knowledge.source, "weknora");
+  assert.deepEqual(type.knowledge.weknora.kb_ids, ["kb1"]);
+  assert.equal(type.knowledge.weknora.base_url, "http://wk/api/v1");
+  assert.equal(type.knowledge.weknora.auth_header, "X-API-Key");
+});
+
+test("normalizeConfig degrades a WeKnora source when base_url is missing", () => {
+  const dir = tempDir("wa-cfg-");
+  const raw = rawConfig(dir);
+  raw.types[0].knowledge = { source: "both", weknora: { kb_ids: ["kb1"] } };
+  const type = normalizeConfig(raw, dir).types[0];
+  assert.equal(type.knowledge.source, "local");
+  assert.ok(type.knowledge.weknora.disabled_reason);
+});
+
+test("validateConfig flags a WeKnora source without kb_ids", () => {
+  const dir = tempDir("wa-cfg-");
+  const raw = rawConfig(dir);
+  raw.defaults.knowledge = { weknora: { base_url: "http://wk", api_key: "k" } };
+  raw.types[0].knowledge = { source: "weknora" };
+  const issues = validateConfig(normalizeConfig(raw, dir));
+  assert.ok(issues.some((i) => i.includes("kb_ids")));
+});
+
 test("deepMerge merges nested objects and replaces arrays", () => {
   const merged = deepMerge({ a: { b: 1, c: 2 }, list: [1, 2] }, { a: { c: 3 }, list: [9] });
   assert.deepEqual(merged, { a: { b: 1, c: 3 }, list: [9] });
@@ -263,6 +301,149 @@ test("extractExcerpts picks paragraphs matching the terms", () => {
   const excerpts = extractExcerpts(body, ["agent", "工具"], 400, 1);
   assert.equal(excerpts.length, 1);
   assert.match(excerpts[0], /Agent/);
+});
+
+/* ------------------------------------------------------------------ */
+/* weknora knowledge source                                            */
+/* ------------------------------------------------------------------ */
+
+function stubFetch(handler) {
+  const original = globalThis.fetch;
+  globalThis.fetch = handler;
+  return () => {
+    globalThis.fetch = original;
+  };
+}
+
+function weknoraType(overrides = {}) {
+  return {
+    name: "T",
+    topic: { keywords: ["Agent"] },
+    knowledge: {
+      source: "weknora",
+      max_sources: 6,
+      excerpt_chars: 500,
+      weknora: { base_url: "http://wk/api/v1", api_key: "k", kb_ids: ["kb1"], match_count: 6 },
+      ...overrides,
+    },
+  };
+}
+
+function kbDir(count = 6) {
+  const dir = tempDir("wa-kb-");
+  for (let i = 1; i <= count; i++) {
+    fs.writeFileSync(
+      path.join(dir, `agent-${i}.md`),
+      `---\ntitle: Agent 稳定性 ${i}\ndate: 2026-09-0${i}\n---\n\nAgent 工具调用稳定性问题 ${i}，需要系统性分析。\n`,
+    );
+  }
+  return dir;
+}
+
+test("searchWeKnora normalizes hits, strips image noise and parses frontmatter", async () => {
+  const restore = stubFetch(async (url, init) => {
+    assert.match(String(url), /\/knowledge-bases\/kb1\/hybrid-search$/);
+    assert.deepEqual(JSON.parse(init.body), { query_text: "Agent", match_count: 6 });
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [
+          {
+            knowledge_id: "k1",
+            knowledge_title: "标题一",
+            content: "![](resource://abc) 正文 A",
+            score: 0.02,
+            knowledge_description: "一段摘要",
+            knowledge_custom_metadata: "date: 2025-01-20T10:00:00+08:00\nkeywords: AI, Agent",
+          },
+          { knowledge_id: "k1", knowledge_title: "标题一", content: "正文 B", score: 0.05 },
+        ],
+      }),
+      text: async () => "",
+    };
+  });
+  try {
+    const hits = await searchWeKnora(weknoraType(), "Agent", {});
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].file, "weknora://kb1/k1");
+    assert.equal(hits[0].date, "2025-01-20");
+    assert.deepEqual(hits[0].tags, ["AI", "Agent"]);
+    assert.equal(hits[0].summary, "一段摘要");
+    assert.equal(hits[0].score, 0.05);
+    assert.equal(hits[0].excerpts.length, 2);
+    assert.ok(!hits[0].excerpts[0].includes("resource://"));
+  } finally {
+    restore();
+  }
+});
+
+test("searchWeKnora logs and skips failing knowledge bases", async () => {
+  const warnings = [];
+  const restore = stubFetch(async () => ({ ok: false, status: 500, text: async () => "boom" }));
+  try {
+    const type = weknoraType({ weknora: { base_url: "http://wk/api/v1", api_key: "k", kb_ids: ["kb1"] } });
+    const hits = await searchWeKnora(type, "Agent", { logger: { warn: (m) => warnings.push(m) } });
+    assert.deepEqual(hits, []);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /HTTP 500/);
+  } finally {
+    restore();
+  }
+});
+
+test("collectSources interleaves local and WeKnora when source=both", async () => {
+  const dir = kbDir(6);
+  const restore = stubFetch(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      data: [1, 2, 3].map((i) => ({
+        knowledge_id: `w${i}`,
+        knowledge_title: `远端 ${i}`,
+        content: `远端内容 ${i}`,
+        score: 0.03 - i * 0.01,
+      })),
+    }),
+    text: async () => "",
+  }));
+  try {
+    const type = weknoraType({ source: "both", max_sources: 6 });
+    type.knowledge_dirs = [dir];
+    const sources = await collectSources(type, {
+      topic: { topic: "Agent 稳定性" },
+      notes: indexKnowledge(type, { logger: null }),
+    });
+    assert.equal(sources.length, 6);
+    assert.deepEqual(sources.map((s) => s.index), [1, 2, 3, 4, 5, 6]);
+    assert.equal(sources.filter((s) => s.origin === "weknora").length, 3);
+    assert.equal(sources[0].origin, "local");
+    assert.equal(sources[1].origin, "weknora");
+  } finally {
+    restore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("collectSources stays offline in mock mode even for a WeKnora source", async () => {
+  const dir = kbDir(3);
+  const restore = stubFetch(async () => {
+    throw new Error("network must not be used in mock mode");
+  });
+  try {
+    const type = weknoraType();
+    type.knowledge_dirs = [dir];
+    const sources = await collectSources(type, {
+      topic: { topic: "Agent 稳定性" },
+      notes: indexKnowledge(type, { logger: null }),
+      mock: true,
+    });
+    assert.ok(sources.length >= 1);
+    assert.equal(sources.every((s) => s.origin === "local"), true);
+  } finally {
+    restore();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 /* ------------------------------------------------------------------ */

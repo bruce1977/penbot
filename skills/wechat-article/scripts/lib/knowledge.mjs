@@ -158,6 +158,190 @@ export function searchKnowledge(notes, { topic, keywords = [], limit = 8, excerp
   }));
 }
 
+/* ------------------------------------------------------------------ */
+/* WeKnora (remote knowledge base)                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Hybrid search against one or more WeKnora knowledge bases.
+ * Endpoint: POST {base_url}/knowledge-bases/{kb_id}/hybrid-search
+ * Returns sources in the same shape as searchKnowledge().
+ */
+export async function searchWeKnora(type, query, { logger, limit } = {}) {
+  const cfg = type.knowledge?.weknora || {};
+  const base = String(cfg.base_url || "").replace(/\/+$/, "");
+  const kbIds = (cfg.kb_ids || []).filter(Boolean);
+  if (!base || kbIds.length === 0) return [];
+
+  const headers = { "Content-Type": "application/json", "X-Request-ID": String(Date.now()) };
+  if (cfg.api_key) headers[cfg.auth_header || "X-API-Key"] = cfg.api_key;
+
+  const matchCount = Math.max(3, Math.min(Number(cfg.match_count) || limit || 8, 20));
+  const groups = new Map();
+
+  for (const kbId of kbIds) {
+    const body = { query_text: query, match_count: matchCount };
+    if (cfg.vector_threshold) body.vector_threshold = Number(cfg.vector_threshold);
+    if (cfg.keyword_threshold) body.keyword_threshold = Number(cfg.keyword_threshold);
+    const label = cfg.kb_names?.[kbId] || kbId;
+    try {
+      const res = await fetch(`${base}/knowledge-bases/${encodeURIComponent(kbId)}/hybrid-search`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(Number(cfg.timeout_ms) || 30000),
+      });
+      if (!res.ok) {
+        const detail = await res.text().catch(() => "");
+        logger?.warn(`WeKnora 检索失败（${label}）：HTTP ${res.status} ${detail.slice(0, 120)}`);
+        continue;
+      }
+      const data = await res.json();
+      for (const item of data.data || []) addWeKnoraHit(groups, item, kbId, cfg, excerptCharsOf(type));
+      logger?.info(`WeKnora 检索（${label}）：命中 ${(data.data || []).length} 个片段`);
+    } catch (error) {
+      logger?.warn(`WeKnora 检索异常（${label}）：${error.message}`);
+    }
+  }
+
+  return [...groups.values()]
+    .sort((a, b) => b.score - a.score)
+    .map((group, i) => ({
+      index: i + 1,
+      file: group.file,
+      title: group.title,
+      date: group.date,
+      tags: group.tags,
+      summary: group.summary,
+      matched: [],
+      score: Math.round(group.score * 10000) / 10000,
+      origin: "weknora",
+      excerpts: group.excerpts.slice(0, 3),
+    }));
+}
+
+function excerptCharsOf(type) {
+  return Number(type.knowledge?.excerpt_chars) || 1800;
+}
+
+function addWeKnoraHit(groups, item, kbId, cfg, excerptChars) {
+  const key = `${kbId}/${item.knowledge_id || item.id || item.knowledge_title}`;
+  const content = cleanWeKnoraContent(item.content);
+  if (!content) return;
+  let group = groups.get(key);
+  if (!group) {
+    const meta = item.metadata || {};
+    // WeKnora stores the original frontmatter as a YAML-ish string.
+    const custom = parseCustomMetadata(item.knowledge_custom_metadata);
+    const keywords = String(custom.keywords || "")
+      .split(/[,，;；]/)
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+    group = {
+      file: `weknora://${key}`,
+      title: item.knowledge_title || item.title || "WeKnora 文档",
+      date: normalizeDate(custom.date || meta.updated_at || meta.created_at) || "",
+      tags: keywords.length ? keywords.slice(0, 8) : toArray(meta.tags).map(String),
+      summary: truncateText(item.knowledge_description || meta.summary || meta.description, 320),
+      score: 0,
+      excerpts: [],
+      seen: new Set(),
+    };
+    groups.set(key, group);
+  }
+  group.score = Math.max(group.score, Number(item.score) || 0);
+  const trimmed = content.length > excerptChars ? `${content.slice(0, excerptChars)}…` : content;
+  if (!group.seen.has(trimmed)) {
+    group.seen.add(trimmed);
+    group.excerpts.push(trimmed);
+  }
+}
+
+/** Parse the flat "key: value" frontmatter string WeKnora keeps as custom metadata. */
+function parseCustomMetadata(raw) {
+  const out = {};
+  if (!raw) return out;
+  for (const line of String(raw).split(/\r?\n/)) {
+    const m = line.match(/^([A-Za-z_][\w-]*)\s*:\s*(.*)$/);
+    if (m) out[m[1].toLowerCase()] = m[2].trim().replace(/^["']|["']$/g, "");
+  }
+  return out;
+}
+
+function truncateText(text, max) {
+  const value = String(text || "").replace(/\s+/g, " ").trim();
+  return value.length > max ? `${value.slice(0, max)}…` : value;
+}
+
+/** Strip markdown image/link noise from WeKnora chunk content. */
+function cleanWeKnoraContent(text) {
+  return String(text || "")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\r/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/^[\s*\-]+$/gm, "")
+    .trim();
+}
+
+/**
+ * Collect sources for a topic according to knowledge.source
+ * ("local" | "weknora" | "both"). Async because WeKnora is remote.
+ */
+export async function collectSources(type, { topic, notes = [], logger, mock = false } = {}) {
+  const query = [topic?.topic, topic?.title, ...(topic?.keywords || []), ...(type.topic?.keywords || [])]
+    .filter(Boolean)
+    .join(" ");
+  const limit = Number(type.knowledge.max_sources) || 8;
+  // In mock mode, never hit the network.
+  const source = mock ? "local" : type.knowledge.source;
+  const exclude = type.topic?.exclude_keywords || [];
+
+  const localLimit = source === "both" ? Math.ceil(limit / 2) : limit;
+  const remoteLimit = source === "both" ? Math.max(1, limit - localLimit) : limit;
+
+  const local =
+    source === "local" || source === "both"
+      ? searchKnowledge(notes, {
+          topic: query,
+          keywords: [],
+          limit: localLimit,
+          excerptChars: type.knowledge.excerpt_chars,
+          exclude,
+        }).map((item) => ({ ...item, origin: "local" }))
+      : [];
+
+  const remote =
+    source === "weknora" || source === "both"
+      ? await searchWeKnora(type, query, { logger, limit: remoteLimit })
+      : [];
+
+  // Merge: "both" interleaves local and WeKnora so each keeps its share.
+  const merged = source === "both" ? interleave(local, remote, limit) : [...local, ...remote];
+  const seen = new Set();
+  return merged
+    .filter((item) => {
+      if (seen.has(item.file)) return false;
+      seen.add(item.file);
+      return true;
+    })
+    .slice(0, limit)
+    .map((item, i) => ({ ...item, index: i + 1 }));
+}
+
+/** Alternate items from two lists (local / remote), capped at `limit`. */
+function interleave(a, b, limit) {
+  const out = [];
+  let i = 0;
+  let j = 0;
+  while (out.length < limit && (i < a.length || j < b.length)) {
+    if (i < a.length) out.push(a[i++]);
+    if (j < b.length && out.length < limit) out.push(b[j++]);
+  }
+  return out;
+}
+
 /** Build compact source blocks for prompts (bounded by characters). */
 export function formatSources(sources, { maxChars = 24000 } = {}) {
   const parts = [];

@@ -1,11 +1,11 @@
 # penbot
 
-微信公众号文章自动化管线：从本地知识库自动选题，产出可直接发布的图文稿件。
+微信公众号文章自动化管线：从知识库（本地文档目录或 WeKnora 远程知识库）自动选题，产出可直接发布的图文稿件。
 
 这是一个**脚本驱动**的 Skill，可运行在 OpenCode（或任何能执行 Node 的 agent 编排器）中：
 
 ```
-选题 ──► 素材检索 ──► 纲要 ──► 初稿 ──► 核稿/评稿/修正(≤3 轮) ──► 自动配图(1-5) ──► 邮件 + 公众号草稿
+选题 ──► 资料收集 ──► 纲要 ──► 初稿 ──► 核稿/评稿/修正(≤3 轮) ──► 自动配图(1-5) ──► 邮件 + 公众号草稿
 ```
 
 机械流程全部由脚本完成，只在需要判断的环节（选题、纲要、初稿、评稿、修正、备用校对）调用模型。
@@ -26,6 +26,20 @@ npm run wechat-article -- run --type ai-insight
 npm run wechat-article -- run --type ai-news --topic "某模型正式开源" --requirements "重点写对独立开发者的影响"
 ```
 
+### 分步执行（推荐）
+
+各步共用一个 `--output` 目录，后一步自动复用前一步产物：
+
+```bash
+DIR=output/wa-demo
+npm run wechat-article -- topic   --type ai-news --output $DIR   # 1a 自动选题
+npm run wechat-article -- sources --type ai-news --output $DIR   # 2  资料收集（local/weknora/both）
+npm run wechat-article -- outline --type ai-news --output $DIR   # 1b 纲要
+npm run wechat-article -- draft   --type ai-news --output $DIR   # 3  初稿
+```
+
+手动选题只有一步：`outline --type ai-news --topic "主题"`（跳过选题模型）。
+
 在 OpenCode 里也可以直接用斜杠命令：`/wechat-article run --type ai-insight`。
 
 ## 文档
@@ -38,10 +52,12 @@ npm run wechat-article -- run --type ai-news --topic "某模型正式开源" --r
 
 | id | 名称 | 知识库 | 目标字数 | 通过分 |
 | --- | --- | --- | --- | --- |
-| `ai-insight` | AI 深度观点 | `D:/knowledge/obsidian/ai` | 1500-2200 | 82 |
-| `ai-news` | AI 资讯快评 | `D:/knowledge/obsidian/ai` | 800-1300 | 78 |
-| `tech-explainer` | 技术解读 | `ai` + `homelab` | 1800-2800 | 82 |
-| `homelab-practice` | Homelab 实践笔记 | `D:/knowledge/obsidian/homelab` | 1200-2000 | 78 |
+| `ai-insight` | AI 深度观点 | `D:/knowledge/obsidian/ai` + `AI 知识荟萃` | 1500-2200 | 82 |
+| `ai-news` | AI 资讯快评 | `D:/knowledge/obsidian/ai` + `AI 知识荟萃` | 800-1300 | 78 |
+| `tech-explainer` | 技术解读 | `ai` + `homelab` + 两个 AI 库 | 1800-2800 | 82 |
+| `homelab-practice` | Homelab 实践笔记 | `D:/knowledge/obsidian/homelab` + `家庭服务器折腾指南(WIKI)` | 1200-2000 | 78 |
+
+`knowledge.source` 可选 `local`（默认）/`weknora`/`both`；`kbs` 命令可列出 WeKnora 知识库以获取 `kb_ids`。
 
 ## 目录结构
 
@@ -49,23 +65,24 @@ npm run wechat-article -- run --type ai-news --topic "某模型正式开源" --r
 .
 ├── opencode.json                 OpenCode 技能路径、斜杠命令、写作代理
 ├── package.json
-└── skills/wechat-article/        Skill（含 SKILL.md、config/、scripts/）
+└── skills/wechat-article/        Skill（含 SKILL.md、config/、scripts/、tests/）
 ```
 
 ## 依赖的服务（按需）
 
 | 能力 | 服务 | 环境变量 |
 | --- | --- | --- |
-| 本地写作模型 | Ollama | `PB_OLLAMA_BASE_URL` / `PB_OLLAMA_MODEL` |
+| 本地写作模型 | Ollama | `PB_OLLAMA_BASE_URL` / `PB_OLLAMA_MODEL_NAME` / `PB_OLLAMA_API_KEY` |
 | 备用写作模型 | OpenCode agent CLI | — |
-| 远程写作模型 | 任意 OpenAI 兼容端点 | `PB_LLM_BASE_URL` / `PB_LLM_API_KEY` |
+| 远程写作模型 | 任意 OpenAI 兼容端点 | `PB_LLM_BASE_URL` / `PB_LLM_MODEL` / `PB_LLM_API_KEY` |
+| 资料收集（远程） | WeKnora | `WEKNORA_BASE_URL` / `WEKNORA_API_KEY` |
 | 核稿 | correct-cn | `PB_PYCORRECTOR_API_URL` / `PB_PYCORRECTOR_AUTH_KEY` |
 | 配图（首选） | ModelScope | `PB_MODEL_API_KEY` |
 | 配图（回退） | Pollinations | — |
 | 邮件 | Resend | `PB_RESEND_API_KEY` / `PB_RESEND_FROM` |
 | 公众号草稿 | @wenyan-md/cli | `WECHAT_MP_APP_ID` / `WECHAT_MP_APP_SECRET` |
 
-所有服务都可在配置里单独开关；缺哪个就自动降级或跳过，不会中断整条管线。
+每个模型 profile 都用 **BASE_URL / MODEL_NAME / API_KEY** 三项配置（`base_url` / `model` / `api_key`，`model_name` 亦可）。所有服务都可在配置里单独开关；缺哪个就自动降级或跳过，不会中断整条管线。
 
 ## 测试
 

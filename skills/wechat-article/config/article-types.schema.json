@@ -82,10 +82,27 @@
     "knowledge": {
       "type": "object",
       "properties": {
+        "source": { "enum": ["local", "weknora", "both"], "default": "local" },
         "max_sources": { "type": "integer", "minimum": 1, "default": 8 },
         "excerpt_chars": { "type": "integer", "minimum": 200, "default": 1800 },
         "lookback_days": { "type": "integer", "minimum": 1, "default": 90 },
-        "max_file_bytes": { "type": "integer", "default": 400000 }
+        "max_file_bytes": { "type": "integer", "default": 400000 },
+        "weknora": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "base_url": { "type": "string" },
+            "api_key": { "type": "string" },
+            "auth_header": { "type": "string", "default": "X-API-Key" },
+            "kb_ids": { "type": "array", "items": { "type": "string" } },
+            "kb_names": { "type": "object", "additionalProperties": { "type": "string" } },
+            "match_count": { "type": "integer", "minimum": 1, "default": 8 },
+            "vector_threshold": { "type": "number" },
+            "keyword_threshold": { "type": "number" },
+            "timeout_ms": { "type": "integer", "default": 30000 }
+          },
+          "additionalProperties": true
+        }
       },
       "additionalProperties": true
     },
@@ -175,6 +192,7 @@
         "enabled": { "type": "boolean", "default": true },
         "description": { "type": "string" },
         "knowledge_dirs": { "type": "array", "items": { "type": "string" } },
+        "model": { "type": "string", "description": "Writing model profile id" },
         "style": {
           "type": "object",
           "properties": {
@@ -221,6 +239,8 @@
           "additionalProperties": true
         },
         "illustrations": { "$ref": "#/$defs/illustrations" },
+        "review": { "$ref": "#/$defs/review" },
+        "knowledge": { "$ref": "#/$defs/knowledge" },
         "topic": {
           "type": "object",
           "properties": {

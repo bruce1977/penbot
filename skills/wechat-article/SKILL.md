@@ -1,6 +1,6 @@
 ---
 name: 微信公众号文章自动化
-description: 从本地知识库自动选题并生成微信公众号文章：选题 → 素材检索 → 纲要 → 初稿 → 核稿/评稿/修正循环（≤3 轮）→ 自动配图（1-5 张）→ 发布到邮箱与公众号草稿箱。当用户要写公众号文章、做选题、批量产出图文稿、或要求"根据知识库写一篇 XX 类型文章并发布"时使用。支持手动指定主题与要求，也支持按文章类型（AI 深度观点 / AI 资讯快评 / 技术解读 / Homelab 实践）全自动运行。
+description: 从知识库（本地文档目录或 WeKnora 远程知识库）自动选题并生成微信公众号文章：选题 → 素材检索 → 纲要 → 初稿 → 核稿/评稿/修正循环（≤3 轮）→ 自动配图（1-5 张）→ 发布到邮箱与公众号草稿箱。当用户要写公众号文章、做选题、批量产出图文稿、或要求"根据知识库写一篇 XX 类型文章并发布"时使用。支持手动指定主题与要求，也支持按文章类型（AI 深度观点 / AI 资讯快评 / 技术解读 / Homelab 实践）全自动运行。
 ---
 
 # 微信公众号文章自动化
@@ -8,9 +8,9 @@ description: 从本地知识库自动选题并生成微信公众号文章：选�
 这是一个脚本驱动的端到端管线。**机械流程全部由 `scripts/wechat-article.mjs` 完成**，只有在需要判断的地方（选题、纲要、初稿、评稿、修正、备用校对）才调用模型。不要手工重写脚本已经生成的中间产物。
 
 ```
-选题 ──► 检索 ──► 纲要 ──► 初稿 ──► 核稿/评稿/修正(≤3) ──► 配图(1-5) ──► 发布(邮件+公众号草稿)
- │        │        │         │              │                    │              │
-模型     规则     模型      模型      correct-cn+模型      图像 API      Resend/wenyan
+选题 ──► 资料收集 ──► 纲要 ──► 初稿 ──► 核稿/评稿/修正(≤3) ──► 配图(1-5) ──► 发布(邮件+公众号草稿)
+ │         │            │        │              │                    │              │
+模型   本地目录/WeKnora  模型     模型      correct-cn+模型      图像 API      Resend/wenyan
 ```
 
 ## 何时使用
@@ -28,8 +28,9 @@ description: 从本地知识库自动选题并生成微信公众号文章：选�
 node skills/wechat-article/scripts/wechat-article.mjs validate
 node skills/wechat-article/scripts/wechat-article.mjs doctor
 
-# 2) 看知识库里有哪些候选主题（不生成内容）
+# 2) 看知识库里有哪些候选主题 / 有哪些 WeKnora 知识库
 node skills/wechat-article/scripts/wechat-article.mjs topics --type ai-insight
+node skills/wechat-article/scripts/wechat-article.mjs kbs
 
 # 3) 用 mock 模型跑通全流程（不发真实请求）
 node skills/wechat-article/scripts/wechat-article.mjs run --type ai-news --mock --output .temp/demo
@@ -42,14 +43,41 @@ node skills/wechat-article/scripts/wechat-article.mjs run --type ai-news \
   --topic "某模型正式开源" --requirements "重点写对独立开发者的影响，1000 字以内"
 ```
 
+### 分步执行（推荐）
+
+每一步都能单独跑、单独检查，且**共用一个 `--output` 目录**，后一步会自动复用前一步的产物：
+
+```bash
+DIR=output/wa-demo
+
+# 优先级 1a：自动选题（不指定 --topic 时调用模型）
+node skills/wechat-article/scripts/wechat-article.mjs topic   --type ai-news --output $DIR
+
+# 优先级 1b：纲要（自动复用上一步的 01-topic.json）
+node skills/wechat-article/scripts/wechat-article.mjs outline --type ai-news --output $DIR
+
+# 优先级 2：资料收集（本地目录 / WeKnora / 两者都要，见下）
+node skills/wechat-article/scripts/wechat-article.mjs sources --type ai-news --output $DIR
+
+# 优先级 3：初稿（本地模型或 opencode）
+node skills/wechat-article/scripts/wechat-article.mjs draft   --type ai-news --output $DIR
+```
+
+- **手动选题只有一步**：`outline --type ai-news --topic "主题" --requirements "..."` 会跳过选题模型，直接生成纲要。
+- 实际顺序是 `topic → sources → outline → draft`；`sources` 需要选题（`01-topic.json` 或 `--topic`），`outline`/`draft` 需要素材（`02-sources.json`）。
+- 复用已有产物：`--topic-file` / `--sources-file` / `--outline-file` 指定具体文件，覆盖自动查找。
+
 ## 命令一览
 
 | 命令 | 作用 |
 | --- | --- |
-| `run` | 完整管线：选题 → 检索 → 纲要 → 初稿 → 审稿 → 配图 → 发布 |
+| `run` | 完整管线：选题 → 资料 → 纲要 → 初稿 → 审稿 → 配图 → 发布 |
 | `topics` | 只列出知识库中的候选主题，不调用模型 |
-| `outline` | 只生成选题 + 纲要（等价 `run --stage outline`） |
-| `draft` | 生成到初稿为止（等价 `run --stage draft`） |
+| `kbs` | 列出 WeKnora 知识库（获取 `kb_ids`） |
+| `topic` | 只做选题（自动选题，或 `--topic` 手动记录） |
+| `sources` | 只收集相关资料（本地目录 / WeKnora / 两者） |
+| `outline` | 只生成纲要（`--topic` / `--topic-file`，或复用输出目录里的选题） |
+| `draft` | 只生成初稿（复用输出目录里的纲要，或 `--outline-file`） |
 | `review` | 对已有稿件执行核稿/评稿/修正循环 |
 | `illustrate` | 为已有稿件生成并替换配图 |
 | `publish` | 发布已有稿件到邮件 / 公众号草稿箱 |
@@ -59,16 +87,20 @@ node skills/wechat-article/scripts/wechat-article.mjs run --type ai-news \
 ### 通用参数
 
 - `--config <path>` 配置文件，默认 `skills/wechat-article/config/article-types.json`
-- `--type <id>` 文章类型 id（`run`/`outline`/`draft`/`review`/`illustrate`/`publish` 需要）
-- `--topic <text>` 手动主题（省略则自动选题）
+- `--type <id>` 文章类型 id（`run`/`topic`/`sources`/`outline`/`draft`/`review`/`illustrate`/`publish` 需要）
+- `--topic <text>` 手动主题（省略则自动选题；手动时**跳过选题模型**）
 - `--requirements <text>` 手动补充写作要求
+- `--topic-file <path>` 复用已有选题 JSON（如 `01-topic.json`）
+- `--sources-file <path>` 复用已有素材 JSON（如 `02-sources.json`）
+- `--outline-file <path>` 复用已有纲要 JSON（如 `02-outline.json`）
+- `--knowledge-source <s>` 覆盖知识来源：`local` | `weknora` | `both`
 - `--article <path>` 已有稿件路径（`review`/`illustrate`/`publish` 用；也可从路径推断 `--type`）
-- `--output <dir>` 输出目录，默认 `output/wechat-article/<type>/<date>-<slug>`
+- `--output <dir>` 输出目录，默认 `output/wechat-article/<type>/<date>-<slug>`（分步执行时请复用同一目录）
 - `--model <profile>` 覆盖写作模型 profile
 - `--review-model <profile>` 覆盖评稿模型 profile
 - `--rounds <n>` 审稿循环最大轮次（1-5，默认取配置 `review.max_rounds`）
 - `--images <n>` 配图数量（1-5）
-- `--stage <name>` `run` 的终止阶段：`topic|outline|draft|review|illustrate|publish`
+- `--stage <name>` `run` 的终止阶段：`topic|sources|outline|draft|review|illustrate|publish`
 - `--mock` 用 mock 模型（不发真实网络请求，用于验证流程）
 - `--verbose` 输出调试日志
 
@@ -116,6 +148,7 @@ pipeline.log                       运行日志
 每个类型可配置：
 
 - `knowledge_dirs`：本地知识库目录（相对项目根或绝对路径）
+- `knowledge`：资料收集方式，见下
 - `style`：人格 / 语气 / 受众 / 标题风格 / 结构 / 该做与不该做
 - `length`：`min` / `max` / `target` 字数
 - `scoring.dimensions`：评分维度与权重，`pass_score` 通过线
@@ -126,15 +159,45 @@ pipeline.log                       运行日志
 
 新增一个类型：复制 `types` 里的一段，改 `id`/`name`/`knowledge_dirs`/`length`/`scoring` 即可，然后 `validate`。
 
+## 资料收集（本地目录 / WeKnora）
+
+`knowledge.source` 三选一：
+
+| 取值 | 行为 |
+| --- | --- |
+| `local` | 只用 `knowledge_dirs` 里的本地 Markdown（默认） |
+| `weknora` | 只用远程 WeKnora 知识库（按 `kb_ids` 混合检索） |
+| `both` | 两者都用，**配额交错**合并（各占一半，避免本地高分淹没远端） |
+
+WeKnora 相关配置（`knowledge.weknora`，可写在 `defaults` 里共享，类型内只覆盖 `kb_ids`）：
+
+```jsonc
+"knowledge": {
+  "source": "both",
+  "max_sources": 8,
+  "weknora": {
+    "base_url": "${WEKNORA_BASE_URL}",   // 例：https://weknora.myehome.top/api/v1
+    "api_key": "${WEKNORA_API_KEY}",
+    "auth_header": "X-API-Key",
+    "kb_ids": ["<knowledge-base-id>"],   // node ... kbs 查看
+    "match_count": 8
+  }
+}
+```
+
+内置类型已预置 `kb_ids`：`AI 知识荟萃`（`ai-*`/`tech-explainer`）、`AI 知识荟萃(WIKI)`、`家庭服务器折腾指南(WIKI)`（`homelab-practice`）。检索走 `POST {base_url}/knowledge-bases/{id}/hybrid-search`，命中片段会做清洗（去图片占位符），并从文档前置元数据里取 `date`/`keywords` 作为素材的日期与标签。
+
+运行中切换：`--knowledge-source local|weknora|both`。
+
 ## 模型 profile
 
-写在配置的 `models` 段，按需切换：
+写在配置的 `models` 段，按需切换；每个 profile 都能用 `base_url`（BASE_URL）、`model`（MODEL_NAME）/`model_name`、`api_key`（API_KEY）三项显式配置：
 
 | profile | provider | 说明 |
 | --- | --- | --- |
-| `local` | ollama | 默认写作模型，`qwen3.5:4b`，走 `http://localhost:11434` |
+| `local` | ollama | 默认写作模型，`qwen3.5:4b`，走 `PB_OLLAMA_BASE_URL`（默认 `http://localhost:11434`） |
 | `local-9b` | ollama | 更大的本地模型，质量更好、更慢 |
-| `opencode` | opencode | 以 `opencode run --format json --file <prompt>` 调用代理，仅返回文本 |
+| `opencode` | opencode | 以 `opencode run --format json --file <prompt>` 调用代理，仅返回文本（不需要 BASE_URL/API_KEY） |
 | `remote` | openai | 任意 OpenAI 兼容端点（`PB_LLM_BASE_URL`/`PB_LLM_API_KEY`） |
 | `mock` | mock | 不发请求，返回固定内容，用于验证流程 |
 
@@ -164,7 +227,9 @@ pipeline.log                       运行日志
 
 | 变量 | 用途 |
 | --- | --- |
-| `PB_OLLAMA_BASE_URL` / `PB_OLLAMA_MODEL` / `PB_OLLAMA_LARGE_MODEL` | 本地模型 |
+| `PB_OLLAMA_BASE_URL` / `PB_OLLAMA_MODEL_NAME` / `PB_OLLAMA_API_KEY` | 本地 ollama 模型（BASE_URL / MODEL_NAME / API_KEY） |
+| `PB_OLLAMA_LARGE_MODEL_NAME` | 更大的本地模型（`local-9b` 用） |
+| `WEKNORA_BASE_URL` / `WEKNORA_API_KEY` | WeKnora 远程知识库 |
 | `PB_MODEL_API_KEY` | ModelScope 配图 |
 | `PB_RESEND_API_KEY` / `PB_RESEND_FROM` | 邮件 |
 | `PB_PYCORRECTOR_API_URL` / `PB_PYCORRECTOR_AUTH_KEY` | correct-cn 核稿 |
@@ -184,9 +249,10 @@ pipeline.log                       运行日志
 
 ## 排障
 
-- 先跑 `doctor`：会检查 Node 版本、配置文件、各类型知识库目录、模型可达性、correct-cn / 配图 / 邮件 / 公众号配置。
+- 先跑 `doctor`：会检查 Node 版本、配置文件、各类型知识库目录、WeKnora 可达性与 `kb_ids`、模型可达性、correct-cn / 配图 / 邮件 / 公众号配置。
+- 用 `kbs` 列出 WeKnora 知识库，把 `id` 填到对应类型的 `knowledge.weknora.kb_ids`。
 - 知识库索引有 mtime/size 缓存（`.temp/wechat-article/knowledge-index.json`），重复运行很快；改过文件会自动重建。
-- 不确定环境是否配全时，先用 `--mock` 跑通流程，再逐步替换为真实模型与服务。
+- 不确定环境是否配全时，先用 `--mock` 跑通流程，再逐步替换为真实模型与服务（mock 模式不会访问网络）。
 - correct-cn 不可达时不要卡住：脚本会自动回退到 LLM 校对。
 
 ## 目录结构
@@ -207,7 +273,7 @@ skills/wechat-article/
         ├── log.mjs              日志
         ├── markdown.mjs         frontmatter 与 [[img:N|...]] 标记
         ├── models.mjs           ollama/openai/opencode/mock 客户端
-        ├── knowledge.mjs        知识库索引、检索、摘录
+        ├── knowledge.mjs        知识库索引、检索、WeKnora 检索、摘录
         ├── prompts.mjs          选题/纲要/初稿/评分/修正提示词
         ├── corrector.mjs        correct-cn 客户端与修正应用
         ├── illustrate.mjs       ModelScope + Pollinations 配图

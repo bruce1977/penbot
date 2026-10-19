@@ -5,10 +5,10 @@ import { fileURLToPath } from "node:url";
 import { parseArgs, asNumber, asBool, asList } from "./lib/args.mjs";
 import { findProjectRoot, loadDotEnv, env } from "./lib/env.mjs";
 import { loadConfig, findType, listTypes, getModelProfile, validateConfig, DEFAULT_CONFIG_PATH } from "./lib/config.mjs";
-import { ensureDir, writeText, writeJson, exists, uniqueDir, relativeTo, timestamp, slugify } from "./lib/fsx.mjs";
+import { ensureDir, writeText, writeJson, readJson, exists, uniqueDir, relativeTo, timestamp, slugify } from "./lib/fsx.mjs";
 import { createLogger } from "./lib/log.mjs";
 import { createModelClient } from "./lib/models.mjs";
-import { indexKnowledge, pickRecent, searchKnowledge, formatSources } from "./lib/knowledge.mjs";
+import { indexKnowledge, pickRecent, searchKnowledge, searchWeKnora, collectSources, buildTerms, formatSources } from "./lib/knowledge.mjs";
 import {
   buildTopicPrompt,
   buildOutlinePrompt,
@@ -46,26 +46,39 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
 命令:
   run                执行完整管线（选题 → 检索 → 纲要 → 初稿 → 核稿/评稿/修正 → 配图 → 发布）
   topics             列出知识库中的候选主题，不做生成
-  outline            只生成选题与纲要
-  draft              生成初稿（含纲要）
+  kbs                列出 WeKnora 知识库（获取 kb_ids）
+  topic              只做选题（自动选题，或 --topic 手动记录）
+  sources            只收集相关资料（本地知识库 / WeKnora）
+  outline            只生成纲要（需要 --topic 或 --topic-file，或复用输出目录里的选题）
+  draft              只生成初稿（需要纲要在输出目录里，或 --outline-file）
   review             对已有稿件执行核稿/评稿/修正循环
   illustrate         为已有稿件生成并替换配图
   publish            发布已有稿件（邮件 / 公众号草稿）
   validate           校验配置文件
   doctor             检查环境与依赖
 
+分步执行（推荐先 topic → sources → outline → draft，各步共用同一个 --output 目录）:
+  node skills/wechat-article/scripts/wechat-article.mjs topic   --type ai-news --output output/wa/demo
+  node skills/wechat-article/scripts/wechat-article.mjs sources --type ai-news --output output/wa/demo
+  node skills/wechat-article/scripts/wechat-article.mjs outline --type ai-news --output output/wa/demo
+  node skills/wechat-article/scripts/wechat-article.mjs draft   --type ai-news --output output/wa/demo
+
 通用参数:
   --config <path>        配置文件，默认 ${DEFAULT_CONFIG_PATH}
-  --type <id>            文章类型 id（run/outline/draft 必填）
-  --topic <text>         手动指定主题（省略则自动选题）
+  --type <id>            文章类型 id（run/topic/sources/outline/draft 必填）
+  --topic <text>         手动指定主题（省略则自动选题；手动时跳过选题模型调用）
   --requirements <text>  手动补充写作要求
+  --topic-file <path>    复用已有选题 JSON（如 01-topic.json）
+  --sources-file <path>  复用已有素材 JSON（如 02-sources.json）
+  --outline-file <path>  复用已有纲要 JSON（如 02-outline.json）
   --article <path>       已有稿件路径（review/illustrate/publish 用）
-  --output <dir>         输出目录（默认 output/wechat-article/<type>/<date>-<slug>）
+  --output <dir>         输出目录（分步执行时请复用同一目录；默认 output/wechat-article/<type>/<date>-<slug>）
   --model <profile>      覆盖写作模型 profile
   --review-model <p>     覆盖评稿模型 profile
   --rounds <n>           核稿-评稿-修正最大轮次（1-5，默认取配置）
+  --knowledge-source <s> 覆盖知识来源：local | weknora | both
   --images <n>           配图数量（1-5）
-  --stage <name>         run 的终止阶段：topic|outline|draft|review|illustrate|publish
+  --stage <name>         run 的终止阶段：topic|sources|outline|draft|review|illustrate|publish
   --mock                 使用 mock 模型（不发真实请求，用于验证流程）
   --verbose              输出调试日志
   --help                 显示帮助
@@ -103,6 +116,10 @@ async function main() {
       return cmdDoctor(config, options);
     case "topics":
       return cmdTopics(config, options);
+    case "kbs":
+      return cmdListKbs(config, options);
+    case "topic":
+    case "sources":
     case "outline":
     case "draft":
     case "run":
@@ -158,6 +175,36 @@ async function cmdDoctor(config, options) {
   for (const type of listTypes(config)) {
     const missing = type.knowledge_dirs.filter((dir) => !fs.existsSync(dir));
     add(`知识库 ${type.id}`, missing.length === 0, missing.length ? `缺失：${missing.join(", ")}` : `${type.knowledge_dirs.length} 个目录`);
+  }
+
+  // WeKnora remote knowledge source
+  const wkTypes = config.types.filter((t) => t.knowledge.source !== "local");
+  if (wkTypes.length === 0) {
+    add("知识来源 WeKnora", true, "未启用（全部走本地目录）");
+  } else {
+    const wk = wkTypes[0].knowledge.weknora;
+    if (!wk.base_url || !wk.api_key) {
+      add("知识来源 WeKnora", false, "缺少 base_url 或 api_key");
+    } else {
+      try {
+        const res = await fetch(`${wk.base_url.replace(/\/+$/, "")}/knowledge-bases`, {
+          headers: { [wk.auth_header || "X-API-Key"]: wk.api_key, "X-Request-ID": String(Date.now()) },
+          signal: AbortSignal.timeout(10000),
+        });
+        const data = await res.json().catch(() => ({}));
+        const kbs = data.data || [];
+        const wanted = [...new Set(wkTypes.flatMap((t) => t.knowledge.weknora.kb_ids))];
+        const known = new Set(kbs.map((k) => k.id));
+        const missingKb = wanted.filter((id) => !known.has(id));
+        add(
+          "知识来源 WeKnora",
+          res.ok && missingKb.length === 0,
+          res.ok ? `${kbs.length} 个知识库${missingKb.length ? `，缺失 kb_id：${missingKb.join(", ")}` : ""}` : `HTTP ${res.status}`,
+        );
+      } catch (error) {
+        add("知识来源 WeKnora", false, `${wk.base_url} 不可达：${error.message}`);
+      }
+    }
   }
 
   const modelIds = [...new Set(config.types.flatMap((t) => [t.model, t.review?.model]).filter(Boolean))];
@@ -233,15 +280,33 @@ async function cmdDoctor(config, options) {
 /* topics                                                              */
 /* ------------------------------------------------------------------ */
 
+async function cmdListKbs(config, options) {
+  const wk = config.defaults?.knowledge?.weknora || {};
+  const base = String(wk.base_url || "").replace(/\/+$/, "");
+  if (!base) throw new Error("未配置 WeKnora base_url（在 config 或 WEKNORA_BASE_URL 中设置）");
+  const headers = { "X-Request-ID": String(Date.now()) };
+  if (wk.api_key) headers[wk.auth_header || "X-API-Key"] = wk.api_key;
+  const res = await fetch(`${base}/knowledge-bases`, { headers, signal: AbortSignal.timeout(15000) });
+  if (!res.ok) throw new Error(`WeKnora HTTP ${res.status}`);
+  const data = await res.json();
+  const rows = (data.data || []).map((kb) => ({ id: kb.id, name: kb.name, docs: kb.knowledge_count, type: kb.type }));
+  console.table(rows);
+  console.log(`\n共 ${rows.length} 个知识库（${base}）。把 id 填到 config 里对应类型的 knowledge.weknora.kb_ids。`);
+}
+
 async function cmdTopics(config, options) {
   const type = findType(config, requireOption(options, "type"));
   const logger = createLogger({ verbose: asBool(options.verbose), label: "topics" });
-  const notes = indexKnowledge(type, {
-    logger,
-    maxFileBytes: type.knowledge.max_file_bytes,
-    cacheDir: path.join(PROJECT_ROOT, ".temp", "wechat-article"),
-  });
-  const recent = pickRecent(notes, { days: type.topic.lookback_days || type.knowledge.lookback_days, limit: type.topic.candidates || 20 });
+  const needLocal = type.knowledge.source === "local" || type.knowledge.source === "both";
+  const notes = needLocal
+    ? indexKnowledge(type, {
+        logger,
+        maxFileBytes: type.knowledge.max_file_bytes,
+        cacheDir: path.join(PROJECT_ROOT, ".temp", "wechat-article"),
+      })
+    : [];
+  const candidates = await buildCandidates({ type, logger }, notes);
+  const recent = pickRecent(candidates, { days: type.topic.lookback_days || type.knowledge.lookback_days, limit: type.topic.candidates || 20 });
   const rows = recent.slice(0, 30).map((note, i) => ({
     "#": i + 1,
     date: note.date,
@@ -250,8 +315,8 @@ async function cmdTopics(config, options) {
     chars: note.length,
   }));
   console.table(rows);
-  console.log(`\n共 ${notes.length} 篇，近 ${type.topic.lookback_days || type.knowledge.lookback_days} 天 ${recent.length} 篇。`);
-  console.log(`提示：使用 --topic 手动指定主题，或直接运行 run --type ${type.id} 自动选题。`);
+  console.log(`\n共 ${candidates.length} 篇（来源 ${type.knowledge.source}），近 ${type.topic.lookback_days || type.knowledge.lookback_days} 天 ${recent.length} 篇。`);
+  console.log(`提示：使用 --topic 手动指定主题，或运行 topic --type ${type.id} 自动选题。`);
 }
 
 /* ------------------------------------------------------------------ */
@@ -263,9 +328,16 @@ async function cmdPipeline(config, options, command) {
   const type = findType(config, typeId);
   if (!type.enabled) throw new Error(`文章类型 ${type.id} 已禁用`);
 
+  if (options["knowledge-source"] !== undefined) {
+    const src = String(options["knowledge-source"]).toLowerCase();
+    if (!["local", "weknora", "both"].includes(src)) throw new Error("--knowledge-source 只能是 local | weknora | both");
+    type.knowledge = { ...type.knowledge, source: src };
+  }
+
   const verbose = asBool(options.verbose);
   const mock = asBool(options.mock);
-  const stopStage = command === "outline" ? "outline" : command === "draft" ? "draft" : String(options.stage || "publish");
+  const stopStage = command === "run" ? String(options.stage || "publish") : command;
+  const resume = command !== "run";
   const stamp = timestamp();
   const outputRoot = path.resolve(PROJECT_ROOT, options.output || path.join(config.project.output_dir, type.id, `${stamp.date}-${slugify(options.topic || type.id)}`));
   ensureDir(outputRoot);
@@ -292,38 +364,41 @@ async function cmdPipeline(config, options, command) {
 
   logger.step(`管线启动：${type.name}（${type.id}）`);
   logger.info(`输出目录：${outputRoot}`);
+  logger.info(`知识来源：${type.knowledge.source}${type.knowledge.source !== "local" ? `（WeKnora ${type.knowledge.weknora.kb_ids.length} 个知识库）` : ""}`);
   logger.info(`模型：写作=${options.model || type.model}，评稿=${options["review-model"] || type.review.model || type.model}`);
 
   try {
-    // Stage 1: topic ---------------------------------------------------
-    const notes = indexKnowledge(type, { logger, maxFileBytes: type.knowledge.max_file_bytes, cacheDir: path.join(PROJECT_ROOT, ".temp", "wechat-article") });
-    if (notes.length === 0) throw new Error(`知识库为空：${type.knowledge_dirs.join(", ")}`);
-    ctx.notes = notes;
-
     const models = createModelClient(config, logger);
     ctx.models = models;
 
-    const topic = await selectTopic(ctx, notes);
+    // Stage 1: topic ---------------------------------------------------
+    const needLocal = type.knowledge.source === "local" || type.knowledge.source === "both";
+    const notes = needLocal
+      ? indexKnowledge(type, { logger, maxFileBytes: type.knowledge.max_file_bytes, cacheDir: path.join(PROJECT_ROOT, ".temp", "wechat-article") })
+      : [];
+    if (needLocal && notes.length === 0) throw new Error(`知识库为空：${type.knowledge_dirs.join(", ")}`);
+    ctx.notes = notes;
+
+    const topic = await resolveTopic(ctx, notes, resume);
     ctx.topic = topic;
     writeJson(path.join(outputRoot, "01-topic.json"), topic);
     writeText(path.join(outputRoot, "01-topic.md"), renderTopicMarkdown(topic));
     logger.step(`选题完成：《${topic.title || topic.topic}》`);
-    ctx.state.stages.topic = { ok: true, title: topic.title || topic.topic };
+    ctx.state.stages.topic = { ok: true, title: topic.title || topic.topic, reused: Boolean(ctx.topicReused) };
     if (stopStage === "topic") return finish(ctx);
 
-    // Stage 2: outline -------------------------------------------------
-    const sources = searchKnowledge(notes, {
-      topic: `${topic.topic} ${topic.title || ""}`,
-      keywords: [...(topic.keywords || []), ...(type.topic.keywords || [])],
-      limit: type.knowledge.max_sources,
-      excerptChars: type.knowledge.excerpt_chars,
-      exclude: type.topic.exclude_keywords || [],
-    });
+    // Stage 2: sources -------------------------------------------------
+    const sources = await resolveSources(ctx, topic, resume);
     ctx.sources = sources;
-    logger.info(`检索到 ${sources.length} 篇相关素材：${sources.map((s) => s.title.slice(0, 24)).join(" / ")}`);
-    writeJson(path.join(outputRoot, "02-sources.json"), sources.map(({ excerpts, ...rest }) => ({ ...rest, excerpts })));
+    const counts = sources.reduce((acc, s) => ({ ...acc, [s.origin || "local"]: (acc[s.origin || "local"] || 0) + 1 }), {});
+    const breakdown = Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(" + ") || "none";
+    logger.info(`收集到 ${sources.length} 篇素材（${breakdown}）：${sources.map((s) => s.title.slice(0, 24)).join(" / ") || "（无）"}`);
+    writeJson(path.join(outputRoot, "02-sources.json"), sources);
+    ctx.state.stages.sources = { ok: true, count: sources.length, source: type.knowledge.source };
+    if (stopStage === "sources") return finish(ctx);
 
-    const outline = await generateOutline(ctx, sources);
+    // Stage 3: outline -------------------------------------------------
+    const outline = await resolveOutline(ctx, sources, resume);
     ctx.outline = outline;
     writeJson(path.join(outputRoot, "02-outline.json"), outline);
     writeText(path.join(outputRoot, "02-outline.md"), renderOutlineMarkdown(outline));
@@ -395,7 +470,7 @@ function finish(ctx) {
   console.log(`类型：${ctx.type.name}`);
   console.log(`输出：${ctx.outputDir}`);
   for (const [stage, value] of Object.entries(ctx.state.stages)) {
-    console.log(`  ${stage.padEnd(10)} ${value.ok === false ? "失败" : "完成"}${value.title ? ` — ${value.title}` : ""}${value.score !== undefined ? ` — ${value.score} 分` : ""}`);
+    console.log(`  ${stage.padEnd(10)} ${value.ok === false ? "失败" : "完成"}${value.title ? ` — ${value.title}` : ""}${value.count !== undefined ? ` — ${value.count} 篇` : ""}${value.score !== undefined ? ` — ${value.score} 分` : ""}`);
   }
   if (ctx.state.error) console.log(`错误：${ctx.state.error}`);
   return ctx.state;
@@ -405,44 +480,130 @@ function finish(ctx) {
 /* stage implementations                                               */
 /* ------------------------------------------------------------------ */
 
-async function selectTopic(ctx, notes) {
+async function resolveTopic(ctx, notes, resume) {
+  const { options, logger, outputDir } = ctx;
+  const file = options["topic-file"]
+    ? path.resolve(PROJECT_ROOT, String(options["topic-file"]))
+    : resume
+      ? path.join(outputDir, "01-topic.json")
+      : null;
+  if (file && fs.existsSync(file)) {
+    logger.info(`复用已有选题：${file}`);
+    ctx.topicReused = true;
+    return readJson(file);
+  }
+  const candidates = await buildCandidates(ctx, notes);
+  return selectTopic(ctx, candidates);
+}
+
+async function buildCandidates(ctx, notes) {
+  const { type, logger, mock } = ctx;
+  if (notes.length || type.knowledge.source === "local" || mock) return notes;
+  // WeKnora-only: use a keyword search to fetch candidate documents.
+  const query = (type.topic.keywords || []).join(" ") || type.name;
+  try {
+    const hits = await searchWeKnora(type, query, { logger, limit: type.topic.candidates || 15 });
+    const today = new Date().toISOString().slice(0, 10);
+    return hits.map((hit) => {
+      const excerpt = (hit.excerpts || []).join(" ");
+      return {
+        title: hit.title,
+        date: hit.date || today,
+        mtime: Date.now(),
+        tags: hit.tags || [],
+        summary: hit.summary || "",
+        excerpt,
+        length: excerpt.length,
+      };
+    });
+  } catch (error) {
+    logger.warn(`WeKnora 候选获取失败：${error.message}`);
+    return [];
+  }
+}
+
+async function resolveSources(ctx, topic, resume) {
+  const { options, logger, outputDir, type } = ctx;
+  const file = options["sources-file"]
+    ? path.resolve(PROJECT_ROOT, String(options["sources-file"]))
+    : resume
+      ? path.join(outputDir, "02-sources.json")
+      : null;
+  if (file && fs.existsSync(file)) {
+    logger.info(`复用已有素材：${file}`);
+    return readJson(file);
+  }
+  return collectSources(type, { topic, notes: ctx.notes, logger, mock: ctx.mock });
+}
+
+async function resolveOutline(ctx, sources, resume) {
+  const { options, logger, outputDir } = ctx;
+  const file = options["outline-file"]
+    ? path.resolve(PROJECT_ROOT, String(options["outline-file"]))
+    : resume
+      ? path.join(outputDir, "02-outline.json")
+      : null;
+  if (file && fs.existsSync(file)) {
+    logger.info(`复用已有纲要：${file}`);
+    return readJson(file);
+  }
+  return generateOutline(ctx, sources);
+}
+
+async function selectTopic(ctx, candidates) {
   const { type, logger, models, mock, options } = ctx;
   const manual = options.topic ? String(options.topic).trim() : "";
   const requirements = options.requirements ? String(options.requirements).trim() : "";
 
-  const candidates = pickRecent(notes, {
+  const recent = pickRecent(candidates, {
     days: type.topic.lookback_days || type.knowledge.lookback_days,
     limit: type.topic.candidates || 12,
   });
-  const fallbackCandidates = candidates.length ? candidates : notes.slice(0, type.topic.candidates || 12);
-  logger.info(manual ? `手动主题：${manual}` : `自动选题：${fallbackCandidates.length} 篇近期文章参与候选`);
+  const fallbackCandidates = recent.length ? recent : candidates.slice(0, type.topic.candidates || 12);
+
+  // Manual topic: skip the topic model entirely (one step instead of two).
+  if (manual) {
+    logger.info(`手动主题：${manual}（跳过选题模型）`);
+    const keywords = (type.topic.keywords || []).slice(0, 6);
+    return {
+      topic: manual,
+      title: manual,
+      thesis: "",
+      angle: "手动指定",
+      rationale: requirements || "用户手动指定主题。",
+      keywords: keywords.length ? keywords : buildTerms(manual).slice(0, 6),
+      source_hints: fallbackCandidates.slice(0, 3).map((n) => n.title),
+      title_candidates: [],
+    };
+  }
+
+  logger.info(`自动选题：${fallbackCandidates.length} 篇候选参与`);
 
   if (mock) {
     return {
-      topic: manual || `（Mock）${type.name}测试主题`,
-      title: manual || `（Mock）${type.name}测试标题`,
+      topic: `（Mock）${type.name}测试主题`,
+      title: `（Mock）${type.name}测试标题`,
       thesis: "这是 mock 选题，用于验证脚本流程。",
       angle: "流程验证",
       rationale: "mock 模式不调用模型。",
       keywords: type.topic.keywords?.slice(0, 4) || ["测试"],
       source_hints: fallbackCandidates.slice(0, 3).map((n) => n.title),
-      title_candidates: [manual || `（Mock）${type.name}测试标题`],
+      title_candidates: [`（Mock）${type.name}测试标题`],
     };
   }
 
   const prompt = buildTopicPrompt({
     type,
     candidates: fallbackCandidates,
-    mode: manual ? "manual" : "auto",
-    userTopic: manual,
+    mode: "auto",
     userRequirements: requirements,
   });
   const model = options.model || type.model;
   try {
     const result = await models.json(model, { ...prompt, label: "topic" });
     const topic = {
-      topic: String(result.topic || manual || "").trim(),
-      title: String(result.title || result.topic || manual || "").trim(),
+      topic: String(result.topic || "").trim(),
+      title: String(result.title || result.topic || "").trim(),
       thesis: String(result.thesis || "").trim(),
       angle: String(result.angle || "").trim(),
       rationale: String(result.rationale || "").trim(),
@@ -450,22 +611,21 @@ async function selectTopic(ctx, notes) {
       source_hints: Array.isArray(result.source_hints) ? result.source_hints.map(String) : [],
       title_candidates: Array.isArray(result.title_candidates) ? result.title_candidates.map(String) : [],
     };
-    if (!topic.topic) topic.topic = manual || fallbackCandidates[0]?.title || type.name;
+    if (!topic.topic) topic.topic = fallbackCandidates[0]?.title || type.name;
     if (!topic.title) topic.title = topic.topic;
-    if (manual) topic.topic = manual;
     return topic;
   } catch (error) {
     logger.warn(`选题模型失败（${error.message}），回退到规则选题`);
     const best = fallbackCandidates[0];
     return {
-      topic: manual || best?.title || type.name,
-      title: manual || best?.title || type.name,
+      topic: best?.title || type.name,
+      title: best?.title || type.name,
       thesis: best?.summary || "",
       angle: "基于知识库最新文章",
       rationale: "模型不可用，采用最新文章作为主题。",
       keywords: type.topic.keywords?.slice(0, 4) || [],
       source_hints: fallbackCandidates.slice(0, 3).map((n) => n.title),
-      title_candidates: [manual || best?.title || type.name],
+      title_candidates: [best?.title || type.name],
     };
   }
 }

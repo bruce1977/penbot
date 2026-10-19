@@ -52,6 +52,7 @@ function normalizeType(type, defaults, root, config) {
     type,
   );
   const knowledge = {
+    source: "local",
     max_sources: 8,
     excerpt_chars: 1800,
     lookback_days: 365,
@@ -59,6 +60,36 @@ function normalizeType(type, defaults, root, config) {
     ...(defaults.knowledge || {}),
     ...(type.knowledge || {}),
   };
+  // Knowledge source: local document dirs, the remote WeKnora KB, or both.
+  const source = String(knowledge.source || "local").toLowerCase();
+  knowledge.source = ["local", "weknora", "both"].includes(source) ? source : "local";
+  knowledge.weknora = {
+    enabled: knowledge.source !== "local",
+    base_url: "",
+    api_key: "",
+    auth_header: "X-API-Key",
+    kb_ids: [],
+    kb_names: {},
+    match_count: knowledge.max_sources || 8,
+    vector_threshold: 0,
+    keyword_threshold: 0,
+    timeout_ms: 30000,
+    ...(defaults.knowledge?.weknora || {}),
+    ...(type.knowledge?.weknora || {}),
+  };
+  if (knowledge.weknora.kb_ids && !Array.isArray(knowledge.weknora.kb_ids)) {
+    knowledge.weknora.kb_ids = [knowledge.weknora.kb_ids];
+  }
+  knowledge.weknora.kb_ids = (knowledge.weknora.kb_ids || []).filter(Boolean).map(String);
+  // WeKnora is only usable when a base_url is configured.
+  if (knowledge.weknora.enabled && !knowledge.weknora.base_url) {
+    if (knowledge.source === "weknora") knowledge.source = "local";
+    else if (knowledge.source === "both") knowledge.source = "local";
+    knowledge.weknora.disabled_reason = "base_url 未配置";
+  }
+  if (knowledge.source !== "local" && knowledge.weknora.kb_ids.length === 0) {
+    knowledge.weknora.disabled_reason = knowledge.weknora.disabled_reason || "kb_ids 未配置";
+  }
   const review = deepMerge(defaults.review || {}, type.review || {});
   review.max_rounds = clamp(review.max_rounds ?? 3, 1, 5);
   review.pass_score = review.pass_score ?? type.scoring?.pass_score ?? 80;
@@ -178,6 +209,12 @@ export function validateConfig(config) {
     if (!config.models?.[type.model]) issues.push(`${type.id}: model "${type.model}" 未在 models 中定义`);
     if (!config.models?.[type.review?.model || type.model]) {
       issues.push(`${type.id}: review.model "${type.review?.model}" 未在 models 中定义`);
+    }
+    if (type.knowledge.source !== "local") {
+      const w = type.knowledge.weknora || {};
+      if (!w.base_url) issues.push(`${type.id}: knowledge.source=${type.knowledge.source} 但未配置 knowledge.weknora.base_url`);
+      if (!w.api_key) issues.push(`${type.id}: knowledge.source=${type.knowledge.source} 但未配置 knowledge.weknora.api_key`);
+      if (!w.kb_ids?.length) issues.push(`${type.id}: knowledge.source=${type.knowledge.source} 但未配置 knowledge.weknora.kb_ids`);
     }
   }
   return issues;

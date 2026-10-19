@@ -21,6 +21,10 @@ export function createModelClient(config, logger) {
     const raw = config.models?.[id];
     if (!raw) throw new Error(`Unknown model profile "${id}"`);
     const profile = { id, timeout_ms: 300000, temperature: 0.7, ...raw };
+    // BASE_URL / MODEL_NAME / API_KEY may arrive under either spelling.
+    profile.base_url = profile.base_url || profile.baseUrl || "";
+    profile.model = profile.model || profile.model_name || profile.modelName || "";
+    profile.api_key = profile.api_key || profile.apiKey || "";
     cache.set(id, profile);
     return profile;
   }
