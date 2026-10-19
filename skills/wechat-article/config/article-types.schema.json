@@ -1,0 +1,248 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://penbot.local/schemas/wechat-article-types.schema.json",
+  "title": "WeChat article type configuration",
+  "type": "object",
+  "required": ["version", "types"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "type": "integer", "minimum": 1 },
+    "project": {
+      "type": "object",
+      "properties": {
+        "output_dir": { "type": "string", "default": "output/wechat-article" },
+        "language": { "type": "string", "default": "zh-CN" }
+      },
+      "additionalProperties": true
+    },
+    "models": {
+      "type": "object",
+      "description": "Named model profiles. provider: ollama | openai | opencode | mock",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["provider"],
+        "properties": {
+          "provider": { "enum": ["ollama", "openai", "opencode", "mock"] },
+          "base_url": { "type": "string" },
+          "model": { "type": "string" },
+          "api_key": { "type": "string" },
+          "command": { "type": "string", "default": "opencode" },
+          "agent": { "type": "string" },
+          "timeout_ms": { "type": "integer", "minimum": 1000 },
+          "temperature": { "type": "number" },
+          "num_ctx": { "type": "integer" },
+          "max_tokens": { "type": "integer" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "defaults": { "$ref": "#/$defs/defaults" },
+    "types": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/articleType" }
+    }
+  },
+  "$defs": {
+    "defaults": {
+      "type": "object",
+      "properties": {
+        "model": { "type": "string", "default": "local" },
+        "review": { "$ref": "#/$defs/review" },
+        "knowledge": { "$ref": "#/$defs/knowledge" },
+        "illustrations": { "$ref": "#/$defs/illustrations" },
+        "publish": { "$ref": "#/$defs/publish" }
+      },
+      "additionalProperties": true
+    },
+    "review": {
+      "type": "object",
+      "properties": {
+        "max_rounds": { "type": "integer", "minimum": 1, "maximum": 5, "default": 3 },
+        "pass_score": { "type": "number", "minimum": 0, "maximum": 100 },
+        "llm_scoring": { "type": "boolean", "default": true },
+        "correct_cn": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "base_url": { "type": "string" },
+            "endpoint": { "type": "string", "default": "/api/pipeline" },
+            "api_key": { "type": "string" },
+            "auth_header": { "type": "string", "default": "X-Auth-Key" },
+            "enable_audit": { "type": "boolean", "default": false },
+            "enable_final_suggestion": { "type": "boolean", "default": false },
+            "apply": { "enum": ["issues", "final", "none"], "default": "issues" },
+            "timeout_ms": { "type": "integer", "default": 120000 }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "knowledge": {
+      "type": "object",
+      "properties": {
+        "max_sources": { "type": "integer", "minimum": 1, "default": 8 },
+        "excerpt_chars": { "type": "integer", "minimum": 200, "default": 1800 },
+        "lookback_days": { "type": "integer", "minimum": 1, "default": 90 },
+        "max_file_bytes": { "type": "integer", "default": 400000 }
+      },
+      "additionalProperties": true
+    },
+    "illustrations": {
+      "type": "object",
+      "properties": {
+        "min": { "type": "integer", "minimum": 1, "maximum": 5, "default": 1 },
+        "max": { "type": "integer", "minimum": 1, "maximum": 5, "default": 5 },
+        "count": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "cover": { "type": "boolean", "default": true },
+        "style": { "type": "string" },
+        "negative_prompt": { "type": "string" },
+        "concurrency": { "type": "integer", "minimum": 1, "default": 2 },
+        "on_failure": { "enum": ["comment", "keep", "drop"], "default": "comment" },
+        "scenes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "width": { "type": "integer" },
+              "height": { "type": "integer" }
+            }
+          }
+        },
+        "modelscope": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "base_url": { "type": "string" },
+            "api_key": { "type": "string" },
+            "model": { "type": "string" },
+            "timeout_ms": { "type": "integer" },
+            "poll_interval_ms": { "type": "integer" },
+            "max_polls": { "type": "integer" }
+          },
+          "additionalProperties": true
+        },
+        "pollinations": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "base_url": { "type": "string" },
+            "model": { "type": "string" },
+            "timeout_ms": { "type": "integer" }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "publish": {
+      "type": "object",
+      "properties": {
+        "auto_publish": { "type": "boolean", "default": false },
+        "email": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "to": { "type": "array", "items": { "type": "string" } },
+            "from": { "type": "string" },
+            "api_key": { "type": "string" },
+            "subject": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "wechat": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "theme": { "type": "string", "default": "default" },
+            "highlight": { "type": "string" },
+            "env_file": { "type": "string", "default": ".env" },
+            "command": { "type": "string" },
+            "dry_run": { "type": "boolean", "default": false }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "articleType": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "name": { "type": "string" },
+        "enabled": { "type": "boolean", "default": true },
+        "description": { "type": "string" },
+        "knowledge_dirs": { "type": "array", "items": { "type": "string" } },
+        "style": {
+          "type": "object",
+          "properties": {
+            "persona": { "type": "string" },
+            "tone": { "type": "string" },
+            "audience": { "type": "string" },
+            "structure": { "type": "array", "items": { "type": "string" } },
+            "dos": { "type": "array", "items": { "type": "string" } },
+            "donts": { "type": "array", "items": { "type": "string" } },
+            "title_style": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "length": {
+          "type": "object",
+          "properties": {
+            "min": { "type": "integer", "minimum": 200 },
+            "max": { "type": "integer", "minimum": 300 },
+            "target": { "type": "integer", "minimum": 300 }
+          },
+          "additionalProperties": true
+        },
+        "scoring": {
+          "type": "object",
+          "properties": {
+            "pass_score": { "type": "number", "minimum": 0, "maximum": 100 },
+            "dimensions": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["id", "name", "weight"],
+                "properties": {
+                  "id": { "type": "string" },
+                  "name": { "type": "string" },
+                  "weight": { "type": "number", "minimum": 0 },
+                  "description": { "type": "string" },
+                  "criteria": { "type": "array", "items": { "type": "string" } }
+                },
+                "additionalProperties": true
+              }
+            }
+          },
+          "additionalProperties": true
+        },
+        "illustrations": { "$ref": "#/$defs/illustrations" },
+        "topic": {
+          "type": "object",
+          "properties": {
+            "keywords": { "type": "array", "items": { "type": "string" } },
+            "exclude_keywords": { "type": "array", "items": { "type": "string" } },
+            "lookback_days": { "type": "integer" },
+            "candidates": { "type": "integer" }
+          },
+          "additionalProperties": true
+        },
+        "publish": { "$ref": "#/$defs/publish" },
+        "prompts": {
+          "type": "object",
+          "properties": {
+            "outline_extra": { "type": "string" },
+            "draft_extra": { "type": "string" },
+            "revise_extra": { "type": "string" }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

@@ -1,0 +1,335 @@
+{
+  "$schema": "./article-types.schema.json",
+  "version": 1,
+  "project": {
+    "output_dir": "output/wechat-article",
+    "language": "zh-CN"
+  },
+  "models": {
+    "local": {
+      "provider": "ollama",
+      "base_url": "${PB_OLLAMA_BASE_URL:-http://localhost:11434}",
+      "model": "${PB_OLLAMA_MODEL:-qwen3.5:4b}",
+      "timeout_ms": 300000,
+      "temperature": 0.7,
+      "num_ctx": 32768,
+      "max_tokens": 4096
+    },
+    "local-9b": {
+      "provider": "ollama",
+      "base_url": "${PB_OLLAMA_BASE_URL:-http://localhost:11434}",
+      "model": "${PB_OLLAMA_LARGE_MODEL:-nimble:latest}",
+      "timeout_ms": 600000,
+      "temperature": 0.7,
+      "num_ctx": 32768,
+      "max_tokens": 4096
+    },
+    "opencode": {
+      "provider": "opencode",
+      "command": "opencode",
+      "agent": "wechat-article-writer",
+      "timeout_ms": 600000
+    },
+    "remote": {
+      "provider": "openai",
+      "base_url": "${PB_LLM_BASE_URL:-https://api.deepseek.com}",
+      "model": "${PB_LLM_MODEL:-deepseek-chat}",
+      "api_key": "${PB_LLM_API_KEY}",
+      "timeout_ms": 300000,
+      "temperature": 0.7,
+      "max_tokens": 4096
+    },
+    "mock": {
+      "provider": "mock"
+    }
+  },
+  "defaults": {
+    "model": "local",
+    "review": {
+      "model": "local",
+      "max_rounds": 3,
+      "pass_score": 80,
+      "llm_scoring": true,
+      "correct_cn": {
+        "enabled": true,
+        "base_url": "${PB_PYCORRECTOR_API_URL:-https://corrector.myehome.cn}",
+        "endpoint": "/api/pipeline",
+        "api_key": "${PB_PYCORRECTOR_AUTH_KEY}",
+        "auth_header": "X-Auth-Key",
+        "enable_audit": false,
+        "enable_final_suggestion": false,
+        "apply": "issues",
+        "timeout_ms": 180000,
+        "fallback_llm": true
+      }
+    },
+    "knowledge": {
+      "max_sources": 8,
+      "excerpt_chars": 1800,
+      "lookback_days": 365,
+      "max_file_bytes": 400000
+    },
+    "illustrations": {
+      "min": 1,
+      "max": 5,
+      "cover": true,
+      "concurrency": 2,
+      "on_failure": "comment",
+      "style": "扁平化科技插画，干净留白，克制的蓝紫与暖橙配色，适合微信公众号阅读，不要出现文字",
+      "negative_prompt": "photorealistic, 3d render, oil painting, western fantasy, anime style, manga, chibi, too many details, cluttered composition, bright neon colors, over-saturated, soft focus, blurry, deformed hands, extra limbs, signature, watermark, text, words, logo",
+      "scenes": {
+        "wechat-cover": { "width": 900, "height": 383 },
+        "wechat-cover-thumb": { "width": 500, "height": 500 },
+        "article-inline": { "width": 1080, "height": 810 }
+      },
+      "modelscope": {
+        "enabled": true,
+        "base_url": "https://api-inference.modelscope.cn",
+        "api_key": "${PB_MODEL_API_KEY}",
+        "model": "Tongyi-MAI/Z-Image-Turbo",
+        "timeout_ms": 90000,
+        "poll_interval_ms": 5000,
+        "max_polls": 18
+      },
+      "pollinations": {
+        "enabled": true,
+        "base_url": "https://image.pollinations.ai",
+        "model": "turbo",
+        "timeout_ms": 90000
+      }
+    },
+    "publish": {
+      "auto_publish": false,
+      "email": {
+        "enabled": false,
+        "to": ["jiangyifeng@myehome.cn"],
+        "from": "${PB_RESEND_FROM:-penbot@myehome.cn}",
+        "api_key": "${PB_RESEND_API_KEY}",
+        "subject": "{title}"
+      },
+      "wechat": {
+        "enabled": false,
+        "theme": "default",
+        "highlight": "solarized-light",
+        "env_file": ".env",
+        "command": "npx --yes @wenyan-md/cli",
+        "dry_run": false
+      }
+    }
+  },
+  "types": [
+    {
+      "id": "ai-insight",
+      "name": "AI 深度观点",
+      "enabled": true,
+      "description": "围绕 AI 领域的一个判断展开，用知识库中的事实和案例支撑，强调观点密度与可读性。",
+      "knowledge_dirs": ["D:/knowledge/obsidian/ai"],
+      "style": {
+        "persona": "长期跟踪 AI 产业的观察者，既懂技术也懂落地，不贩卖焦虑。",
+        "tone": "冷静、克制、有判断，允许少量口语化表达。",
+        "audience": "关注 AI 产品、创业与职业机会的从业者。",
+        "title_style": "结论前置或反差提问，不超过 30 字，不用夸张感叹号。",
+        "structure": [
+          "开篇：用一个具体场景或数据抛出冲突",
+          "展开：2-3 个分论点，每段一个证据或案例",
+          "转折：指出反方观点或容易被忽略的限制",
+          "收束：给出可执行的判断或观察指标"
+        ],
+        "dos": [
+          "每个分论点至少有一个来自知识库的事实、数据或案例",
+          "关键概念首次出现时用一句话解释",
+          "段落控制在 5 行以内，适配手机阅读",
+          "在结尾给读者一个可带走的判断"
+        ],
+        "donts": [
+          "不写空泛的行业套话和正确的废话",
+          "不编造数据、机构名、论文名或采访",
+          "不使用震惊体、标题党、绝对化断言",
+          "不在正文中堆砌链接和参考列表"
+        ]
+      },
+      "length": { "min": 1500, "max": 2200, "target": 1800 },
+      "scoring": {
+        "pass_score": 82,
+        "dimensions": [
+          {
+            "id": "thesis",
+            "name": "观点质量",
+            "weight": 25,
+            "description": "是否有清晰、非共识但有依据的核心判断。",
+            "criteria": ["开篇 3 段内亮出核心判断", "判断具体可证伪，不是口号", "能回应一个合理的反方观点"]
+          },
+          {
+            "id": "evidence",
+            "name": "论据与知识库使用",
+            "weight": 25,
+            "description": "事实、数据和案例是否可靠，是否真正用到了本地知识库。",
+            "criteria": ["关键论断有来源或案例支撑", "没有编造事实", "知识库素材被消化而非整段搬运"]
+          },
+          {
+            "id": "structure",
+            "name": "结构与节奏",
+            "weight": 20,
+            "description": "行文是否有推进感，段落是否适配手机阅读。",
+            "criteria": ["段落不超过 5 行", "每节有明确小标题或过渡", "结尾收束有力"]
+          },
+          {
+            "id": "readability",
+            "name": "表达与可读性",
+            "weight": 20,
+            "description": "语言是否准确、顺畅、有画面感。",
+            "criteria": ["术语有解释", "没有长句堆叠", "至少 3 句可被单独引用的判断句"]
+          },
+          {
+            "id": "compliance",
+            "name": "合规与事实风险",
+            "weight": 10,
+            "description": "是否存在敏感表述、夸大承诺或侵权风险。",
+            "criteria": ["无绝对化疗效/收益承诺", "无未经证实的爆料", "引用他人观点标明出处"]
+          }
+        ]
+      },
+      "illustrations": { "min": 2, "max": 4, "cover": true },
+      "topic": {
+        "keywords": ["AI", "大模型", "Agent", "智能体", "OpenAI", "Anthropic", "开源模型"],
+        "candidates": 12
+      },
+      "prompts": {
+        "outline_extra": "纲要需要明确：核心判断、三个支撑论据、一个反方视角、读者可执行的行动建议。",
+        "draft_extra": "标题不超过 30 字。开篇 150 字内必须出现具体场景、数字或冲突。",
+        "revise_extra": "优先加强观点与论据的咬合度，删掉不影响论证的段落。"
+      }
+    },
+    {
+      "id": "ai-news",
+      "name": "AI 资讯快评",
+      "enabled": true,
+      "description": "针对单条 AI 新闻的快速解读，强调时效、信息密度和明确态度。",
+      "knowledge_dirs": ["D:/knowledge/obsidian/ai"],
+      "style": {
+        "persona": "科技媒体主编，能在信息噪音里快速指出真正重要的变化。",
+        "tone": "干脆、直接、信息密度高，少铺垫。",
+        "audience": "每天用碎片时间跟踪 AI 动态的从业者。",
+        "title_style": "事件 + 影响，不超过 26 字。",
+        "structure": [
+          "导语：一句话说清发生了什么",
+          "事实：关键细节、数字、参与方",
+          "影响：对产品、行业或个人的实际影响",
+          "判断：值得继续关注什么"
+        ],
+        "dos": ["先事实后观点", "标明消息来源与时间", "给出一个明确的短期影响判断"],
+        "donts": ["不把旧闻当新闻", "不堆砌无关背景", "不使用未经确认的传闻作为事实"]
+      },
+      "length": { "min": 800, "max": 1300, "target": 1000 },
+      "scoring": {
+        "pass_score": 78,
+        "dimensions": [
+          { "id": "timeliness", "name": "时效与新闻性", "weight": 25, "description": "事件是否足够新、足够重要。" },
+          { "id": "facts", "name": "事实准确度", "weight": 30, "description": "关键事实、数字、主体是否准确且有来源。" },
+          { "id": "insight", "name": "解读价值", "weight": 25, "description": "是否解释了影响，而不是复述新闻。" },
+          { "id": "readability", "name": "表达效率", "weight": 20, "description": "是否在 1000 字内说清重点，段落是否短。" }
+        ]
+      },
+      "illustrations": { "min": 1, "max": 2, "cover": true },
+      "topic": {
+        "keywords": ["发布", "上线", "开源", "融资", "模型", "芯片", "Agent"],
+        "lookback_days": 30,
+        "candidates": 15
+      },
+      "prompts": {
+        "outline_extra": "纲要必须区分「已知事实」「待确认信息」「作者判断」三类内容。",
+        "draft_extra": "第一段不超过 80 字，直接说清事件。",
+        "revise_extra": "删除所有不能增加信息量的铺垫句。"
+      }
+    },
+    {
+      "id": "tech-explainer",
+      "name": "技术解读",
+      "enabled": true,
+      "description": "把一个技术概念、论文或工程实践讲清楚，由浅入深，重视类比和可复现细节。",
+      "knowledge_dirs": ["D:/knowledge/obsidian/ai", "D:/knowledge/obsidian/homelab"],
+      "style": {
+        "persona": "一线工程师兼技术作者，习惯用可运行的例子解释抽象概念。",
+        "tone": "耐心、准确、少炫技。",
+        "audience": "有基础编程经验、希望理解原理并动手实践的开发者。",
+        "title_style": "问题式或「从 A 到 B」式，不超过 30 字。",
+        "structure": [
+          "问题：这个技术解决什么真实问题",
+          "直觉：用一个生活化类比建立心智模型",
+          "原理：拆解关键机制，配必要图表或伪代码",
+          "实践：最小可运行示例或落地注意事项",
+          "边界：不适用场景与常见坑"
+        ],
+        "dos": [
+          "术语首次出现给出中英文和一句话解释",
+          "代码块保持可运行，命令标注环境",
+          "用对比表格说明方案差异",
+          "明确区分事实、推测与个人经验"
+        ],
+        "donts": ["不复制官方文档目录", "不假设读者已经懂上下文", "不写无法验证的性能数字"]
+      },
+      "length": { "min": 1800, "max": 2800, "target": 2200 },
+      "scoring": {
+        "pass_score": 82,
+        "dimensions": [
+          { "id": "accuracy", "name": "技术准确性", "weight": 30, "description": "概念、机制、命令与代码是否正确。" },
+          { "id": "clarity", "name": "讲解清晰度", "weight": 25, "description": "类比是否贴切，是否由浅入深。" },
+          { "id": "practicality", "name": "实践价值", "weight": 25, "description": "读者能否照着做，是否包含边界与坑。" },
+          { "id": "structure", "name": "结构完整性", "weight": 20, "description": "问题、原理、实践、边界是否齐全。" }
+        ]
+      },
+      "illustrations": { "min": 2, "max": 4, "cover": true },
+      "topic": {
+        "keywords": ["原理", "架构", "教程", "实践", "部署", "论文", "实现", "源码"],
+        "candidates": 12
+      },
+      "prompts": {
+        "outline_extra": "纲要需包含：读者前置知识、一个核心类比、最小实践步骤、三个常见坑。",
+        "draft_extra": "代码块前后都要有解释，不要贴大段无注释代码。",
+        "revise_extra": "检查每个技术断言是否准确，删掉无法验证的性能结论。"
+      }
+    },
+    {
+      "id": "homelab-practice",
+      "name": "Homelab 实践笔记",
+      "enabled": true,
+      "description": "记录家庭实验室 / 自托管项目的搭建、踩坑与取舍，强调可复现和真实成本。",
+      "knowledge_dirs": ["D:/knowledge/obsidian/homelab"],
+      "style": {
+        "persona": "喜欢折腾家庭服务器的实践者，愿意公开失败过程和真实开销。",
+        "tone": "务实、坦诚、带一点自嘲。",
+        "audience": "有 NAS、软路由或小型服务器，想自托管服务的爱好者。",
+        "title_style": "方案 + 结果，例如「用 X 替代 Y 后，我踩了三个坑」。",
+        "structure": [
+          "缘起：为什么要折腾这件事",
+          "方案：硬件、软件与成本清单",
+          "过程：关键步骤与配置片段",
+          "踩坑：失败记录与解决方式",
+          "结论：值不值得，适合谁"
+        ],
+        "dos": ["列出真实硬件型号和大致成本", "保留失败尝试", "给出可复现的命令或配置", "说明功耗、噪音、维护成本"],
+        "donts": ["不写成产品软文", "不隐瞒失败和额外开销", "不提供危险的公网暴露配置"]
+      },
+      "length": { "min": 1200, "max": 2000, "target": 1600 },
+      "scoring": {
+        "pass_score": 78,
+        "dimensions": [
+          { "id": "reproducibility", "name": "可复现性", "weight": 30, "description": "步骤、配置和依赖是否足够完整。" },
+          { "id": "honesty", "name": "真实度", "weight": 25, "description": "成本、失败与限制是否如实记录。" },
+          { "id": "value", "name": "参考价值", "weight": 25, "description": "读者是否能据此判断是否值得做。" },
+          { "id": "readability", "name": "叙事可读性", "weight": 20, "description": "过程是否清楚，踩坑部分是否有画面感。" }
+        ]
+      },
+      "illustrations": { "min": 1, "max": 3, "cover": true },
+      "topic": {
+        "keywords": ["NAS", "Docker", "自托管", "软路由", "Home Assistant", "PVE", "备份", "功耗"],
+        "candidates": 12
+      },
+      "prompts": {
+        "outline_extra": "纲要需包含硬件/软件清单、成本区间、至少两个踩坑点。",
+        "draft_extra": "所有命令注明执行环境，涉及公网暴露必须给出安全提醒。",
+        "revise_extra": "补充缺失的前置条件，删掉没有验证过的性能结论。"
+      }
+    }
+  ]
+}

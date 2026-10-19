@@ -1,0 +1,29 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "skills": [
+    "skills"
+  ],
+  "commands": {
+    "wechat-article": {
+      "description": "运行微信公众号文章自动化管线：选题 → 检索 → 纲要 → 初稿 → 核稿/评稿/修正 → 配图 → 发布",
+      "template": "使用 wechat-article 技能执行公众号文章管线。参数：$ARGUMENTS。\n\n优先运行脚本完成机械流程：\n`node skills/wechat-article/scripts/wechat-article.mjs run --config skills/wechat-article/config/article-types.json ...`\n\n只在脚本需要模型判断时调用本地模型或 opencode；不要手工重写脚本已经生成的中间产物。开始前先读取 `skills/wechat-article/SKILL.md`。"
+    }
+  },
+  "agents": {
+    "wechat-article-writer": {
+      "description": "供 wechat-article 脚本调用的纯文本写作/评分代理：只读附件、不写文件、不执行命令，仅返回文本或 JSON",
+      "mode": "subagent",
+      "hidden": true,
+      "permissions": [
+        { "action": "shell", "resource": "*", "effect": "deny" },
+        { "action": "edit", "resource": "*", "effect": "deny" },
+        { "action": "glob", "resource": "*", "effect": "deny" },
+        { "action": "grep", "resource": "*", "effect": "deny" },
+        { "action": "webfetch", "resource": "*", "effect": "deny" },
+        { "action": "websearch", "resource": "*", "effect": "deny" },
+        { "action": "skill", "resource": "*", "effect": "deny" },
+        { "action": "subagent", "resource": "*", "effect": "deny" }
+      ]
+    }
+  }
+}

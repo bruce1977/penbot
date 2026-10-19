@@ -1,0 +1,19 @@
+{
+  "name": "penbot-wechat-article",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Script-driven WeChat official account article pipeline for OpenCode and other agent runtimes.",
+  "type": "module",
+  "scripts": {
+    "wechat-article": "node skills/wechat-article/scripts/wechat-article.mjs",
+    "wechat-article:doctor": "node skills/wechat-article/scripts/wechat-article.mjs doctor",
+    "wechat-article:validate": "node skills/wechat-article/scripts/wechat-article.mjs validate",
+    "test": "node --test skills/wechat-article/tests/*.test.mjs"
+  },
+  "dependencies": {
+    "markdown-it": "^15.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
