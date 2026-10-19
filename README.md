@@ -19,12 +19,17 @@ npm run wechat-article:validate   # 校验配置文件
 npm run wechat-article:doctor     # 检查环境与服务连通性
 
 # 用 mock 模型跑通全流程（不发真实请求）
-npm run wechat-article -- run --type ai-news --mock --output .temp/demo
+npm run wechat-article -- auto --type ai-news --mock --output .temp/demo
 
-# 真实运行
-npm run wechat-article -- run --type ai-insight
-npm run wechat-article -- run --type ai-news --topic "某模型正式开源" --requirements "重点写对独立开发者的影响"
+# 入口 1（自动）：知识库选题 + 自动纲要
+npm run wechat-article -- auto --type ai-insight --stage draft
+
+# 入口 2（手动）：你给标题 + 提纲
+npm run wechat-article -- manual --type ai-news --title "某模型正式开源" --outline-file outline.md
 ```
+
+- 两个入口之后步骤完全一致；`--type` 可省略，在 `.env` 设 `PB_ARTICLE_TYPE=ai-news` 即可。
+- 手动提纲最简格式：`# 标题` + `## 小节` + `- 要点`；也可直接喂管线生成的 `02-outline.json`。
 
 ### 分步执行（推荐）
 
@@ -40,7 +45,7 @@ npm run wechat-article -- draft   --type ai-news --output $DIR   # 3  初稿
 
 手动选题只有一步：`outline --type ai-news --topic "主题"`（跳过选题模型）。
 
-在 OpenCode 里也可以直接用斜杠命令：`/wechat-article run --type ai-insight`。
+在 OpenCode 里也可以直接用斜杠命令：`/wechat-article auto --type ai-insight`。
 
 ## 文档
 
@@ -72,17 +77,19 @@ npm run wechat-article -- draft   --type ai-news --output $DIR   # 3  初稿
 
 | 能力 | 服务 | 环境变量 |
 | --- | --- | --- |
-| 本地写作模型 | Ollama | `PB_OLLAMA_BASE_URL` / `PB_OLLAMA_MODEL_NAME` / `PB_OLLAMA_API_KEY` |
+| 本地写作模型 | Ollama（本地或网关） | `LOCAL_LLM_BASE_URL` / `LOCAL_LLM_BASE_MODEL` / `LOCAL_LLM_API_KEY` |
 | 备用写作模型 | OpenCode agent CLI | — |
 | 远程写作模型 | 任意 OpenAI 兼容端点 | `PB_LLM_BASE_URL` / `PB_LLM_MODEL` / `PB_LLM_API_KEY` |
 | 资料收集（远程） | WeKnora | `WEKNORA_BASE_URL` / `WEKNORA_API_KEY` |
 | 核稿 | correct-cn | `PB_PYCORRECTOR_API_URL` / `PB_PYCORRECTOR_AUTH_KEY` |
-| 配图（首选） | ModelScope | `PB_MODEL_API_KEY` |
+| 配图（首选） | ModelScope | `PB_MODEL_IMAGE_API_KEY` |
 | 配图（回退） | Pollinations | — |
 | 邮件 | Resend | `PB_RESEND_API_KEY` / `PB_RESEND_FROM` |
 | 公众号草稿 | @wenyan-md/cli | `WECHAT_MP_APP_ID` / `WECHAT_MP_APP_SECRET` |
 
 每个模型 profile 都用 **BASE_URL / MODEL_NAME / API_KEY** 三项配置（`base_url` / `model` / `api_key`，`model_name` 亦可）。所有服务都可在配置里单独开关；缺哪个就自动降级或跳过，不会中断整条管线。
+
+文章类型可以用 `--type` 指定，也可以在 `.env` 里设 `PB_ARTICLE_TYPE=ai-news` 作为默认值。
 
 ## 测试
 

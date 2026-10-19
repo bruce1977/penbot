@@ -153,6 +153,7 @@ export function buildDraftPrompt({ type, topic, outline, sources, maxChars = 140
       "",
       `## 硬性要求`,
       `- 篇幅 ${type.length.min}-${type.length.max} 字，不要低于 ${type.length.min} 字。`,
+      `- 每个小节至少 2 个自然段，每段 2-5 句；不要一句一段，也不要把同一小节的内容写成要点清单。`,
       `- 每段不超过 5 行，适配手机阅读。`,
       `- 使用 Markdown：一级标题只出现一次作为文章标题，小节用 ##。`,
       `- 首行必须是 frontmatter：`,
@@ -281,6 +282,44 @@ export function buildCorrectFallbackPrompt({ article, issues }) {
   return {
     system: "你是中文校对员。只修复错别字、敏感词和语法错误，不润色文风，不改变结构和事实。只输出修正后的完整 Markdown。",
     prompt: [`## 待修复问题`, list || "（无）", "", "## 原文", article, "", "请输出修正后的完整文章："].join("\n"),
+  };
+}
+
+export function buildLengthPrompt({ type, article, wordCount, direction }) {
+  const target = type.length.target || Math.round((type.length.min + type.length.max) / 2);
+  const expand = direction === "expand";
+  return {
+    system: [
+      `你是「${type.name}」栏目的改稿编辑。`,
+      expand
+        ? "你的任务是扩充文章篇幅，靠补充实质信息提升密度，绝不注水。"
+        : "你的任务是压缩文章篇幅，删去冗余，保留全部关键信息与结构。",
+      "保留第一行的 frontmatter，以及所有配图标记 [[img:n|中文说明|English prompt]]。",
+      "只输出完整的 Markdown 文章，不要输出任何说明、对比或解释。",
+    ].join("\n"),
+    prompt: [
+      `## 当前篇幅`,
+      `${wordCount} 字，需要调整到 ${type.length.min}-${type.length.max} 字（目标约 ${target} 字）。`,
+      "",
+      expand ? "## 扩充要求" : "## 压缩要求",
+      expand
+        ? [
+            "1. 优先在现有小节内补充：具体机制、可验证的细节、对读者的实际影响、必要的背景解释。",
+            "2. 每个小节至少 2 个自然段，每段 2-5 句；不要一句一段，也不要新增小节标题。",
+            "3. 只能用原稿已有的事实、数据和逻辑做展开，严禁编造新的数据、案例或引用。",
+            "4. 不要写「本文将」「如上所述」这类元叙述，也不要重复同一句话。",
+          ].join("\n")
+        : [
+            "1. 删除重复表述、空洞形容词和元叙述，不得删除事实与关键判断。",
+            "2. 合并过短的段落，保持每段 2-5 句。",
+            "3. 必须保留所有配图标记和原有小节标题。",
+          ].join("\n"),
+      "",
+      `## 原稿`,
+      article,
+      "",
+      "现在输出调整后的完整文章：",
+    ].join("\n"),
   };
 }
 

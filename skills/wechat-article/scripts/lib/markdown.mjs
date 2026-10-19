@@ -123,6 +123,16 @@ export function countWords(text) {
 const IMAGE_MARKER = /\[\[\s*img\s*[:：]\s*(\d+)\s*(?:\|\s*([\s\S]*?))?\]\]|\[图\s*(\d+)\s*[:：]\s*([^\]]*)\]/gi;
 
 /**
+ * Decide whether a draft is too short, too long or fine for the given range.
+ * Returns "expand" | "condense" | null.
+ */
+export function lengthAction(wordCount, { min, max } = {}) {
+  if (Number.isFinite(min) && wordCount < min) return "expand";
+  if (Number.isFinite(max) && wordCount > max) return "condense";
+  return null;
+}
+
+/**
  * Canonical image marker:
  *   [[img:1|图片说明|optional prompt]]
  * Legacy marker also supported:
@@ -191,6 +201,197 @@ export function ensureImageMarkers(markdown, count) {
     paragraphs.splice(item.at, 0, `[[img:${item.index}|配图 ${item.index}]]`);
   }
   return `${buildFrontmatter(data)}${paragraphs.join("\n\n")}\n`;
+}
+
+/**
+ * Reconcile markers the model produced with the planned count:
+ * drop duplicate indices, cap at `count`, renumber sequentially
+ * (1..N in document order), then pad when there are too few.
+ */
+export function normalizeImageMarkers(markdown, count) {
+  const text = String(markdown || "");
+  const markers = parseImageMarkers(text);
+  if (markers.length === 0) return ensureImageMarkers(text, count);
+
+  const limit = Number.isFinite(count) && count > 0 ? count : Infinity;
+  const keep = new Map();
+  const seen = new Set();
+  let next = 1;
+  for (const marker of markers) {
+    if (seen.has(marker.index)) continue;
+    if (next > limit) break;
+    seen.add(marker.index);
+    keep.set(marker.start, { index: next, description: marker.description, prompt: marker.prompt });
+    next += 1;
+  }
+  if (keep.size === 0) return ensureImageMarkers(text, count);
+
+  let out = "";
+  let cursor = 0;
+  for (const marker of markers) {
+    if (marker.start < cursor) continue;
+    out += text.slice(cursor, marker.start);
+    const kept = keep.get(marker.start);
+    if (kept) {
+      const payload = kept.prompt ? `${kept.description}|${kept.prompt}` : kept.description;
+      out += `[[img:${kept.index}|${payload}]]`;
+    }
+    cursor = marker.end;
+  }
+  out += text.slice(cursor);
+
+  return keep.size < limit ? ensureImageMarkers(out, count) : out;
+}
+
+/**
+ * Parse a user-written outline (Markdown) into the outline object used by the
+ * pipeline. Accepts both the format rendered by this pipeline and a minimal
+ * "# title" + "## section" + "- point" form.
+ * Returns null when no section can be found.
+ */
+export function parseOutlineMarkdown(text, { title = "", targetWords = 0 } = {}) {
+  const result = {
+    title: String(title || "").trim(),
+    thesis: "",
+    audience: "",
+    hook: "",
+    outline: [],
+    counterpoint: "",
+    takeaway: "",
+    image_plan: [],
+  };
+  let mode = "sections";
+  let current = null;
+  let lastImage = null;
+
+  const clean = (value) => String(value || "").replace(/^\*+|\*+$/g, "").trim();
+  const stripBullet = (value) => String(value || "").replace(/^[-*]\s*/, "").trim();
+  const appendText = (field, value) => {
+    const next = clean(value);
+    if (!next) return;
+    result[field] = result[field] ? `${result[field]}\n${next}` : next;
+  };
+  const startSection = (heading, words = 0) => {
+    current = { heading: clean(heading), points: [], source_indexes: [], target_words: Number(words) || 0 };
+    result.outline.push(current);
+  };
+
+  for (const rawLine of String(text || "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const h2 = line.match(/^#{2,}\s+(.+)$/);
+    if (h2) {
+      const name = h2[1].replace(/[（(]\s*约?\s*\d+\s*字\s*[)）]\s*$/, "").trim();
+      if (/^(结构|大纲|正文结构)$/.test(name)) {
+        mode = "structure";
+        current = null;
+      } else if (/^反方观点$/.test(name)) {
+        mode = "counter";
+      } else if (/^(结论|结尾|总结|收尾)$/.test(name)) {
+        mode = "takeaway";
+      } else if (/^配图$/.test(name)) {
+        mode = "images";
+        lastImage = null;
+      } else if (/^(备选标题|相关素材|读者|受众)$/.test(name)) {
+        mode = "meta";
+      } else {
+        startSection(name);
+        mode = "sections";
+      }
+      continue;
+    }
+
+    const h1 = line.match(/^#\s+(.+)$/);
+    if (h1) {
+      if (!result.title) result.title = h1[1].trim();
+      continue;
+    }
+
+    if (line.startsWith(">")) {
+      if (!result.thesis) result.thesis = stripBullet(line.replace(/^>\s?/, ""));
+      continue;
+    }
+
+    const meta = line.match(/^[-*]\s*(读者|受众|开篇钩子|核心判断|主题)[：:]\s*(.*)$/);
+    if (meta) {
+      const [, key, value] = meta;
+      if (key === "读者" || key === "受众") result.audience = value.trim();
+      else if (key === "开篇钩子") result.hook = value.trim();
+      else if (key === "主题" && !result.title) result.title = value.trim();
+      else result.thesis = value.trim();
+      continue;
+    }
+
+    if (mode === "images") {
+      if (/^[-*]\s*prompt\s*[:：]/i.test(line)) {
+        if (lastImage) lastImage.prompt = line.replace(/^[-*]\s*prompt\s*[:：]\s*/i, "").trim();
+        continue;
+      }
+      const img = line.match(/^[-*]\s*(?:([^：:]+)[：:])?\s*(.+)$/);
+      if (!img) continue;
+      const position = (img[1] || "").trim();
+      const rest = img[2].trim();
+      const [description, prompt] = rest.split("|");
+      lastImage = {
+        position: position || `inline_${result.image_plan.length + 1}`,
+        description: (description || "").trim(),
+        prompt: (prompt || "").trim(),
+      };
+      result.image_plan.push(lastImage);
+      continue;
+    }
+
+    if (mode === "counter") {
+      appendText("counterpoint", stripBullet(line));
+      continue;
+    }
+    if (mode === "takeaway") {
+      appendText("takeaway", stripBullet(line));
+      continue;
+    }
+    if (mode === "meta") continue;
+
+    const cjkHeading = line.match(/^([一二三四五六七八九十]+)[、.．]\s*(.+)$/);
+    if (cjkHeading && mode === "sections") {
+      startSection(cjkHeading[2]);
+      continue;
+    }
+
+    const numbered = line.match(/^\d+[.、)]\s*(.+)$/);
+    if (numbered && !current) {
+      const withWords = numbered[1].match(/^\*{0,2}(.+?)\*{0,2}\s*[（(]\s*约?\s*(\d+)\s*字\s*[)）]\s*$/);
+      startSection(withWords ? withWords[1] : numbered[1], withWords ? withWords[2] : 0);
+      continue;
+    }
+    if (numbered && mode === "structure") {
+      const withWords = numbered[1].match(/^\*{0,2}(.+?)\*{0,2}\s*[（(]\s*约?\s*(\d+)\s*字\s*[)）]\s*$/);
+      startSection(withWords ? withWords[1] : numbered[1], withWords ? withWords[2] : 0);
+      continue;
+    }
+
+    const bullet = line.match(/^[-*]\s+(.+)$/);
+    if (bullet) {
+      if (!current) startSection(bullet[1]);
+      else current.points.push(clean(bullet[1]));
+      continue;
+    }
+
+    if (current) current.points.push(clean(line));
+    else startSection(line);
+  }
+
+  if (result.outline.length === 0) return null;
+
+  const total = Number(targetWords) || 0;
+  if (total > 0) {
+    const base = Math.floor(total / result.outline.length);
+    const last = result.outline.length - 1;
+    result.outline.forEach((section, i) => {
+      if (!section.target_words) section.target_words = i === last ? total - base * last : base;
+    });
+  }
+  return result;
 }
 
 /** Normalize relative image paths for a markdown file in dir. */

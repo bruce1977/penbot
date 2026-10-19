@@ -33,15 +33,19 @@ node skills/wechat-article/scripts/wechat-article.mjs topics --type ai-insight
 node skills/wechat-article/scripts/wechat-article.mjs kbs
 
 # 3) 用 mock 模型跑通全流程（不发真实请求）
-node skills/wechat-article/scripts/wechat-article.mjs run --type ai-news --mock --output .temp/demo
+node skills/wechat-article/scripts/wechat-article.mjs auto --type ai-news --mock --output .temp/demo
 
-# 4) 真实运行：自动从知识库选题
-node skills/wechat-article/scripts/wechat-article.mjs run --type ai-insight
+# 4) 入口 1（自动）：从知识库最新文档选题 + 自动纲要，再往下写
+node skills/wechat-article/scripts/wechat-article.mjs auto --type ai-insight
 
-# 5) 真实运行：手动指定主题与要求
-node skills/wechat-article/scripts/wechat-article.mjs run --type ai-news \
-  --topic "某模型正式开源" --requirements "重点写对独立开发者的影响，1000 字以内"
+# 5) 入口 2（手动）：你给标题 + 提纲，直接往下写
+node skills/wechat-article/scripts/wechat-article.mjs manual --type ai-news \
+  --title "某模型正式开源" --outline-file outline.md
 ```
+
+- 两个入口之后的步骤**完全一致**（资料 → 初稿 → 审稿 → 配图 → 发布），都支持 `--stage draft` 之类的提前停止。
+- `--type` 也可以不写在命令行：在 `.env` 里设 `PB_ARTICLE_TYPE=ai-news` 即可（命令行 `--type` 优先）。
+- 手动入口的提纲支持三种来源：`--outline-file outline.md`、`--outline "# 标题\n## 小节\n- 要点"`、或直接给 `02-outline.json`；标题可以从提纲的 `# 标题` 行推导，省略 `--title`。
 
 ### 分步执行（推荐）
 
@@ -67,11 +71,44 @@ node skills/wechat-article/scripts/wechat-article.mjs draft   --type ai-news --o
 - 实际顺序是 `topic → sources → outline → draft`；`sources` 需要选题（`01-topic.json` 或 `--topic`），`outline`/`draft` 需要素材（`02-sources.json`）。
 - 复用已有产物：`--topic-file` / `--sources-file` / `--outline-file` 指定具体文件，覆盖自动查找。
 
+### 手动入口的提纲格式
+
+最简形式即可（`# 标题` 可省略，用 `--title` 代替）：
+
+```markdown
+# 文章标题
+
+> 一句话核心判断（可选）
+
+- 读者：中小团队工程师（可选）
+- 开篇钩子：一个具体场景（可选）
+
+## 第一个小节
+- 要点一
+- 要点二
+
+## 第二个小节
+- 要点三
+
+## 结论
+最后要落到的一句话。
+
+## 配图
+- cover：封面画面说明
+- inline_1：正文配图说明
+```
+
+- `## 结构` + 编号列表、`（约 400 字）` 标注、`## 反方观点`、`## 配图` 下的 `- prompt:` 行都兼容——也就是管线自己渲染的 `02-outline.md` 能原样喂回来。
+- 小节字数没写时，会把该类型的目标字数均分到各小节。
+- 配图数量仍受类型配置约束（`--images` 可覆盖）。
+
 ## 命令一览
 
 | 命令 | 作用 |
 | --- | --- |
-| `run` | 完整管线：选题 → 资料 → 纲要 → 初稿 → 审稿 → 配图 → 发布 |
+| `auto` | **入口 1**：自动选题 + 自动纲要，然后往下写（等价于原来的 `run`） |
+| `manual` | **入口 2**：用 `--title` + `--outline`/`--outline-file` 直接往下写，跳过选题与纲要模型 |
+| `run` | 完整管线（保留兼容，等同 `auto`） |
 | `topics` | 只列出知识库中的候选主题，不调用模型 |
 | `kbs` | 列出 WeKnora 知识库（获取 `kb_ids`） |
 | `topic` | 只做选题（自动选题，或 `--topic` 手动记录） |
@@ -99,6 +136,7 @@ node skills/wechat-article/scripts/wechat-article.mjs draft   --type ai-news --o
 - `--model <profile>` 覆盖写作模型 profile
 - `--review-model <profile>` 覆盖评稿模型 profile
 - `--rounds <n>` 审稿循环最大轮次（1-5，默认取配置 `review.max_rounds`）
+- `--length-attempts <n>` 初稿篇幅自动扩写/压缩的最大次数（默认 2，0 表示关闭）
 - `--images <n>` 配图数量（1-5）
 - `--stage <name>` `run` 的终止阶段：`topic|sources|outline|draft|review|illustrate|publish`
 - `--mock` 用 mock 模型（不发真实网络请求，用于验证流程）
@@ -195,20 +233,25 @@ WeKnora 相关配置（`knowledge.weknora`，可写在 `defaults` 里共享，�
 
 | profile | provider | 说明 |
 | --- | --- | --- |
-| `local` | ollama | 默认写作模型，`qwen3.5:4b`，走 `PB_OLLAMA_BASE_URL`（默认 `http://localhost:11434`） |
-| `local-9b` | ollama | 更大的本地模型，质量更好、更慢 |
+| `local` | ollama | 默认写作模型，`LOCAL_LLM_BASE_MODEL`（默认 `qwen3.5:9b`），走 `LOCAL_LLM_BASE_URL` |
+| `local-small` | ollama | 更小更快的本地模型，默认 `qwen3.5:4b`，适合快速试跑 |
+| `local-large` | ollama | 更大的本地模型，默认 `qwen3.6:35b`，质量更好、更慢 |
 | `opencode` | opencode | 以 `opencode run --format json --file <prompt>` 调用代理，仅返回文本（不需要 BASE_URL/API_KEY） |
 | `remote` | openai | 任意 OpenAI 兼容端点（`PB_LLM_BASE_URL`/`PB_LLM_API_KEY`） |
 | `mock` | mock | 不发请求，返回固定内容，用于验证流程 |
 
-覆盖用法：`--model opencode --review-model local-9b`。若某次模型调用失败，脚本会按阶段降级（规则纲要 / 分节生成 / 规则评分），不会中断整条管线。
+覆盖用法：`--model local-large --review-model local`。若某次模型调用失败，脚本会按阶段降级（规则纲要 / 分节生成 / 规则评分），不会中断整条管线。
 
 ## 配图
 
 - 初稿中用标记占位：`[[img:N|中文说明|English prompt]]`（兼容旧格式 `[图N：说明]`）。
 - 纲要阶段规划 1-5 张（含封面），`--images N` 可指定数量。
-- 优先 ModelScope（`PB_MODEL_API_KEY`），失败回退 Pollinations，并行生成。
+- 优先 ModelScope（`PB_MODEL_IMAGE_API_KEY`），失败回退 Pollinations，并行生成。
 - 生成成功后标记被替换为本地图片相对路径；失败按 `illustrations.on_failure`（`comment`/`remove`）处理。
+
+## 初稿与篇幅控制
+
+初稿生成后会自动做**篇幅适配**：字数低于 `length.min` 时扩写、高于 `length.max` 时压缩，最多 `--length-attempts`（默认 2）次；每次只保留确有改善的结果（扩写后更短 / 压缩后更长则丢弃）。扩写提示词要求"补实质信息、不注水、不得编造数据、每段 2-5 句"，同时抑制一句一段的碎片化。若用尽次数仍不达标，日志会给出明确告警，随后的审稿循环里 `length` 维度也会继续扣分。
 
 ## 审稿循环
 
@@ -227,15 +270,16 @@ WeKnora 相关配置（`knowledge.weknora`，可写在 `defaults` 里共享，�
 
 | 变量 | 用途 |
 | --- | --- |
-| `PB_OLLAMA_BASE_URL` / `PB_OLLAMA_MODEL_NAME` / `PB_OLLAMA_API_KEY` | 本地 ollama 模型（BASE_URL / MODEL_NAME / API_KEY） |
-| `PB_OLLAMA_LARGE_MODEL_NAME` | 更大的本地模型（`local-9b` 用） |
+| `LOCAL_LLM_BASE_URL` / `LOCAL_LLM_BASE_MODEL` / `LOCAL_LLM_API_KEY` | 本地大模型（BASE_URL / MODEL_NAME / API_KEY） |
+| `LOCAL_LLM_SMALL_MODEL` / `LOCAL_LLM_LARGE_MODEL` | 可选：`local-small` / `local-large` 使用的模型名 |
 | `WEKNORA_BASE_URL` / `WEKNORA_API_KEY` | WeKnora 远程知识库 |
-| `PB_MODEL_API_KEY` | ModelScope 配图 |
+| `PB_MODEL_IMAGE_API_KEY` | ModelScope 配图（兼容旧名 `PB_MODEL_API_KEY`） |
 | `PB_RESEND_API_KEY` / `PB_RESEND_FROM` | 邮件 |
 | `PB_PYCORRECTOR_API_URL` / `PB_PYCORRECTOR_AUTH_KEY` | correct-cn 核稿 |
 | `PB_LLM_BASE_URL` / `PB_LLM_MODEL` / `PB_LLM_API_KEY` | 远程 OpenAI 兼容模型 |
 | `WECHAT_MP_APP_ID` / `WECHAT_MP_APP_SECRET` | 公众号草稿发布 |
 | `PB_KNOWLEDGE_BASE_PATH` | 知识库根目录（配置里可用 `${...}` 引用） |
+| `PB_ARTICLE_TYPE` | 默认文章类型 id（命令行 `--type` 优先，可省略 `--type`） |
 
 配置里支持 `${VAR}` 与 `${VAR:-默认值}` 展开。
 

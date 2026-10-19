@@ -112,7 +112,7 @@ export function composePrompt(plan, config, topic) {
 }
 
 async function generateModelScope({ prompt, size, outputDir, index, config }) {
-  const apiKey = config.api_key || process.env.PB_MODEL_API_KEY;
+  const apiKey = config.api_key || process.env.PB_MODEL_IMAGE_API_KEY || process.env.PB_MODEL_API_KEY;
   if (!apiKey) throw new Error("missing ModelScope API key");
   const base = (config.base_url || "https://api-inference.modelscope.cn").replace(/\/+$/, "");
   const model = config.model || "Tongyi-MAI/Z-Image-Turbo";

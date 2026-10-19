@@ -13,6 +13,7 @@ import {
   buildTopicPrompt,
   buildOutlinePrompt,
   buildDraftPrompt,
+  buildLengthPrompt,
   buildScorePrompt,
   buildRevisePrompt,
   buildCorrectFallbackPrompt,
@@ -21,9 +22,11 @@ import {
   normalizeArticle,
   getTitle,
   countWords,
+  lengthAction,
   parseImageMarkers,
   replaceImageMarkers,
-  ensureImageMarkers,
+  normalizeImageMarkers,
+  parseOutlineMarkdown,
   splitFrontmatter,
   buildFrontmatter,
   stripCodeFence,
@@ -44,7 +47,9 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   node skills/wechat-article/scripts/wechat-article.mjs <command> [options]
 
 命令:
-  run                执行完整管线（选题 → 检索 → 纲要 → 初稿 → 核稿/评稿/修正 → 配图 → 发布）
+  auto               入口 1：从知识库最新文档自动选题 + 自动纲要，然后往下写
+  manual             入口 2：用你给的标题 + 提纲，直接往下写（跳过选题与纲要模型）
+  run                完整管线（等价 auto，保留兼容）
   topics             列出知识库中的候选主题，不做生成
   kbs                列出 WeKnora 知识库（获取 kb_ids）
   topic              只做选题（自动选题，或 --topic 手动记录）
@@ -57,6 +62,13 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   validate           校验配置文件
   doctor             检查环境与依赖
 
+两个入口（后续步骤完全一致，都可用 --stage 提前停止）:
+  # 入口 1：自动选题 + 自动纲要
+  node skills/wechat-article/scripts/wechat-article.mjs auto --type ai-news --stage draft
+
+  # 入口 2：手动标题 + 提纲（提纲用「## 小节」+「- 要点」；也可直接给 02-outline.json）
+  node skills/wechat-article/scripts/wechat-article.mjs manual --type ai-news --title "文章标题" --outline-file outline.md
+
 分步执行（推荐先 topic → sources → outline → draft，各步共用同一个 --output 目录）:
   node skills/wechat-article/scripts/wechat-article.mjs topic   --type ai-news --output output/wa/demo
   node skills/wechat-article/scripts/wechat-article.mjs sources --type ai-news --output output/wa/demo
@@ -65,20 +77,23 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
 
 通用参数:
   --config <path>        配置文件，默认 ${DEFAULT_CONFIG_PATH}
-  --type <id>            文章类型 id（run/topic/sources/outline/draft 必填）
+  --type <id>            文章类型 id（也可在 .env 设置 PB_ARTICLE_TYPE）
+  --title <text>         手动入口的文章标题
+  --outline-file <path>  手动入口的提纲文件（.md 或 .json）；分步时也可复用自动生成的 02-outline.json
+  --outline <text>       手动入口的内联提纲（Markdown 或 JSON）
   --topic <text>         手动指定主题（省略则自动选题；手动时跳过选题模型调用）
   --requirements <text>  手动补充写作要求
   --topic-file <path>    复用已有选题 JSON（如 01-topic.json）
   --sources-file <path>  复用已有素材 JSON（如 02-sources.json）
-  --outline-file <path>  复用已有纲要 JSON（如 02-outline.json）
   --article <path>       已有稿件路径（review/illustrate/publish 用）
   --output <dir>         输出目录（分步执行时请复用同一目录；默认 output/wechat-article/<type>/<date>-<slug>）
   --model <profile>      覆盖写作模型 profile
   --review-model <p>     覆盖评稿模型 profile
   --rounds <n>           核稿-评稿-修正最大轮次（1-5，默认取配置）
+  --length-attempts <n>  初稿篇幅自动扩写/压缩的最大次数（默认 2）
   --knowledge-source <s> 覆盖知识来源：local | weknora | both
   --images <n>           配图数量（1-5）
-  --stage <name>         run 的终止阶段：topic|sources|outline|draft|review|illustrate|publish
+  --stage <name>         终止阶段：topic|sources|outline|draft|review|illustrate|publish
   --mock                 使用 mock 模型（不发真实请求，用于验证流程）
   --verbose              输出调试日志
   --help                 显示帮助
@@ -118,6 +133,8 @@ async function main() {
       return cmdTopics(config, options);
     case "kbs":
       return cmdListKbs(config, options);
+    case "auto":
+    case "manual":
     case "topic":
     case "sources":
     case "outline":
@@ -217,7 +234,8 @@ async function cmdDoctor(config, options) {
     if (profile.provider === "ollama") {
       try {
         const res = await fetch(`${(profile.base_url || "http://localhost:11434").replace(/\/+$/, "")}/api/tags`, {
-          signal: AbortSignal.timeout(5000),
+          headers: profile.api_key ? { Authorization: `Bearer ${profile.api_key}` } : undefined,
+          signal: AbortSignal.timeout(8000),
         });
         const data = await res.json();
         const models = (data.models || []).map((m) => m.name || m.model);
@@ -255,7 +273,8 @@ async function cmdDoctor(config, options) {
   }
 
   const ms = config.defaults?.illustrations?.modelscope;
-  if (ms?.enabled !== false) add("配图 ModelScope", Boolean(ms?.api_key || env("PB_MODEL_API_KEY")), (ms?.api_key || env("PB_MODEL_API_KEY")) ? "已配置 key" : "缺少 PB_MODEL_API_KEY");
+  const msKey = ms?.api_key || env("PB_MODEL_IMAGE_API_KEY") || env("PB_MODEL_API_KEY");
+  if (ms?.enabled !== false) add("配图 ModelScope", Boolean(msKey), msKey ? "已配置 key" : "缺少 PB_MODEL_IMAGE_API_KEY");
   const poll = config.defaults?.illustrations?.pollinations;
   add("配图 Pollinations", poll?.enabled !== false, poll?.base_url || "https://image.pollinations.ai");
 
@@ -295,7 +314,7 @@ async function cmdListKbs(config, options) {
 }
 
 async function cmdTopics(config, options) {
-  const type = findType(config, requireOption(options, "type"));
+  const type = findType(config, resolveTypeId(options));
   const logger = createLogger({ verbose: asBool(options.verbose), label: "topics" });
   const needLocal = type.knowledge.source === "local" || type.knowledge.source === "both";
   const notes = needLocal
@@ -324,7 +343,8 @@ async function cmdTopics(config, options) {
 /* ------------------------------------------------------------------ */
 
 async function cmdPipeline(config, options, command) {
-  const typeId = requireOption(options, "type");
+  const entryTitle = assertEntryInputs(options, command);
+  const typeId = resolveTypeId(options);
   const type = findType(config, typeId);
   if (!type.enabled) throw new Error(`文章类型 ${type.id} 已禁用`);
 
@@ -336,10 +356,14 @@ async function cmdPipeline(config, options, command) {
 
   const verbose = asBool(options.verbose);
   const mock = asBool(options.mock);
-  const stopStage = command === "run" ? String(options.stage || "publish") : command;
-  const resume = command !== "run";
+  const fullPipeline = ["run", "auto", "manual"].includes(command);
+  const manualEntry = command === "manual";
+  const stopStage = fullPipeline ? String(options.stage || "publish") : command;
+  const resume = !fullPipeline;
+  // Entry 2: the user supplies the title (and outline); the topic model is skipped.
+  if (manualEntry && !options.topic && entryTitle) options.topic = entryTitle;
   const stamp = timestamp();
-  const outputRoot = path.resolve(PROJECT_ROOT, options.output || path.join(config.project.output_dir, type.id, `${stamp.date}-${slugify(options.topic || type.id)}`));
+  const outputRoot = path.resolve(PROJECT_ROOT, options.output || path.join(config.project.output_dir, type.id, `${stamp.date}-${slugify(options.topic || entryTitle || type.id)}`));
   ensureDir(outputRoot);
   const logger = createLogger({ file: path.join(outputRoot, "pipeline.log"), verbose, label: type.id });
 
@@ -363,6 +387,7 @@ async function cmdPipeline(config, options, command) {
   };
 
   logger.step(`管线启动：${type.name}（${type.id}）`);
+  logger.info(`入口：${manualEntry ? "手动（标题 + 提纲）" : "自动（基于知识库选题 + 自动纲要）"}`);
   logger.info(`输出目录：${outputRoot}`);
   logger.info(`知识来源：${type.knowledge.source}${type.knowledge.source !== "local" ? `（WeKnora ${type.knowledge.weknora.kb_ids.length} 个知识库）` : ""}`);
   logger.info(`模型：写作=${options.model || type.model}，评稿=${options["review-model"] || type.review.model || type.model}`);
@@ -398,7 +423,7 @@ async function cmdPipeline(config, options, command) {
     if (stopStage === "sources") return finish(ctx);
 
     // Stage 3: outline -------------------------------------------------
-    const outline = await resolveOutline(ctx, sources, resume);
+    const outline = manualEntry ? buildManualOutline(ctx, topic) : await resolveOutline(ctx, sources, resume);
     ctx.outline = outline;
     writeJson(path.join(outputRoot, "02-outline.json"), outline);
     writeText(path.join(outputRoot, "02-outline.md"), renderOutlineMarkdown(outline));
@@ -534,6 +559,56 @@ async function resolveSources(ctx, topic, resume) {
     return readJson(file);
   }
   return collectSources(type, { topic, notes: ctx.notes, logger, mock: ctx.mock });
+}
+
+/**
+ * Entry 2: build the outline from user input instead of the model.
+ * Accepts --outline-file <md|json> or --outline <md|json text>.
+ */
+function buildManualOutline(ctx, topic) {
+  const { options, type, logger } = ctx;
+  const file = path.resolve(PROJECT_ROOT, String(options["outline-file"] || ""));
+  let raw = "";
+  let parsed = null;
+
+  if (options["outline-file"]) {
+    if (!fs.existsSync(file)) throw new Error(`--outline-file 不存在：${file}`);
+    if (file.toLowerCase().endsWith(".json")) {
+      parsed = readJson(file);
+    } else {
+      raw = fs.readFileSync(file, "utf8");
+    }
+    logger.info(`手动提纲：${file}`);
+  } else if (options.outline !== undefined) {
+    const inline = String(options.outline);
+    if (inline.trim().startsWith("{")) {
+      try {
+        parsed = JSON.parse(inline);
+      } catch {
+        parsed = null;
+      }
+    }
+    if (!parsed) raw = inline;
+    logger.info("手动提纲：--outline 内联文本");
+  }
+
+  if (!parsed && !raw.trim()) {
+    throw new Error('manual 入口需要提纲：用 --outline-file <提纲.md> 或 --outline "…"（也可直接传 02-outline.json）');
+  }
+
+  const title = String(options.title || topic.title || topic.topic || "").trim();
+  const outline = parsed || parseOutlineMarkdown(raw, { title, targetWords: type.length.target });
+  if (!outline) throw new Error("无法从提纲中解析出小节，请用「## 小节」配「- 要点」的格式");
+
+  outline.title = String(outline.title || title).trim();
+  outline.thesis = String(outline.thesis || topic.thesis || "").trim();
+  outline.outline = Array.isArray(outline.outline) ? outline.outline : [];
+  outline.image_plan = Array.isArray(outline.image_plan) ? outline.image_plan : [];
+  if (outline.outline.length === 0) throw new Error("提纲中没有小节，请用「## 小节」配「- 要点」的格式");
+  const count = resolveImageCount(type, outline, { count: options.images ? asNumber(options.images) : undefined });
+  outline.image_plan = planImages(outline, count, { cover: type.illustrations.cover !== false });
+  logger.info(`手动纲要：${outline.outline.length} 个小节，${outline.image_plan.length} 张配图`);
+  return outline;
 }
 
 async function resolveOutline(ctx, sources, resume) {
@@ -738,8 +813,66 @@ async function generateDraft(ctx, sources, outline) {
   }
   article = normalizeArticle(stripCodeFence(article), { title: outline.title, type: type.id });
   const count = resolveImageCount(type, outline, { count: options.images ? asNumber(options.images) : undefined });
-  article = ensureImageMarkers(article, count);
+  article = normalizeImageMarkers(article, count);
+  article = await fitLength(ctx, article, outline);
   return article;
+}
+
+/**
+ * Bring the draft into the type's word range: expand when too short,
+ * condense when too long. At most `maxAttempts` model calls; keeps the
+ * candidate only when it actually moves toward the target.
+ */
+async function fitLength(ctx, article, outline) {
+  const { type, models, logger, options, mock } = ctx;
+  if (mock) return article;
+  const range = { min: type.length.min, max: type.length.max };
+  const model = options.model || type.model;
+  const maxAttempts = clamp(asNumber(options.lengthAttempts, 2), 0, 4);
+  const markers = Math.max(parseImageMarkers(article).length, 0);
+  let current = article;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const words = countWords(current);
+    const action = lengthAction(words, range);
+    if (!action) {
+      logger.info(`篇幅合格：${words} 字（要求 ${range.min}-${range.max}）`);
+      return current;
+    }
+    logger.info(`篇幅 ${words} 字，${action === "expand" ? "扩充" : "压缩"}到约 ${type.length.target} 字（第 ${attempt}/${maxAttempts} 次）`);
+    const prompt = buildLengthPrompt({ type, article: current, wordCount: words, direction: action });
+    let candidate;
+    try {
+      const text = await models.complete(model, {
+        ...prompt,
+        label: `length-${action}-${attempt}`,
+        maxTokens: Math.max(4096, Math.round(type.length.max * 2)),
+      });
+      candidate = normalizeArticle(stripCodeFence(text), { title: outline.title, type: type.id });
+      if (markers) candidate = normalizeImageMarkers(candidate, markers);
+    } catch (error) {
+      logger.warn(`篇幅调整失败（${error.message}），保留当前稿件`);
+      return current;
+    }
+    const nextWords = countWords(candidate);
+    const moved = action === "expand" ? nextWords > words : nextWords < words;
+    if (!moved) {
+      logger.warn(`篇幅调整未改善（${words} → ${nextWords} 字），保留原稿`);
+      return current;
+    }
+    current = candidate;
+    const settled = lengthAction(nextWords, range);
+    if (!settled) {
+      logger.info(`篇幅调整完成：${words} → ${nextWords} 字`);
+      return current;
+    }
+  }
+
+  const finalWords = countWords(current);
+  if (lengthAction(finalWords, range)) {
+    logger.warn(`篇幅仍不在区间：${finalWords} 字（要求 ${range.min}-${range.max}）`);
+  }
+  return current;
 }
 
 async function generateDraftBySections(ctx, sources, outline) {
@@ -970,7 +1103,7 @@ async function reviseArticle(ctx, article, score, round) {
       logger.warn(`修正稿长度异常（${(ratio * 100).toFixed(0)}%），保留原稿`);
       return article;
     }
-    return ensureImageMarkers(candidate, parseImageMarkers(article).length || type.illustrations.min);
+    return normalizeImageMarkers(candidate, parseImageMarkers(article).length || type.illustrations.min);
   } catch (error) {
     logger.warn(`修正模型失败：${error.message}`);
     return article;
@@ -1081,7 +1214,7 @@ function renderSubject(template, vars) {
 
 async function cmdReviewOnly(config, options) {
   const articlePath = resolveArticlePath(options);
-  const type = findType(config, options.type || inferTypeFromPath(config, articlePath) || requireOption(options, "type"));
+  const type = findType(config, options.type || inferTypeFromPath(config, articlePath) || resolveTypeId(options));
   const outputDir = path.dirname(articlePath);
   const logger = createLogger({ file: path.join(outputDir, "review.log"), verbose: asBool(options.verbose), label: "review" });
   const models = createModelClient(config, logger);
@@ -1104,7 +1237,7 @@ async function cmdReviewOnly(config, options) {
 
 async function cmdIllustrateOnly(config, options) {
   const articlePath = resolveArticlePath(options);
-  const type = findType(config, options.type || inferTypeFromPath(config, articlePath) || requireOption(options, "type"));
+  const type = findType(config, options.type || inferTypeFromPath(config, articlePath) || resolveTypeId(options));
   const outputDir = path.dirname(articlePath);
   const logger = createLogger({ file: path.join(outputDir, "illustrate.log"), verbose: asBool(options.verbose), label: "illustrate" });
   const article = fs.readFileSync(articlePath, "utf8");
@@ -1126,7 +1259,7 @@ async function cmdIllustrateOnly(config, options) {
 
 async function cmdPublishOnly(config, options) {
   const articlePath = resolveArticlePath(options);
-  const type = findType(config, options.type || inferTypeFromPath(config, articlePath) || requireOption(options, "type"));
+  const type = findType(config, options.type || inferTypeFromPath(config, articlePath) || resolveTypeId(options));
   const outputDir = path.dirname(articlePath);
   const logger = createLogger({ file: path.join(outputDir, "publish.log"), verbose: asBool(options.verbose), label: "publish" });
   const article = fs.readFileSync(articlePath, "utf8");
@@ -1174,8 +1307,9 @@ function renderTopicMarkdown(topic) {
   ].join("\n");
 }
 
+/** Render an outline as Markdown that `parseOutlineMarkdown` can read back verbatim. */
 function renderOutlineMarkdown(outline) {
-  return [
+  const parts = [
     `# ${outline.title}`,
     "",
     `> ${outline.thesis || ""}`,
@@ -1187,17 +1321,18 @@ function renderOutlineMarkdown(outline) {
     ...(outline.outline || []).map(
       (section, i) => `${i + 1}. **${section.heading}**（约 ${section.target_words || "?"} 字）\n${(section.points || []).map((p) => `   - ${p}`).join("\n")}`,
     ),
-    "",
-    "## 反方观点",
-    outline.counterpoint || "",
-    "",
-    "## 结论",
-    outline.takeaway || "",
+  ];
+  if (outline.counterpoint) parts.push("", "## 反方观点", outline.counterpoint);
+  if (outline.takeaway) parts.push("", "## 结论", outline.takeaway);
+  parts.push(
     "",
     "## 配图",
-    ...(outline.image_plan || []).map((img) => `- ${img.position}：${img.description}\n  - prompt: ${img.prompt || ""}`),
+    ...(outline.image_plan || []).map((img) =>
+      img.prompt ? `- ${img.position}：${img.description}\n  - prompt: ${img.prompt}` : `- ${img.position}：${img.description}`,
+    ),
     "",
-  ].join("\n");
+  );
+  return parts.join("\n");
 }
 
 function diffSummary(before, after) {
@@ -1210,6 +1345,57 @@ function requireOption(options, name) {
   const value = options[name];
   if (!value || value === true) throw new Error(`缺少参数 --${name}`);
   return String(value);
+}
+
+/** Resolve the article type from --type, else PB_ARTICLE_TYPE / ARTICLE_TYPE in .env. */
+function resolveTypeId(options) {
+  const value = options.type || env("PB_ARTICLE_TYPE") || env("ARTICLE_TYPE");
+  if (!value || value === true) {
+    throw new Error("缺少文章类型：用 --type <id> 指定，或在 .env 里设置 PB_ARTICLE_TYPE=<id>");
+  }
+  return String(value);
+}
+
+/**
+ * Fail fast on bad entry arguments, before spending time on retrieval/models.
+ * Entry 2 (manual) needs a title and an outline; either may come from the file.
+ * Returns the title to use (empty for other entries).
+ */
+function assertEntryInputs(options, command) {
+  if (command !== "manual") return "";
+  const fileArg = options["outline-file"];
+  const inline = options.outline !== undefined ? String(options.outline) : "";
+  if (!fileArg && !inline.trim()) {
+    throw new Error('manual 入口需要提纲：用 --outline-file <提纲.md> 或 --outline "…" 提供（也可直接传 02-outline.json）');
+  }
+  let text = inline;
+  if (fileArg) {
+    const file = path.resolve(PROJECT_ROOT, String(fileArg));
+    if (!fs.existsSync(file)) throw new Error(`--outline-file 不存在：${file}`);
+    text = fs.readFileSync(file, "utf8");
+  }
+  const given = String(options.title || options.topic || "").trim();
+  if (given) return given;
+  if (fileArg && String(fileArg).toLowerCase().endsWith(".json")) {
+    try {
+      const json = JSON.parse(text);
+      const title = String(json.title || "").trim();
+      if (title) return title;
+    } catch {
+      throw new Error(`--outline-file 不是合法 JSON：${fileArg}`);
+    }
+  }
+  if (text.trim().startsWith("{")) {
+    try {
+      const title = String(JSON.parse(text).title || "").trim();
+      if (title) return title;
+    } catch {
+      /* not JSON — fall through to the Markdown checks */
+    }
+  }
+  const h1 = text.match(/^#\s+(.+)$/m);
+  if (h1) return h1[1].trim();
+  throw new Error('manual 入口需要标题：用 --title "文章标题"，或在提纲首行写「# 标题」');
 }
 
 function clamp(value, min, max) {

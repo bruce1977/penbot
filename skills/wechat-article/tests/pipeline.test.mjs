@@ -13,10 +13,15 @@ import {
   stripCodeFence,
   getTitle,
   countWords,
+  lengthAction,
   parseImageMarkers,
   replaceImageMarkers,
   ensureImageMarkers,
+  normalizeImageMarkers,
 } from "../scripts/lib/markdown.mjs";
+import { buildLengthPrompt, buildDraftPrompt } from "../scripts/lib/prompts.mjs";
+import { parseOutlineMarkdown } from "../scripts/lib/markdown.mjs";
+
 import { parseJsonFromText, extractAgentText } from "../scripts/lib/models.mjs";
 import { normalizeConfig, validateConfig, deepMerge } from "../scripts/lib/config.mjs";
 import {
@@ -135,6 +140,131 @@ test("ensureImageMarkers pads to the requested count", () => {
   const md = buildFrontmatter({ title: "t" }) + "第一段。\n\n第二段。\n\n[[img:1|已有|c]]\n";
   const out = ensureImageMarkers(md, 3);
   assert.equal(parseImageMarkers(out).length, 3);
+});
+
+/* ------------------------------------------------------------------ */
+/* length control                                                      */
+/* ------------------------------------------------------------------ */
+
+test("lengthAction classifies drafts against the word range", () => {
+  assert.equal(lengthAction(500, { min: 800, max: 1300 }), "expand");
+  assert.equal(lengthAction(2000, { min: 800, max: 1300 }), "condense");
+  assert.equal(lengthAction(1000, { min: 800, max: 1300 }), null);
+  assert.equal(lengthAction(800, { min: 800, max: 1300 }), null);
+});
+
+test("buildLengthPrompt switches direction and states the range", () => {
+  const type = { name: "AI 资讯快评", length: { min: 800, max: 1300, target: 1000 } };
+  const expand = buildLengthPrompt({ type, article: "正文", wordCount: 500, direction: "expand" });
+  assert.match(expand.prompt, /800-1300/);
+  assert.match(expand.prompt, /扩充要求/);
+  assert.match(expand.system, /绝不注水/);
+
+  const condense = buildLengthPrompt({ type, article: "正文", wordCount: 2000, direction: "condense" });
+  assert.match(condense.prompt, /压缩要求/);
+  assert.match(condense.system, /压缩/);
+});
+
+test("buildDraftPrompt asks for multi-sentence paragraphs", () => {
+  const type = { name: "T", length: { min: 100, max: 200, target: 150 }, style: {}, illustrations: { min: 1, max: 3 } };
+  const prompt = buildDraftPrompt({
+    type,
+    topic: { topic: "t" },
+    outline: { title: "T", outline: [{ heading: "H", points: [] }] },
+    sources: [],
+  });
+  assert.match(prompt.prompt, /每段 2-5 句/);
+  assert.match(prompt.prompt, /不要低于 100 字/);
+});
+
+/* ------------------------------------------------------------------ */
+/* image markers                                                       */
+/* ------------------------------------------------------------------ */
+
+test("normalizeImageMarkers drops duplicates and renumbers in order", () => {
+  const md = buildFrontmatter({ title: "t" }) + [
+    "第一段。",
+    "",
+    "[[img:1|封面|c1]]",
+    "",
+    "第二段。",
+    "",
+    "[[img:2|正文图|c2]]",
+    "",
+    "第三段。",
+    "",
+    "[[img:1|重复使用或移除|]]",
+    "",
+  ].join("\n");
+  const out = normalizeImageMarkers(md, 2);
+  const markers = parseImageMarkers(out);
+  assert.deepEqual(markers.map((m) => m.index), [1, 2]);
+  assert.equal(markers[0].description, "封面");
+  assert.equal(markers[1].description, "正文图");
+  assert.ok(!out.includes("重复使用或移除"));
+});
+
+test("normalizeImageMarkers caps at the planned count and pads when short", () => {
+  const extra = buildFrontmatter({ title: "t" }) + "A\n\n[[img:1|一|]]\n\nB\n\n[[img:2|二|]]\n\nC\n\n[[img:3|三|]]\n";
+  assert.equal(parseImageMarkers(normalizeImageMarkers(extra, 2)).length, 2);
+
+  const short = buildFrontmatter({ title: "t" }) + "A\n\n[[img:1|一|]]\n\nB\n\nC\n";
+  assert.equal(parseImageMarkers(normalizeImageMarkers(short, 3)).length, 3);
+});
+
+/* ------------------------------------------------------------------ */
+/* manual outline parsing                                              */
+/* ------------------------------------------------------------------ */
+
+test("parseOutlineMarkdown reads the rendered outline format", () => {
+  const md = [
+    "# 我的标题",
+    "> 核心判断一句话",
+    "- 读者：从业者",
+    "- 开篇钩子：一个场景",
+    "## 结构",
+    "1. **事实锚点**（约 400 字）",
+    "   - 要点一",
+    "   - 要点二",
+    "2. **影响判断**（约 250 字）",
+    "   - 要点三",
+    "## 反方观点",
+    "有人认为不是这样。",
+    "## 结论",
+    "确定性命关重要。",
+    "## 配图",
+    "- cover：一张封面 | a cover image",
+    "  - prompt: a cover image",
+  ].join("\n");
+  const outline = parseOutlineMarkdown(md, { targetWords: 650 });
+  assert.equal(outline.title, "我的标题");
+  assert.equal(outline.thesis, "核心判断一句话");
+  assert.equal(outline.audience, "从业者");
+  assert.equal(outline.hook, "一个场景");
+  assert.equal(outline.outline.length, 2);
+  assert.equal(outline.outline[0].heading, "事实锚点");
+  assert.equal(outline.outline[0].target_words, 400);
+  assert.deepEqual(outline.outline[0].points, ["要点一", "要点二"]);
+  assert.match(outline.counterpoint, /不是这样/);
+  assert.match(outline.takeaway, /性命关重要/);
+  assert.equal(outline.image_plan.length, 1);
+  assert.equal(outline.image_plan[0].position, "cover");
+  assert.equal(outline.image_plan[0].description, "一张封面");
+  assert.equal(outline.image_plan[0].prompt, "a cover image");
+});
+
+test("parseOutlineMarkdown reads a minimal user outline and distributes words", () => {
+  const md = ["# 标题", "## 第一段", "- 甲", "- 乙", "## 第二段", "- 丙"].join("\n");
+  const outline = parseOutlineMarkdown(md, { targetWords: 1000 });
+  assert.equal(outline.title, "标题");
+  assert.deepEqual(outline.outline.map((s) => s.heading), ["第一段", "第二段"]);
+  assert.deepEqual(outline.outline[1].points, ["丙"]);
+  assert.equal(outline.outline.reduce((n, s) => n + s.target_words, 0), 1000);
+});
+
+test("parseOutlineMarkdown returns null only when nothing is parseable", () => {
+  assert.equal(parseOutlineMarkdown("", {}), null);
+  assert.equal(parseOutlineMarkdown("只有一句话", {}).outline.length, 1);
 });
 
 /* ------------------------------------------------------------------ */

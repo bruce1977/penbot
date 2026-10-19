@@ -6,7 +6,7 @@
   "commands": {
     "wechat-article": {
       "description": "运行微信公众号文章自动化管线：选题 → 检索 → 纲要 → 初稿 → 核稿/评稿/修正 → 配图 → 发布",
-      "template": "使用 wechat-article 技能执行公众号文章管线。参数：$ARGUMENTS。\n\n优先运行脚本完成机械流程：\n`node skills/wechat-article/scripts/wechat-article.mjs run --config skills/wechat-article/config/article-types.json ...`\n\n只在脚本需要模型判断时调用本地模型或 opencode；不要手工重写脚本已经生成的中间产物。开始前先读取 `skills/wechat-article/SKILL.md`。"
+      "template": "使用 wechat-article 技能执行公众号文章管线。参数：$ARGUMENTS。\n\n优先运行脚本完成机械流程（两个入口，后续步骤一致）：\n- 自动选题 + 自动纲要：`node skills/wechat-article/scripts/wechat-article.mjs auto --config skills/wechat-article/config/article-types.json ...`\n- 手动标题 + 提纲：`node skills/wechat-article/scripts/wechat-article.mjs manual --title \"...\" --outline-file outline.md ...`\n\n没有给 --type 时用 .env 里的 PB_ARTICLE_TYPE。只在脚本需要模型判断时调用本地模型或 opencode；不要手工重写脚本已经生成的中间产物。开始前先读取 `skills/wechat-article/SKILL.md`。"
     }
   },
   "agents": {
