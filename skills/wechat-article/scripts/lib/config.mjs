@@ -21,6 +21,12 @@ export function loadConfig(configPath, { root = process.cwd() } = {}) {
 
 export function normalizeConfig(config, root = process.cwd()) {
   const defaults = config.defaults || {};
+  // Global kill switch: when off, every type falls back to local document dirs
+  // even if the type itself asks for `weknora` or `both`.
+  defaults.knowledge = {
+    ...(defaults.knowledge || {}),
+    use_weknora: toBool(defaults.knowledge?.use_weknora, true),
+  };
   const types = (config.types || []).map((type) => normalizeType(type, defaults, root, config));
   const ids = new Set();
   for (const type of types) {
@@ -81,6 +87,12 @@ function normalizeType(type, defaults, root, config) {
     knowledge.weknora.kb_ids = [knowledge.weknora.kb_ids];
   }
   knowledge.weknora.kb_ids = (knowledge.weknora.kb_ids || []).filter(Boolean).map(String);
+  // Global switch wins over the per-type source.
+  if (defaults.knowledge?.use_weknora === false) {
+    knowledge.source = "local";
+    knowledge.weknora.enabled = false;
+    knowledge.weknora.disabled_reason = "全局开关 use_weknora=false";
+  }
   // WeKnora is only usable when a base_url is configured.
   if (knowledge.weknora.enabled && !knowledge.weknora.base_url) {
     if (knowledge.source === "weknora") knowledge.source = "local";
@@ -218,4 +230,15 @@ export function validateConfig(config) {
     }
   }
   return issues;
+}
+
+/** Coerce JSON/env values ("true"/"false"/0/1) into a boolean. */
+function toBool(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  const text = String(value).trim().toLowerCase();
+  if (["false", "0", "no", "off", "disabled"].includes(text)) return false;
+  if (["true", "1", "yes", "on", "enabled"].includes(text)) return true;
+  return fallback;
 }

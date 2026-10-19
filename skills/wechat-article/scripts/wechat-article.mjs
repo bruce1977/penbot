@@ -198,7 +198,10 @@ async function cmdDoctor(config, options) {
 
   // WeKnora remote knowledge source
   const wkTypes = config.types.filter((t) => t.knowledge.source !== "local");
-  if (wkTypes.length === 0) {
+  const weknoraEnabled = config.defaults?.knowledge?.use_weknora !== false;
+  if (!weknoraEnabled) {
+    add("知识来源 WeKnora", true, "已关闭（use_weknora=false），仅使用本地知识库目录");
+  } else if (wkTypes.length === 0) {
     add("知识来源 WeKnora", true, "未启用（全部走本地目录）");
   } else {
     const wk = wkTypes[0].knowledge.weknora;
@@ -305,6 +308,9 @@ async function cmdListKbs(config, options) {
   const wk = config.defaults?.knowledge?.weknora || {};
   const base = String(wk.base_url || "").replace(/\/+$/, "");
   if (!base) throw new Error("未配置 WeKnora base_url（在 config 或 WEKNORA_BASE_URL 中设置）");
+  if (config.defaults?.knowledge?.use_weknora === false) {
+    console.log("提示：WeKnora 已关闭（use_weknora=false / PB_USE_WEKNORA=false），此命令仅用于查看远端知识库列表，不影响管线。");
+  }
   const headers = { "X-Request-ID": String(Date.now()) };
   if (wk.api_key) headers[wk.auth_header || "X-API-Key"] = wk.api_key;
   const res = await fetch(`${base}/knowledge-bases`, { headers, signal: AbortSignal.timeout(15000) });
@@ -317,6 +323,7 @@ async function cmdListKbs(config, options) {
 
 async function cmdTopics(config, options) {
   const type = findType(config, resolveTypeId(options));
+  applyKnowledgeSource(config, type, options);
   const logger = createLogger({ verbose: asBool(options.verbose), label: "topics" });
   const needLocal = type.knowledge.source === "local" || type.knowledge.source === "both";
   const notes = needLocal
@@ -588,11 +595,7 @@ async function cmdPipeline(config, options, command) {
   const type = findType(config, typeId);
   if (!type.enabled) throw new Error(`文章类型 ${type.id} 已禁用`);
 
-  if (options["knowledge-source"] !== undefined) {
-    const src = String(options["knowledge-source"]).toLowerCase();
-    if (!["local", "weknora", "both"].includes(src)) throw new Error("--knowledge-source 只能是 local | weknora | both");
-    type.knowledge = { ...type.knowledge, source: src };
-  }
+  applyKnowledgeSource(config, type, options);
 
   const verbose = asBool(options.verbose);
   const mock = asBool(options.mock);
@@ -1585,6 +1588,24 @@ function requireOption(options, name) {
   const value = options[name];
   if (!value || value === true) throw new Error(`缺少参数 --${name}`);
   return String(value);
+}
+
+/**
+ * Apply --knowledge-source, respecting the global WeKnora switch
+ * (knowledge.use_weknora / PB_USE_WEKNORA).
+ */
+function applyKnowledgeSource(config, type, options) {
+  if (options["knowledge-source"] === undefined) return type;
+  const src = String(options["knowledge-source"]).toLowerCase();
+  if (!["local", "weknora", "both"].includes(src)) throw new Error("--knowledge-source 只能是 local | weknora | both");
+  if (src !== "local") {
+    if (config.defaults?.knowledge?.use_weknora === false) {
+      throw new Error("WeKnora 已关闭（use_weknora=false / PB_USE_WEKNORA=false）：当前只能用 --knowledge-source local，要启用请设 PB_USE_WEKNORA=true");
+    }
+    if (!type.knowledge.weknora.base_url) throw new Error("WeKnora 未配置 base_url，无法使用远端知识库");
+  }
+  type.knowledge = { ...type.knowledge, source: src };
+  return type;
 }
 
 /** Resolve the article type from --type, else PB_ARTICLE_TYPE / ARTICLE_TYPE in .env. */

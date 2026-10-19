@@ -92,6 +92,8 @@ npm run wechat-article -- draft   --type ai-news --output $DIR   # 3  初稿
 
 文章类型可以用 `--type` 指定，也可以在 `.env` 里设 `PB_ARTICLE_TYPE=ai-news` 作为默认值。
 
+WeKnora 远端知识库有总开关 `PB_USE_WEKNORA`，默认 `false`（只读本地知识库目录）；设为 `true` 才会按类型的 `knowledge.source` 使用远端。
+
 ## 测试
 
 ```bash

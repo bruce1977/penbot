@@ -245,6 +245,22 @@ WeKnora 相关配置（`knowledge.weknora`，可写在 `defaults` 里共享，�
 
 运行中切换：`--knowledge-source local|weknora|both`。
 
+### WeKnora 总开关（当前默认关闭）
+
+```jsonc
+"defaults": {
+  "knowledge": {
+    "use_weknora": "${PB_USE_WEKNORA:-false}",  // false = 全部退回本地目录
+    "weknora": { /* ... */ }
+  }
+}
+```
+
+- `use_weknora=false` 时，**任何**类型的 `source` 都会被压回 `local`，即使类型里写了 `both`/`weknora`；WeKnora 配置保留但不使用。
+- 想临时启用：设 `PB_USE_WEKNORA=true`（或在配置里写 `true`），`doctor` 会显示「未启用/已开启」。
+- 关闭状态下 `--knowledge-source both|weknora` 会直接报错，避免你以为在用远端其实没用。
+- `kbs` 命令仍可列出远端知识库（只读查看，不影响管线）。
+
 ## 模型 profile
 
 写在配置的 `models` 段，按需切换；每个 profile 都能用 `base_url`（BASE_URL）、`model`（MODEL_NAME）/`model_name`、`api_key`（API_KEY）三项显式配置：
@@ -298,6 +314,7 @@ WeKnora 相关配置（`knowledge.weknora`，可写在 `defaults` 里共享，�
 | `WECHAT_MP_APP_ID` / `WECHAT_MP_APP_SECRET` | 公众号草稿发布 |
 | `PB_KNOWLEDGE_BASE_PATH` | 知识库根目录（配置里可用 `${...}` 引用） |
 | `PB_ARTICLE_TYPE` | 默认文章类型 id（命令行 `--type` 优先，可省略 `--type`） |
+| `PB_USE_WEKNORA` | WeKnora 总开关，默认 `false`（只用本地知识库目录） |
 
 配置里支持 `${VAR}` 与 `${VAR:-默认值}` 展开。
 

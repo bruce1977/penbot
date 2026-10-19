@@ -83,6 +83,11 @@
       "type": "object",
       "properties": {
         "source": { "enum": ["local", "weknora", "both"], "default": "local" },
+        "use_weknora": {
+          "type": "boolean",
+          "default": false,
+          "description": "全局开关：false 时忽略 source 里的 weknora/both，退回本地知识库目录（可用 PB_USE_WEKNORA 覆盖）"
+        },
         "max_sources": { "type": "integer", "minimum": 1, "default": 8 },
         "excerpt_chars": { "type": "integer", "minimum": 200, "default": 1800 },
         "lookback_days": { "type": "integer", "minimum": 1, "default": 90 },

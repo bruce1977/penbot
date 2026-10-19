@@ -443,6 +443,29 @@ test("validateConfig flags a WeKnora source without kb_ids", () => {
   assert.ok(issues.some((i) => i.includes("kb_ids")));
 });
 
+test("use_weknora=false 把所有类型压回本地目录", () => {
+  const dir = tempDir("wa-cfg-");
+  const raw = rawConfig(dir);
+  raw.defaults.knowledge = { use_weknora: "false", weknora: { base_url: "http://wk", api_key: "k" } };
+  raw.types[0].knowledge = { source: "both", weknora: { kb_ids: ["kb1"] } };
+  const config = normalizeConfig(raw, dir);
+  assert.equal(config.defaults.knowledge.use_weknora, false);
+  assert.equal(config.types[0].knowledge.source, "local");
+  assert.equal(config.types[0].knowledge.weknora.enabled, false);
+  assert.match(config.types[0].knowledge.weknora.disabled_reason, /use_weknora/);
+  assert.deepEqual(validateConfig(config), []);
+});
+
+test("use_weknora 默认开启，显式 true 保留远端来源", () => {
+  const dir = tempDir("wa-cfg-");
+  const raw = rawConfig(dir);
+  raw.defaults.knowledge = { use_weknora: true, weknora: { base_url: "http://wk", api_key: "k" } };
+  raw.types[0].knowledge = { source: "both", weknora: { kb_ids: ["kb1"] } };
+  const type = normalizeConfig(raw, dir).types[0];
+  assert.equal(type.knowledge.source, "both");
+  assert.equal(type.knowledge.weknora.enabled, true);
+});
+
 test("deepMerge merges nested objects and replaces arrays", () => {
   const merged = deepMerge({ a: { b: 1, c: 2 }, list: [1, 2] }, { a: { c: 3 }, list: [9] });
   assert.deepEqual(merged, { a: { b: 1, c: 3 }, list: [9] });
