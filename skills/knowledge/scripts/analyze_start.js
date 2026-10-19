@@ -101,9 +101,20 @@ async function processFile(filename) {
                 fs.mkdirSync(targetDir, { recursive: true });
             }
 
-            const targetFile = path.join(targetDir, `${sanitizeTitle(meta.title)}_${hash}.md`);
+            const baseName = sanitizeTitle(meta.title);
+            let targetFile = path.join(targetDir, `${baseName}.md`);
             if (fs.existsSync(targetFile)) {
-                fs.unlinkSync(targetFile, { force: true });
+                const existingContent = fs.readFileSync(targetFile, "utf-8");
+                const hm = existingContent.match(/^hash:\s*(.+)$/m);
+                const existingHash = hm ? hm[1].trim().replace(/^["']|["']$/g, "") : "";
+                if (existingHash !== hash) {
+                    let n = 1, candidate;
+                    do {
+                        candidate = path.join(targetDir, `${baseName}(${n}).md`);
+                        n++;
+                    } while (fs.existsSync(candidate));
+                    targetFile = candidate;
+                }
             }
             fs.writeFileSync(targetFile, `${metaHeader}\n\n${cleanBody}`, "utf-8");
         });

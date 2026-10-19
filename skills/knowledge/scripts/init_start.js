@@ -18,7 +18,9 @@ const DEFAULT_CONFIG = {
         kb_id: "",
         wiki_kb_id: "",
         score_threshold: 3.5,
-        max_pages: 3,
+        concurrency: 1,
+        normal_submit_interval_ms: 30000,
+        wiki_submit_interval_ms: 600000,
         sync_enabled: true,
         custom_metas: {
             source: "$source",

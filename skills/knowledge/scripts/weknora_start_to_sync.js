@@ -9,7 +9,6 @@ const SCRIPT_TIMEOUT_MS = parseInt(process.env.SYNC_SCRIPT_TIMEOUT_MS || "600000
 const PER_ARTICLE_TIMEOUT_MS = 60000;
 const PARSE_POLL_INTERVAL_MS = parseInt(process.env.SYNC_POLL_INTERVAL_MS || "1000", 10);
 const PARSE_POLL_TIMEOUT_MS = parseInt(process.env.SYNC_POLL_TIMEOUT_MS || "60000", 10);
-const TMP_KB_NAME_PREFIX = "penbot-tmp";
 
 // ─── CLI Args & Config ──────────────────────────────────────────────────────
 
@@ -39,10 +38,10 @@ const syncCfg = { ...(config.weknora || {}), ...config };
 const kbId = syncCfg.kb_id || "";
 const wikiKbId = syncCfg.wiki_kb_id || null;
 const scoreThreshold = parseFloat(syncCfg.score_threshold || "0");
-const maxPages = parseInt(syncCfg.max_pages || "3", 10);
-const dedupEnabled = syncCfg.dedup_enabled === true;
-const concurrency = Math.max(1, parseInt(syncCfg.concurrency || "5", 10));
-const submitIntervalMs = parseInt(syncCfg.submit_interval_ms || "100", 10);
+const concurrency = Math.max(1, parseInt(syncCfg.concurrency || "1", 10));
+const fallbackInterval = parseInt(syncCfg.submit_interval_ms || "100", 10);
+const normalSubmitIntervalMs = parseInt(syncCfg.normal_submit_interval_ms || String(fallbackInterval), 10);
+const wikiSubmitIntervalMs = parseInt(syncCfg.wiki_submit_interval_ms || String(fallbackInterval), 10);
 const customMetasCfg = syncCfg.custom_metas || {};
 
 if (!kbId) { console.error("FATAL: kb_id is required in config"); process.exit(1); }
@@ -51,12 +50,6 @@ const apiBase = process.env.WEKNORA_BASE_URL;
 const apiKey = process.env.WEKNORA_API_KEY;
 if (!apiBase) { console.error("FATAL: env WEKNORA_BASE_URL is not set"); process.exit(1); }
 if (!apiKey) { console.error("FATAL: env WEKNORA_API_KEY is not set"); process.exit(1); }
-
-// ─── Runtime State ───────────────────────────────────────────────────────────
-
-let tempKbId = "";
-let existingHashes = new Set();
-const duplDir = path.join(sourceDir, "dupl");
 
 // ─── API Helper ──────────────────────────────────────────────────────────────
 
@@ -78,59 +71,6 @@ async function wkRequest(method, url, body) {
     } finally {
         clearTimeout(timer);
     }
-}
-
-// ─── KB Helpers ──────────────────────────────────────────────────────────────
-
-async function createTempKB() {
-    const res = await wkRequest("GET", apiBase + "/knowledge-bases/" + kbId);
-    const embeddingModelId = (res.data || {}).embedding_model_id || "";
-
-    const now = new Date();
-    const ts = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,"0")}${String(now.getDate()).padStart(2,"0")}_${String(now.getHours()).padStart(2,"0")}${String(now.getMinutes()).padStart(2,"0")}`;
-    const body = {
-        name: `${TMP_KB_NAME_PREFIX}_${ts}`,
-        description: "Temporary sync KB, auto-deleted after processing",
-        type: "document",
-        summary_model_id: "",
-    };
-    if (embeddingModelId) body.embedding_model_id = embeddingModelId;
-
-    const created = await wkRequest("POST", apiBase + "/knowledge-bases", body);
-    return created.data.id;
-}
-
-async function deleteTempKB() {
-    if (!tempKbId) return;
-    try {
-        await wkRequest("DELETE", apiBase + "/knowledge-bases/" + tempKbId, null);
-    } catch (e) {
-        console.error("  WARN: failed to delete temp KB: " + e.message);
-    }
-}
-
-// ─── Hash Dedup ──────────────────────────────────────────────────────────────
-
-async function loadExistingHashes() {
-    if (!dedupEnabled) return new Set();
-    const hashes = new Set();
-    let page = 1;
-    while (true) {
-        const res = await wkRequest("GET", apiBase + "/knowledge-bases/" + kbId + "/knowledge?page=" + page + "&page_size=200");
-        const items = res.data || [];
-        for (const it of items) {
-            if (it.title) {
-                const sep = it.title.lastIndexOf("_");
-                if (sep > 0 && sep < it.title.length - 1) {
-                    const suffix = it.title.slice(sep + 1);
-                    if (/^[a-f0-9]{8,}$/i.test(suffix)) hashes.add(suffix);
-                }
-            }
-        }
-        if (items.length < 200) break;
-        page++;
-    }
-    return hashes;
 }
 
 // ─── Frontmatter Parsing ─────────────────────────────────────────────────────
@@ -193,11 +133,10 @@ function buildCustomMetas(fields) {
 
 function buildKnowledgeUpdateBody(fields) {
     const metas = buildCustomMetas(fields);
-    const summary = (typeof fields.summary === "string" ? fields.summary : "").trim();
-    const body = {};
-    if (summary) body.description = summary;
-    if (Object.keys(metas).length) body.custom_metadata = metas;
-    return body;
+    const customMetadata = { ...metas };
+    if (typeof fields.hash === "string" && fields.hash) customMetadata.hash = fields.hash;
+    if (!Object.keys(customMetadata).length) return {};
+    return { custom_metadata: customMetadata };
 }
 
 // ─── Tags ────────────────────────────────────────────────────────────────────
@@ -275,29 +214,6 @@ async function waitForParse(knowledgeId) {
     throw new Error("parse timed out");
 }
 
-// ─── Knowledge Move ──────────────────────────────────────────────────────────
-
-async function moveKnowledge(knowledgeIds, sourceKbId, targetKbId) {
-    const res = await wkRequest("POST", apiBase + "/knowledge/move", {
-        knowledge_ids: knowledgeIds,
-        source_kb_id: sourceKbId,
-        target_kb_id: targetKbId,
-        mode: "reuse_vectors",
-        max_pages: maxPages,
-    });
-    const taskId = res.data?.task_id;
-    if (!taskId) throw new Error("No task_id returned from move");
-    const deadline = Date.now() + 60000;
-    while (Date.now() < deadline) {
-        const progress = await wkRequest("GET", apiBase + "/knowledge/move/progress/" + taskId);
-        const status = progress.data?.status || "";
-        if (status === "completed") return;
-        if (status === "failed") throw new Error("Move failed: " + (progress.data?.error || "unknown"));
-        await sleep(200);
-    }
-    throw new Error("Move timed out");
-}
-
 // ─── Score ───────────────────────────────────────────────────────────────────
 
 function pickTargetKB(score) {
@@ -330,7 +246,7 @@ async function assignKnowledgeTags(knowledgeId, targetKbId, fields) {
     try {
         await batchSetTags({ [knowledgeId]: tagIds }, targetKbId);
     } catch (err) {
-        console.error(`  TAGS! ${knowledgeId}: ${err.message}`);
+        throw new Error("TAGS! " + knowledgeId + ": " + err.message);
     }
     return tagIds.length;
 }
@@ -341,53 +257,42 @@ async function processOne(file) {
     const { fields, body } = parseFrontmatter(content);
 
     const title = typeof fields.title === "string" ? fields.title : "";
-    const hash = typeof fields.hash === "string" ? fields.hash : "";
-    const submitTitle = hash ? (title || file.replace(/\.md$/i, "")) + "_" + hash : (title || file.replace(/\.md$/i, ""));
+    const submitTitle = title || file.replace(/\.md$/i, "");
 
-    // Skip if hash already exists in target KB
-    if (dedupEnabled && hash && existingHashes.has(hash)) {
-        moveFile(srcPath, path.join(duplDir, file));
-        console.log(`  DUP ${file}`);
-        return { status: "dup", file };
-    }
+    const { score, target } = selectTarget(fields);
+    const targetKbId = target.kbId;
+    const intervalMs = target.label === "wiki" ? wikiSubmitIntervalMs : normalSubmitIntervalMs;
 
     try {
-        // Import to temp KB + wait for parse
-        const importStart = Date.now();
-        const importRes = await wkRequest("POST", apiBase + "/knowledge-bases/" + tempKbId + "/knowledge/manual", {
+        // Upload to target KB
+        const uploadStart = Date.now();
+        const importRes = await wkRequest("POST", apiBase + "/knowledge-bases/" + targetKbId + "/knowledge/manual", {
             title: submitTitle, content: body, status: "publish",
         });
         const knowledgeId = importRes?.data?.id;
         if (!knowledgeId) throw new Error("no knowledge id returned");
         await waitForParse(knowledgeId);
-    
-        // PUT description + custom_metadata
+
+        // PUT custom_metadata (do NOT put description, let WeKnora generate summary)
         const putBody = buildKnowledgeUpdateBody(fields);
         if (Object.keys(putBody).length) {
             await wkRequest("PUT", apiBase + "/knowledge/" + knowledgeId, putBody)
                 .catch(err => console.error(`  META! ${file}: ${err.message}`));
         }
 
-        const importMs = Date.now() - importStart;
-    
-        // Move to target KB
-        const moveStart = Date.now();
-        const { score, target } = selectTarget(fields);
-        await moveKnowledge([knowledgeId], tempKbId, target.kbId);
-        const moveMs = Date.now() - moveStart;
+        const uploadMs = Date.now() - uploadStart;
 
-        // Assign tags in target KB
-        const tagCount = await assignKnowledgeTags(knowledgeId, target.kbId, fields);
+        // Assign tags — throws on failure, preventing file move
+        const tagCount = await assignKnowledgeTags(knowledgeId, targetKbId, fields);
 
-        // Move file to target directory
-        if (hash) existingHashes.add(hash);
+        // Move local file
         moveFile(srcPath, path.join(targetDir, file));
 
-        // Wait for WeKnora to process the submission before next one
-        await sleep(submitIntervalMs);
+        // Wait for WeKnora to generate summary before processing next article
+        await sleep(intervalMs);
 
-        console.log(`  SYNCED ${file} score=${score} tags=${tagCount} import=${fmtMs(importMs)} move=${fmtMs(moveMs)}`);
-        return { status: "synced", file, score, label: target.label, tags: tagCount, importMs, moveMs };
+        console.log(`  SYNCED ${file} score=${score} tags=${tagCount} upload=${fmtMs(uploadMs)}`);
+        return { status: "synced", file, score, label: target.label, tags: tagCount, uploadMs };
     } catch (err) {
         console.log(`  FAIL ${file}: ${err.message}`);
         throw err;
@@ -444,12 +349,9 @@ async function main() {
         process.exitCode = 1;
     }, scriptTimeoutMs);
 
-    tempKbId = await createTempKB();
-    existingHashes = await loadExistingHashes();
-    if (!fs.existsSync(duplDir)) fs.mkdirSync(duplDir, { recursive: true });
     if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
 
-    console.log(`[sync] ${files.length} files, tmp=${tempKbId.slice(0,8)}, workers=${concurrency}, dedup=${dedupEnabled ? existingHashes.size + " hashes" : "off"}, timeout=${fmtMs(scriptTimeoutMs)}`);
+    console.log(`[sync] ${files.length} files, workers=${concurrency}, normal_interval=${fmtMs(normalSubmitIntervalMs)}, wiki_interval=${fmtMs(wikiSubmitIntervalMs)}, timeout=${fmtMs(scriptTimeoutMs)}`);
 
     try {
         const results = await runConcurrent(files, concurrency, (f) =>
@@ -460,10 +362,9 @@ async function main() {
         const { synced, skipped, failed } = summarize(results);
         console.log(`\nDone. ${synced} synced, ${skipped} skipped, ${failed} failed (${fmtMs(Date.now() - startTime)})`);
         if (failed > 0) process.exitCode = 1;
-        
+
     } finally {
         clearTimeout(timeout);
-        await deleteTempKB();
     }
 }
 

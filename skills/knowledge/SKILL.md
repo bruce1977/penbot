@@ -52,16 +52,6 @@ node skills/knowledge/scripts/init_start.js <base_dir>
 |------|------|------|
 | `<base_dir>` | 是 | 知识库 profile 根目录（如 `D:/knowledge/obsidian/ai`） |
 
-### 创建内容
-
-| 项目 | 说明 |
-|------|------|
-| `inbox/` | 原始文档存放目录 |
-| `marked/` | 已分析文档目录 |
-| `weknora/` | 已同步文档目录 |
-| `archive/` | 归档文档目录 |
-| `.config/config.json` | 默认配置文件（若不存在） |
-
 ### 默认 config.json
 
 ```json
@@ -72,7 +62,9 @@ node skills/knowledge/scripts/init_start.js <base_dir>
     "kb_id": "",
     "wiki_kb_id": "",
     "score_threshold": 3.5,
-    "submit_interval_ms": 6000,
+    "concurrency": 1,
+    "normal_submit_interval_ms": 30000,
+    "wiki_submit_interval_ms": 600000,
     "sync_enabled": true,
     "custom_metas": {
       "source": "$source",
@@ -155,7 +147,7 @@ source_dir/*.md
   │
   ▼  Step 5: Generate YAML header
   │
-  ▼  Step 6: Create target file → target_dir/${title}_${hash}.md
+   ▼  Step 6: Create target file → target_dir/${title}.md（同名按 hash 覆盖或加序号）
   │
   ▼  Step 7: Cleanup intermediate files
   │
@@ -219,28 +211,24 @@ source_dir/*.md
 - `${hash}.meta.json` 已存在 → 跳过元数据提取
 - `${hash}.rate.json` 已存在 → 跳过评分
 - 两个缓存文件都存在 → 跳过提取，直接合并
-- 终稿文件名 `${title}_${hash}.md`：hash 由正文内容计算，天然去重
+- 终稿文件名 `${title}.md`：**不再包含 hash**；hash 仅写入 frontmatter 与 WeKnora 的 `custom_metadata.hash`
+- 同名策略：已存在同名文件时，hash 相同则覆盖，不同则追加序号 `${title}(1).md`
 
 ---
 
 ## 功能三：同步导入 WeKnora (sync)
 
-将 `{source}` 目录中带 frontmatter 的终稿**逐篇并发**导入 WeKnora：
-
-```
-A. 创建临时库 → [B.上传(并发5) → C.move(单篇) → D.移文件] → E.删除临时库
-```
+将 `{source}` 目录中带 frontmatter 的终稿**逐篇**直接导入 WeKnora 的目标知识库（普通库或 wiki 库），**不再经临时库周转**，以便 WeKnora 直接为目标库内的文章生成摘要（临时库 move 后向量不跟随，会导致目标库无法检索）。
 
 ### 调用方式
 
 ```bash
-node scripts/kb-weknora.js <profile> [submit_interval_ms]
+node scripts/kb-weknora.js <profile>
 ```
 
 | 参数 | 必填 | 说明 |
 |------|------|------|
 | `<profile>` | 是 | 知识库 profile 名称（如 `ai`） |
-| `[submit_interval_ms]` | 否 | 上传间隔（默认 1000ms） |
 
 ### 环境变量
 
@@ -252,53 +240,54 @@ node scripts/kb-weknora.js <profile> [submit_interval_ms]
 
 ### config.json 结构
 
-脚本读取 `.config/config.json` 中的 `weknora` 节：
-
-```json
-{
-  "weknora": {
-    "source_folder": "marked",
-    "target_folder": "weknora",
-    "kb_id": "9d21229a-8ae6-48d2-8a96-d6e2659c6079",
-    "wiki_kb_id": "",
-    "score_threshold": 3.5,
-    "submit_interval_ms": 6000,
-    "sync_enabled": true,
-    "custom_metas": {
-      "source": "$source",
-      "author": "$auther",
-      "aliases": "$aliases",
-      "score": "$score",
-      "channel": "wechat-mp"
-    }
-  }
-}
-```
+脚本读取 `.config/config.json` 中的 `weknora` 节，完整默认配置见「功能一」；关键字段如下：
 
 | 字段 | 必填 | 说明 |
 |------|------|------|
-| `kb_id` | ✅ | 目标知识库 ID |
+| `kb_id` | ✅ | 普通库知识库 ID |
 | `wiki_kb_id` | ❌ | wiki 知识库 ID（配了才启用评分分流） |
 | `score_threshold` | ❌ | 评分阈值（score ≥ 阈值 → wiki） |
+| `concurrency` | ❌ | 并发路数（默认 1，串行处理） |
+| `normal_submit_interval_ms` | ❌ | 普通库每篇上传后的等待间隔（默认 30000，供 WeKnora 生成摘要） |
+| `wiki_submit_interval_ms` | ❌ | wiki 库每篇上传后的等待间隔（默认 600000） |
 | `custom_metas` | ✅ | 上传到 WeKnora custom_metadata 的字段映射 |
+
+> 为兼容旧配置，未配置 `normal_submit_interval_ms` / `wiki_submit_interval_ms` 时，两者均回退到 `submit_interval_ms`（若也未配则 100ms）。脚本**不再 PUT `description`**，摘要完全由 WeKnora 生成。
 
 ### 执行步骤
 
-1. **创建临时库**：POST `/knowledge-bases`（使用目标库的 `embedding_model_id`，无摘要模型）
-2. **查重**：分页拉取目标库已有 hash，建立去重集合
-3. **逐篇并发处理**（5 路并发）：
-   - 导入临时库 → 轮询解析完成 → PUT metadata → move 到目标库 → 分配 tags → 移动文件
-4. **删除临时库**
-5. **结果汇总**
+每篇文章（按 `concurrency` 并发，默认 1 即串行）：
+1. 读文件、解析 frontmatter，按 `score` 选择目标库（`wiki_kb_id` 已配且 `score ≥ score_threshold` → wiki，否则普通库）
+2. 直接上传到目标库：POST `/knowledge-bases/{target}/knowledge/manual`（标题 `title`，不含 hash）
+3. 轮询解析完成（`parse_status = completed`）
+4. PUT `/knowledge/{id}`：仅写入 `custom_metadata`（含 `hash`），**不传 description**
+5. 分配 tags（失败则抛出，本地文件不移动，下次运行会重跑）
+6. 移动本地文件到 `weknora/`
+7. 等待 `normal_submit_interval_ms` 或 `wiki_submit_interval_ms`（按目标库类型），确保 WeKnora 有足够时间生成摘要
+
+### 流程图
+
+```mermaid
+graph TD
+    S[源文件 位于 marked 目录的 md 文件, frontmatter 含 hash] --> A[按评分 score 选择目标库]
+    A --> U[上传到目标库并等待解析]
+    U --> P[更新元数据, 仅写 custom_metadata 含 hash, 不写摘要]
+    P --> T[分配标签 tags, 失败则不移动本地文件]
+    T --> F[移动本地文件到 weknora 目录]
+    F --> W[等待提交间隔, 普通库 30s 或 wiki 库 600s]
+    W --> S
+```
+
+> 同步侧**不再做 hash 去重**：重复检测留待后续通过 SQL 检索 WeKnora 知识库。
 
 ### 错误处理
 
 | 场景 | 处理 |
 |------|------|
-| 单篇导入/解析失败 | 记录 FAIL，继续处理其他篇 |
-| PUT 失败 | 记录 PUT FAIL，文章仍导入成功 |
-| move 失败 | 该批文章留在临时库，需人工处理 |
-| 临时库删除失败 | WARN 日志，不影响已导入的文章 |
+| 单篇上传/解析失败 | 记录 FAIL，继续处理其他篇 |
+| PUT 失败 | 记录 META，文章仍导入成功 |
+| 分配 tags 失败 | 抛出，该篇本地文件**不移动**，下次运行重新处理（可能在 WeKnora 产生重复） |
+| 摘要生成较慢 | 通过等待间隔缓解，间隔按实际硬件在 config 中调优 |
 
 ---
 
@@ -319,37 +308,5 @@ node skills/knowledge/scripts/archive_start.js <source_dir> <target_dir> [days]
 | `[days]` | 否 | 文件年龄阈值（默认 90 天），按文件 mtime 计算 |
 
 ---
-
-## 脚本结构总览
-
-```
-skills/knowledge/
-├── SKILL.md
-├── README.md
-├── prompts/
-│   ├── meta.json                ← 元数据提取提示词（默认）
-│   └── rate.json                ← 评分提取提示词（默认）
-├── schemas/
-│   ├── meta.json                ← 元数据 JSON Schema（默认）
-│   └── rate.json                ← 评分 JSON Schema（默认）
-└── scripts/
-    ├── init_start.js            ← 初始化
-    ├── analyze_start.js         ← 分析主入口
-    ├── analyze_extract_meta.js  ← 元数据提取模块
-    ├── analyze_extract_rate.js  ← 评分提取模块
-    ├── analyze_frontmatter.js   ← YAML frontmatter 生成
-    ├── weknora_start_to_sync.js ← 同步 WeKnora
-    ├── archive_start.js         ← 归档
-    └── lib/
-        ├── llm.js               ← LLM 客户端
-        ├── common.js            ← 通用工具函数
-        ├── content_hash.js      ← 内容 hash
-        └── validate_md.js       ← Markdown 格式校验
-
-scripts/
-├── kb-weknora.js                ← Weknora 同步入口
-├── kb-analyze.js                ← 分析入口
-└── kb-archive.js                ← 归档入口
-```
 
 Base directory for this skill: skills/knowledge
