@@ -102,6 +102,24 @@ node skills/wechat-article/scripts/wechat-article.mjs draft   --type ai-news --o
 - 小节字数没写时，会把该类型的目标字数均分到各小节。
 - 配图数量仍受类型配置约束（`--images` 可覆盖）。
 
+### 第一步：一次生成多个候选主题 + 提纲
+
+定选题之前，先让脚本给几个方向挑：
+
+```bash
+# 生成 3 个候选主题，每个都带提纲，写成 Markdown
+node skills/wechat-article/scripts/wechat-article.mjs topics --type ai-news --count 3 --output output
+
+# 只看不落盘（直接打印 Markdown）
+node skills/wechat-article/scripts/wechat-article.mjs topics --type ai-news --count 3 --md
+```
+
+- 产物路径：`--output` 是目录时写 `output/topics-<type>-<YYYYMMDD>.md`；是 `.md` 文件时按该路径写。
+- 每个候选主题包含：核心判断、切入角度、为什么现在写、关键词、素材线索、备选标题、逐小节提纲（含建议字数）。
+- **提纲不是凭空猜的**：每个主题会按关键词与素材线索从知识库挑 3 篇最相关的文章，抽 2 段最相关正文喂给纲要模型，日志里会打印「参考素材」。
+- 这一步只做选题与提纲，不检索 WeKnora、不写正文；资料收集在选定主题之后进行。
+- 不给 `--count` / `--output` / `--md` 时保持原行为：打印候选文章表格。
+
 ## 命令一览
 
 | 命令 | 作用 |
@@ -109,7 +127,7 @@ node skills/wechat-article/scripts/wechat-article.mjs draft   --type ai-news --o
 | `auto` | **入口 1**：自动选题 + 自动纲要，然后往下写（等价于原来的 `run`） |
 | `manual` | **入口 2**：用 `--title` + `--outline`/`--outline-file` 直接往下写，跳过选题与纲要模型 |
 | `run` | 完整管线（保留兼容，等同 `auto`） |
-| `topics` | 只列出知识库中的候选主题，不调用模型 |
+| `topics` | 列出候选文章；`--count N --output <目录>` 生成 N 个候选主题（含提纲）的 Markdown |
 | `kbs` | 列出 WeKnora 知识库（获取 `kb_ids`） |
 | `topic` | 只做选题（自动选题，或 `--topic` 手动记录） |
 | `sources` | 只收集相关资料（本地目录 / WeKnora / 两者） |

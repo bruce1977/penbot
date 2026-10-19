@@ -19,7 +19,7 @@ import {
   ensureImageMarkers,
   normalizeImageMarkers,
 } from "../scripts/lib/markdown.mjs";
-import { buildLengthPrompt, buildDraftPrompt } from "../scripts/lib/prompts.mjs";
+import { buildLengthPrompt, buildDraftPrompt, buildTopicPrompt } from "../scripts/lib/prompts.mjs";
 import { parseOutlineMarkdown } from "../scripts/lib/markdown.mjs";
 
 import { parseJsonFromText, extractAgentText } from "../scripts/lib/models.mjs";
@@ -265,6 +265,67 @@ test("parseOutlineMarkdown reads a minimal user outline and distributes words", 
 test("parseOutlineMarkdown returns null only when nothing is parseable", () => {
   assert.equal(parseOutlineMarkdown("", {}), null);
   assert.equal(parseOutlineMarkdown("只有一句话", {}).outline.length, 1);
+});
+
+test("parseOutlineMarkdown reads one topic out of a topics proposal document", () => {
+  const md = [
+    "# AI 资讯快评 · 候选主题与提纲",
+    "",
+    "---",
+    "",
+    "## 主题 2：某标题",
+    "",
+    "- **核心判断**：一句话判断。",
+    "- **切入角度**：从工程角度切入。",
+    "- **关键词**：甲、乙",
+    "",
+    "**备选标题**",
+    "",
+    "1. 标题 A",
+    "2. 标题 B",
+    "",
+    "**提纲**",
+    "",
+    "1. **开篇**（约 300 字）",
+    "   - 要点一",
+    "",
+    "2. **展开**（约 600 字）",
+    "   - 要点二",
+    "   - 要点三",
+  ].join("\n");
+  const outline = parseOutlineMarkdown(md, { title: "某标题" });
+  assert.equal(outline.thesis, "一句话判断。");
+  assert.deepEqual(outline.outline.map((s) => s.heading), ["开篇", "展开"]);
+  assert.equal(outline.outline[0].target_words, 300);
+  assert.deepEqual(outline.outline[1].points, ["要点二", "要点三"]);
+});
+
+/* ------------------------------------------------------------------ */
+/* multi-topic selection prompt                                        */
+/* ------------------------------------------------------------------ */
+
+test("buildTopicPrompt asks for several distinct topics when count > 1", () => {
+  const type = {
+    id: "t",
+    name: "测试栏目",
+    description: "desc",
+    length: { min: 800, max: 1300, target: 1000 },
+    style: { audience: "读者" },
+    topic: { keywords: ["AI"] },
+  };
+  const candidates = [
+    { title: "文章一", date: "2026-10-01", tags: ["a"], summary: "摘要一", excerpt: "" },
+    { title: "文章二", date: "2026-10-02", tags: ["b"], summary: "摘要二", excerpt: "" },
+  ];
+
+  const single = buildTopicPrompt({ type, candidates, count: 1 });
+  assert.match(single.prompt, /"topic"/);
+  assert.doesNotMatch(single.prompt, /"topics"/);
+
+  const multi = buildTopicPrompt({ type, candidates, count: 3 });
+  assert.match(multi.prompt, /3 个/);
+  assert.match(multi.prompt, /"topics"/);
+  assert.match(multi.prompt, /明显不同/);
 });
 
 /* ------------------------------------------------------------------ */

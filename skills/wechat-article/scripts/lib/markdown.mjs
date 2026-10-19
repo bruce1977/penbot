@@ -279,6 +279,7 @@ export function parseOutlineMarkdown(text, { title = "", targetWords = 0 } = {})
   for (const rawLine of String(text || "").split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line) continue;
+    if (/^(?:-{3,}|\*{3,}|_{3,})$/.test(line)) continue;
 
     const h2 = line.match(/^#{2,}\s+(.+)$/);
     if (h2) {
@@ -293,6 +294,10 @@ export function parseOutlineMarkdown(text, { title = "", targetWords = 0 } = {})
       } else if (/^配图$/.test(name)) {
         mode = "images";
         lastImage = null;
+      } else if (/^主题\s*\d+\s*[：:]/.test(name)) {
+        // Proposal documents (topics --count N) are one file with several topics.
+        mode = "meta";
+        current = null;
       } else if (/^(备选标题|相关素材|读者|受众)$/.test(name)) {
         mode = "meta";
       } else {
@@ -313,13 +318,21 @@ export function parseOutlineMarkdown(text, { title = "", targetWords = 0 } = {})
       continue;
     }
 
-    const meta = line.match(/^[-*]\s*(读者|受众|开篇钩子|核心判断|主题)[：:]\s*(.*)$/);
+    // Proposal documents switch back to outline mode at the "**提纲**" label.
+    if (/^\*{0,2}提纲\*{0,2}$/.test(line)) {
+      mode = "sections";
+      current = null;
+      continue;
+    }
+
+    const meta = line.match(/^[-*]\s*(?:\*\*)?(读者|受众|开篇钩子|核心判断|主题)(?:\*\*)?[：:]\s*(.*)$/);
     if (meta) {
-      const [, key, value] = meta;
-      if (key === "读者" || key === "受众") result.audience = value.trim();
-      else if (key === "开篇钩子") result.hook = value.trim();
-      else if (key === "主题" && !result.title) result.title = value.trim();
-      else result.thesis = value.trim();
+      const [, key, rawValue] = meta;
+      const value = clean(rawValue);
+      if (key === "读者" || key === "受众") result.audience = value;
+      else if (key === "开篇钩子") result.hook = value;
+      else if (key === "主题" && !result.title) result.title = value;
+      else result.thesis = value;
       continue;
     }
 
@@ -359,15 +372,14 @@ export function parseOutlineMarkdown(text, { title = "", targetWords = 0 } = {})
     }
 
     const numbered = line.match(/^\d+[.、)]\s*(.+)$/);
-    if (numbered && !current) {
+    if (numbered) {
       const withWords = numbered[1].match(/^\*{0,2}(.+?)\*{0,2}\s*[（(]\s*约?\s*(\d+)\s*字\s*[)）]\s*$/);
-      startSection(withWords ? withWords[1] : numbered[1], withWords ? withWords[2] : 0);
-      continue;
-    }
-    if (numbered && mode === "structure") {
-      const withWords = numbered[1].match(/^\*{0,2}(.+?)\*{0,2}\s*[（(]\s*约?\s*(\d+)\s*字\s*[)）]\s*$/);
-      startSection(withWords ? withWords[1] : numbered[1], withWords ? withWords[2] : 0);
-      continue;
+      // A numbered line with an explicit word budget is a section heading even
+      // when a previous section is open (proposal documents list several).
+      if (withWords || !current || mode === "structure") {
+        startSection(withWords ? withWords[1] : numbered[1], withWords ? withWords[2] : 0);
+        continue;
+      }
     }
 
     const bullet = line.match(/^[-*]\s+(.+)$/);

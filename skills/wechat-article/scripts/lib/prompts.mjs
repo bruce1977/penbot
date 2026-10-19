@@ -6,7 +6,7 @@ const JSON_RULES = [
   "不要编造素材中不存在的事实、数字、机构或引用。",
 ].join("\n");
 
-export function buildTopicPrompt({ type, candidates, mode = "auto", userTopic = "", userRequirements = "" }) {
+export function buildTopicPrompt({ type, candidates, mode = "auto", userTopic = "", userRequirements = "", count = 1 }) {
   const list = candidates
     .map(
       (note, i) =>
@@ -14,17 +14,24 @@ export function buildTopicPrompt({ type, candidates, mode = "auto", userTopic = 
     )
     .join("\n");
 
+  const total = Math.max(1, Number(count) || 1);
+  const multi = total > 1;
+
   return {
     system: [
       `你是「${type.name}」栏目的选题编辑。${type.description || ""}`,
       `目标读者：${type.style.audience || "对相关话题感兴趣的读者"}。`,
-      "你的任务是从近期知识库文章中提炼一个值得写的主题，而不是简单复述某一篇。",
+      multi
+        ? `你的任务是从近期知识库文章中提炼 ${total} 个彼此独立、都值得写的主题，而不是简单复述某一篇。`
+        : "你的任务是从近期知识库文章中提炼一个值得写的主题，而不是简单复述某一篇。",
       JSON_RULES,
     ].join("\n"),
     prompt: [
       mode === "manual"
         ? `用户已指定主题：${userTopic}\n补充要求：${userRequirements || "无"}`
-        : "请从下列近期知识库文章中自动选择一个最适合本栏目的主题。",
+        : multi
+          ? `请从下列近期知识库文章中自动挑选 ${total} 个最适合本栏目的主题。`
+          : "请从下列近期知识库文章中自动选择一个最适合本栏目的主题。",
       "",
       "近期文章候选：",
       list || "（无候选）",
@@ -34,17 +41,41 @@ export function buildTopicPrompt({ type, candidates, mode = "auto", userTopic = 
       `2. 优先选择有事实密度、有冲突或反常识、且近期讨论度高的方向。`,
       `3. 与已有文章形成差异，不要重复同一事件的消息面。`,
       `4. 目标篇幅 ${type.length.min}-${type.length.max} 字。`,
+      ...(multi
+        ? [
+            `${5}. ${total} 个主题之间必须明显不同：事件不同、判断不同、切入角度不同；尽量来自不同的候选文章。`,
+            `${6}. 按推荐优先级从高到低排列。`,
+          ]
+        : []),
       "",
       "输出 JSON 结构：",
-      "{",
-      '  "topic": "一句话主题（不超过 30 字）",',
-      '  "thesis": "核心判断，一句话，必须可证伪",',
-      '  "angle": "切入角度，说明与常见报道的差异",',
-      '  "rationale": "为什么现在写这个主题（80 字内）",',
-      '  "keywords": ["检索关键词", "3-6 个"],',
-      '  "source_hints": ["最相关的候选文章标题"],',
-      '  "title_candidates": ["标题 1", "标题 2", "标题 3"]',
-      "}",
+      ...(multi
+        ? [
+            "{",
+            '  "topics": [',
+            "    {",
+            '      "topic": "一句话主题（不超过 30 字）",',
+            '      "thesis": "核心判断，一句话，必须可证伪",',
+            '      "angle": "切入角度，说明与常见报道的差异",',
+            '      "rationale": "为什么现在写这个主题（80 字内）",',
+            '      "keywords": ["检索关键词", "3-6 个"],',
+            '      "source_hints": ["最相关的候选文章标题"],',
+            '      "title_candidates": ["标题 1", "标题 2", "标题 3"]',
+            "    }",
+            "  ]",
+            "}",
+          ]
+        : [
+            "{",
+            '  "topic": "一句话主题（不超过 30 字）",',
+            '  "thesis": "核心判断，一句话，必须可证伪",',
+            '  "angle": "切入角度，说明与常见报道的差异",',
+            '  "rationale": "为什么现在写这个主题（80 字内）",',
+            '  "keywords": ["检索关键词", "3-6 个"],',
+            '  "source_hints": ["最相关的候选文章标题"],',
+            '  "title_candidates": ["标题 1", "标题 2", "标题 3"]',
+            "}",
+          ]),
     ].join("\n"),
   };
 }

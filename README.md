@@ -30,6 +30,7 @@ npm run wechat-article -- manual --type ai-news --title "某模型正式开源" 
 
 - 两个入口之后步骤完全一致；`--type` 可省略，在 `.env` 设 `PB_ARTICLE_TYPE=ai-news` 即可。
 - 手动提纲最简格式：`# 标题` + `## 小节` + `- 要点`；也可直接喂管线生成的 `02-outline.json`。
+- 想先看几个选题：`npm run wechat-article -- topics --type ai-news --count 3 --output output`（输出 3 个候选主题 + 提纲的 Markdown）。
 
 ### 分步执行（推荐）
 

@@ -8,7 +8,7 @@ import { loadConfig, findType, listTypes, getModelProfile, validateConfig, DEFAU
 import { ensureDir, writeText, writeJson, readJson, exists, uniqueDir, relativeTo, timestamp, slugify } from "./lib/fsx.mjs";
 import { createLogger } from "./lib/log.mjs";
 import { createModelClient } from "./lib/models.mjs";
-import { indexKnowledge, pickRecent, searchKnowledge, searchWeKnora, collectSources, buildTerms, formatSources } from "./lib/knowledge.mjs";
+import { indexKnowledge, pickRecent, searchKnowledge, searchWeKnora, collectSources, buildTerms, formatSources, extractExcerpts } from "./lib/knowledge.mjs";
 import {
   buildTopicPrompt,
   buildOutlinePrompt,
@@ -50,7 +50,7 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   auto               入口 1：从知识库最新文档自动选题 + 自动纲要，然后往下写
   manual             入口 2：用你给的标题 + 提纲，直接往下写（跳过选题与纲要模型）
   run                完整管线（等价 auto，保留兼容）
-  topics             列出知识库中的候选主题，不做生成
+  topics             列出候选文章；加 --count N --output <目录> 则生成 N 个候选主题（含提纲）的 Markdown
   kbs                列出 WeKnora 知识库（获取 kb_ids）
   topic              只做选题（自动选题，或 --topic 手动记录）
   sources            只收集相关资料（本地知识库 / WeKnora）
@@ -93,6 +93,8 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   --length-attempts <n>  初稿篇幅自动扩写/压缩的最大次数（默认 2）
   --knowledge-source <s> 覆盖知识来源：local | weknora | both
   --images <n>           配图数量（1-5）
+  --count <n>            topics：生成多少个候选主题（含提纲，1-10）
+  --md                   topics：把候选主题以 Markdown 打印到终端
   --stage <name>         终止阶段：topic|sources|outline|draft|review|illustrate|publish
   --mock                 使用 mock 模型（不发真实请求，用于验证流程）
   --verbose              输出调试日志
@@ -326,16 +328,254 @@ async function cmdTopics(config, options) {
     : [];
   const candidates = await buildCandidates({ type, logger }, notes);
   const recent = pickRecent(candidates, { days: type.topic.lookback_days || type.knowledge.lookback_days, limit: type.topic.candidates || 20 });
-  const rows = recent.slice(0, 30).map((note, i) => ({
-    "#": i + 1,
-    date: note.date,
-    title: note.title.slice(0, 48),
-    tags: note.tags.slice(0, 4).join("、"),
-    chars: note.length,
+
+  const count = clamp(options.count ?? options.n ?? 0, 0, 10);
+  const wantsProposals = count > 0 || Boolean(options.output) || asBool(options.md);
+
+  if (!wantsProposals) {
+    const rows = recent.slice(0, 30).map((note, i) => ({
+      "#": i + 1,
+      date: note.date,
+      title: note.title.slice(0, 48),
+      tags: note.tags.slice(0, 4).join("、"),
+      chars: note.length,
+    }));
+    console.table(rows);
+    console.log(`\n共 ${candidates.length} 篇（来源 ${type.knowledge.source}），近 ${type.topic.lookback_days || type.knowledge.lookback_days} 天 ${recent.length} 篇。`);
+    console.log(`提示：加 --count 3 --output output 可以生成 3 个候选主题（含提纲）的 Markdown；或运行 topic --type ${type.id} 自动选题。`);
+    return;
+  }
+
+  const total = count > 0 ? count : 3;
+  const models = createModelClient(config, logger);
+  const pool = recent.length ? recent : candidates;
+  const proposals = await generateProposals({
+    type,
+    pool,
+    count: total,
+    models,
+    logger,
+    mock: asBool(options.mock),
+    options,
+  });
+
+  const markdown = renderProposalsMarkdown({ type, proposals, poolSize: pool.length, source: type.knowledge.source });
+  if (!options.output) {
+    console.log(markdown);
+    return;
+  }
+  const file = resolveProposalFile(String(options.output), type);
+  ensureDir(path.dirname(file));
+  writeText(file, markdown);
+  logger.step(`已生成 ${proposals.length} 个候选主题（含提纲）：${file}`);
+  console.log(file);
+}
+
+/**
+ * Ground a proposal outline in real material: a topic alone is too thin to
+ * produce a specific outline. Score notes by topic keywords / source_hints,
+ * then pull the most relevant paragraphs from the top matches.
+ */
+function topicSourcesFromPool(topic, pool) {
+  const terms = [
+    ...new Set(
+      [...(topic.keywords || []), ...buildTerms(topic.topic || ""), ...buildTerms(topic.thesis || "")]
+        .map((t) => String(t).trim())
+        .filter((t) => t.length >= 2),
+    ),
+  ].slice(0, 14);
+  const hints = (topic.source_hints || []).map((h) => String(h).replace(/[《》]/g, "").trim()).filter(Boolean);
+
+  const scored = pool.map((note) => {
+    const haystack = String(note.haystack || `${note.title}\n${note.summary || ""}\n${note.body || ""}`).toLowerCase();
+    let score = 0;
+    for (const term of terms) if (haystack.includes(term.toLowerCase())) score += 1;
+    for (const hint of hints) if (note.title.includes(hint) || hint.includes(note.title.slice(0, 18))) score += 5;
+    return { note, score };
+  });
+  scored.sort((a, b) => b.score - a.score || (b.note.mtime || 0) - (a.note.mtime || 0));
+  const matched = scored.filter((s) => s.score > 0).slice(0, 3).map((s) => s.note);
+  const picked = matched.length ? matched : pool.slice(0, 3);
+
+  return picked.map((note, i) => {
+    const excerpts = extractExcerpts(note.body || "", terms, 1400, 2);
+    if (excerpts.length === 0 && note.summary) excerpts.push(note.summary);
+    if (excerpts.length === 0) {
+      const plain = String(note.body || "").replace(/\s+/g, " ").trim();
+      if (plain) excerpts.push(plain.slice(0, 600));
+    }
+    return {
+      index: i + 1,
+      title: note.title,
+      file: note.file,
+      date: note.date,
+      tags: note.tags || [],
+      summary: note.summary || "",
+      excerpts,
+    };
+  });
+}
+
+function normalizeTopic(raw) {
+  const topic = {
+    topic: String(raw?.topic || "").trim(),
+    title: String(raw?.title || raw?.topic || "").trim(),
+    thesis: String(raw?.thesis || "").trim(),
+    angle: String(raw?.angle || "").trim(),
+    rationale: String(raw?.rationale || "").trim(),
+    keywords: Array.isArray(raw?.keywords) ? raw.keywords.map(String) : [],
+    source_hints: Array.isArray(raw?.source_hints) ? raw.source_hints.map(String) : [],
+    title_candidates: Array.isArray(raw?.title_candidates) ? raw.title_candidates.map(String) : [],
+  };
+  if (!topic.topic) topic.topic = topic.title;
+  if (!topic.title) topic.title = topic.topic;
+  return topic;
+}
+
+/** Step 1 of the pipeline: pick N topics, then give each one an outline (no article retrieval). */
+async function generateProposals({ type, pool, count, models, logger, mock, options }) {
+  const requirements = options.requirements ? String(options.requirements) : "";
+
+  if (mock) {
+    return Array.from({ length: count }, (_, i) => ({
+      ...normalizeTopic({
+        topic: `（Mock）主题 ${i + 1}`,
+        title: `（Mock）${type.name}候选标题 ${i + 1}`,
+        thesis: `这是第 ${i + 1} 个 mock 选题，用于验证流程。`,
+        angle: "流程验证",
+        rationale: "mock 模式不调用模型。",
+        keywords: ["测试"],
+        source_hints: pool.slice(0, 2).map((n) => n.title),
+      }),
+      outline: [
+        { heading: "开篇", points: ["mock 要点一"], target_words: Math.round(type.length.target / 3) },
+        { heading: "展开", points: ["mock 要点二", "mock 要点三"], target_words: Math.round(type.length.target / 3) },
+        { heading: "结尾", points: ["mock 结论"], target_words: Math.round(type.length.target / 3) },
+      ],
+    }));
+  }
+
+  let rawTopics = [];
+  const prompt = buildTopicPrompt({ type, candidates: pool, mode: "auto", userRequirements: requirements, count });
+  try {
+    const result = await models.json(options.model || type.model, { ...prompt, label: "topic" });
+    rawTopics = Array.isArray(result.topics) ? result.topics : [result];
+  } catch (error) {
+    logger.warn(`选题模型失败（${error.message}），改用知识库最新文章作为候选`);
+    rawTopics = pool.slice(0, count).map((n) => ({
+      topic: n.title,
+      title: n.title,
+      thesis: n.summary || "",
+      angle: "基于知识库最新文章",
+      rationale: "模型不可用，直接采用候选文章。",
+      source_hints: [n.title],
+    }));
+  }
+
+  const topics = rawTopics.map(normalizeTopic).filter((t) => t.topic).slice(0, count);
+  for (const note of pool) {
+    if (topics.length >= count) break;
+    if (topics.some((t) => t.topic === note.title)) continue;
+    topics.push(
+      normalizeTopic({
+        topic: note.title,
+        title: note.title,
+        thesis: note.summary || "",
+        angle: "基于知识库最新文章",
+        source_hints: [note.title],
+      }),
+    );
+  }
+
+  const out = [];
+  for (let i = 0; i < topics.length; i += 1) {
+    const topic = topics[i];
+    logger.info(`生成提纲 ${i + 1}/${topics.length}：《${topic.title}》`);
+    out.push({ ...topic, outline: await generateProposalOutline({ type, topic, pool, models, logger, options, requirements }) });
+  }
+  return out;
+}
+
+async function generateProposalOutline({ type, topic, pool, models, logger, options, requirements }) {
+  const sources = topicSourcesFromPool(topic, pool);
+  logger.info(`  参考素材：${sources.map((s) => s.title).join(" / ") || "（无）"}`);
+  const prompt = buildOutlinePrompt({ type, topic, sources, userRequirements: requirements, maxChars: 10000 });
+
+  let outline;
+  try {
+    outline = await models.json(options.model || type.model, { ...prompt, label: "outline" });
+  } catch (error) {
+    logger.warn(`提纲模型失败（${error.message}），使用规则提纲`);
+    return fallbackOutline(type, topic, sources).outline;
+  }
+  const sections = Array.isArray(outline.outline) ? outline.outline : [];
+  if (sections.length === 0) return fallbackOutline(type, topic, sources).outline;
+  return sections.map((section, i) => ({
+    heading: String(section.heading || `第 ${i + 1} 节`).trim(),
+    points: Array.isArray(section.points) ? section.points.map(String) : [],
+    target_words: asNumber(section.target_words) || 0,
   }));
-  console.table(rows);
-  console.log(`\n共 ${candidates.length} 篇（来源 ${type.knowledge.source}），近 ${type.topic.lookback_days || type.knowledge.lookback_days} 天 ${recent.length} 篇。`);
-  console.log(`提示：使用 --topic 手动指定主题，或运行 topic --type ${type.id} 自动选题。`);
+}
+
+function renderProposalsMarkdown({ type, proposals, poolSize, source }) {
+  const stamp = timestamp();
+  const shown = `${stamp.date.slice(0, 4)}-${stamp.date.slice(4, 6)}-${stamp.date.slice(6, 8)} ${stamp.time.slice(0, 2)}:${stamp.time.slice(2, 4)}`;
+  const lines = [
+    `# ${type.name} · 候选主题与提纲`,
+    "",
+    `- 生成时间：${shown}`,
+    `- 知识来源：${source}`,
+    `- 参与候选：${poolSize} 篇`,
+    `- 目标篇幅：${type.length.min}-${type.length.max} 字`,
+    "",
+  ];
+
+  proposals.forEach((proposal, i) => {
+    lines.push("---", "", `## 主题 ${i + 1}：${proposal.title}`, "");
+    lines.push(`- **核心判断**：${proposal.thesis || "（未给出）"}`);
+    if (proposal.angle) lines.push(`- **切入角度**：${proposal.angle}`);
+    if (proposal.rationale) lines.push(`- **为什么现在写**：${proposal.rationale}`);
+    if (proposal.keywords.length) lines.push(`- **关键词**：${proposal.keywords.join("、")}`);
+
+    const hints = [...new Set(proposal.source_hints.map((t) => String(t).replace(/[《》]/g, "").trim()).filter(Boolean))];
+    if (hints.length) lines.push(`- **素材线索**：${hints.map((t) => `《${t}》`).join(" ")}`);
+
+    if (proposal.title_candidates.length) {
+      lines.push("", "**备选标题**", "");
+      proposal.title_candidates.forEach((title, n) => lines.push(`${n + 1}. ${title}`));
+    }
+    lines.push("", "**提纲**", "");
+    proposal.outline.forEach((section, n) => {
+      lines.push(`${n + 1}. **${section.heading}**${section.target_words ? `（约 ${section.target_words} 字）` : ""}`);
+      section.points.forEach((point) => lines.push(`   - ${stripSourceRefs(point)}`));
+      lines.push("");
+    });
+  });
+
+  lines.push("---", "");
+  lines.push("选定一个主题后，把该主题整段（从 `## 主题 N` 到下一个 `---` 之前）另存为 `outline.md`，再执行：");
+  lines.push("```bash");
+  lines.push(`node skills/wechat-article/scripts/wechat-article.mjs manual --type ${type.id} --title "标题" --outline-file outline.md --stage draft`);
+  lines.push("```");
+  return `${lines.join("\n")}\n`;
+}
+
+/** Drop source-reference markers the outline model likes to append, e.g. "（素材 2）". */
+function stripSourceRefs(text) {
+  return String(text || "")
+    .replace(/[（(]\s*(?:素材|来源|资料)\s*[:：]?\s*\d+\s*[)）]/g, "")
+    .replace(/[（(]\s*综合判断\s*[)）]/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+/** --output may be a directory (auto filename) or a .md file path. */
+function resolveProposalFile(outputArg, type) {
+  const target = path.resolve(PROJECT_ROOT, outputArg);
+  const ext = path.extname(target).toLowerCase();
+  if (ext === ".md" || ext === ".markdown") return target;
+  const stamp = timestamp();
+  return path.join(target, `topics-${type.id}-${stamp.date}.md`);
 }
 
 /* ------------------------------------------------------------------ */
