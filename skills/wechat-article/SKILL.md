@@ -63,7 +63,10 @@ node skills/wechat-article/scripts/wechat-article.mjs outline --type ai-news --o
 # 优先级 2：资料收集（本地目录 / WeKnora / 两者都要，见下）
 node skills/wechat-article/scripts/wechat-article.mjs sources --type ai-news --output $DIR
 
-# 优先级 3：初稿（本地模型或 opencode）
+# 优先级 3：准备初稿输入（标题 + 大纲 + 资料 → 03-draft-input.json）
+node skills/wechat-article/scripts/wechat-article.mjs bundle  --type ai-news --output $DIR
+
+# 优先级 4：初稿（读 03-draft-input.json）
 node skills/wechat-article/scripts/wechat-article.mjs draft   --type ai-news --output $DIR
 ```
 
@@ -120,6 +123,80 @@ node skills/wechat-article/scripts/wechat-article.mjs topics --type ai-news --co
 - 这一步只做选题与提纲，不检索 WeKnora、不写正文；资料收集在选定主题之后进行。
 - 不给 `--count` / `--output` / `--md` 时保持原行为：打印候选文章表格。
 
+## 初稿输入格式（`03-draft-input.json`）
+
+写初稿前必须先准备好三样东西，它们全部装在一个 JSON 里，初稿阶段**只读这个文件**：
+
+1. `title` — 文章标题
+2. `outline` — 文章大纲（小节 + 要点 + 建议字数 + 素材引用）
+3. `materials` — 相关资料（整篇或若干段落）
+
+完整结构（JSON Schema：`config/draft-input.schema.json`）：
+
+```jsonc
+{
+  "version": 1,
+  "type": "ai-news",                       // 决定文风/篇幅/评分维度
+  "type_name": "AI 资讯快评",
+  "created_at": "2026-10-19T15:49:15.997Z",
+
+  "title": "文章标题",                      // 1) 标题
+  "thesis": "全文核心判断，一句话",
+  "audience": "目标读者",
+  "hook": "开篇钩子：场景/数据/冲突",
+  "requirements": "额外写作要求",
+  "length": { "min": 800, "target": 1000, "max": 1300 },
+
+  "outline": [                              // 2) 大纲
+    {
+      "heading": "小节标题",
+      "points": ["这一节要写到的要点"],
+      "target_words": 300,
+      "source_refs": [1, 2]                 // 主要依据的素材 id
+    }
+  ],
+  "counterpoint": "必须回应的反方观点",
+  "takeaway": "结尾要落到的一句话",
+
+  "materials": [                            // 3) 相关资料
+    {
+      "id": 1,
+      "title": "来源标题",
+      "date": "2026-10-18",
+      "origin": "local",                    // local | weknora | manual | other
+      "source": "D:/knowledge/obsidian/ai/xxx.md",
+      "url": "",
+      "summary": "一句话摘要",
+      "paragraphs": ["相关段落原文", "再一段"]
+    }
+  ],
+
+  "images": {                               // 可选，缺省按类型配置规划
+    "count": 2,
+    "cover": true,
+    "plan": [{ "position": "cover", "description": "中文画面说明", "prompt": "English prompt" }]
+  }
+}
+```
+
+用法：
+
+```bash
+# 只做准备工作：选题 → 检索 → 纲要 → 打包成 03-draft-input.json
+node skills/wechat-article/scripts/wechat-article.mjs bundle --type ai-news --output output/wa-demo
+
+# 校验这份输入（会把错误与警告逐条列出）
+node skills/wechat-article/scripts/wechat-article.mjs validate --input output/wa-demo/03-draft-input.json
+
+# 用它写初稿（可以手改 JSON 后再跑；类型与时序都能从文件里读出来）
+node skills/wechat-article/scripts/wechat-article.mjs draft --input output/wa-demo/03-draft-input.json
+```
+
+- `run` / `auto` / `manual` 也会在初稿前自动写出 `03-draft-input.json`，等于每一步都可审查、可手改。
+- **硬错误**（会中止）：缺 `title`、`outline` 为空、`materials` 为空、素材缺正文、`source_refs` 指向不存在的素材 id。
+- **软警告**（不中止）：大纲字数与目标相差过大、某节没有要点或未关联素材、缺 `thesis`/`takeaway`，日志会逐条打印。
+- 只给段落、没有整篇文章时，把段落放进 `paragraphs` 即可；`origin` 写 `manual`。
+
 ## 命令一览
 
 | 命令 | 作用 |
@@ -132,7 +209,8 @@ node skills/wechat-article/scripts/wechat-article.mjs topics --type ai-news --co
 | `topic` | 只做选题（自动选题，或 `--topic` 手动记录） |
 | `sources` | 只收集相关资料（本地目录 / WeKnora / 两者） |
 | `outline` | 只生成纲要（`--topic` / `--topic-file`，或复用输出目录里的选题） |
-| `draft` | 只生成初稿（复用输出目录里的纲要，或 `--outline-file`） |
+| `bundle` | 只做准备工作：把标题 + 大纲 + 相关资料写成 `03-draft-input.json` |
+| `draft` | 只生成初稿（读 `03-draft-input.json`，或 `--input` 指定一份） |
 | `review` | 对已有稿件执行核稿/评稿/修正循环 |
 | `illustrate` | 为已有稿件生成并替换配图 |
 | `publish` | 发布已有稿件到邮件 / 公众号草稿箱 |
@@ -148,6 +226,7 @@ node skills/wechat-article/scripts/wechat-article.mjs topics --type ai-news --co
 - `--topic-file <path>` 复用已有选题 JSON（如 `01-topic.json`）
 - `--sources-file <path>` 复用已有素材 JSON（如 `02-sources.json`）
 - `--outline-file <path>` 复用已有纲要 JSON（如 `02-outline.json`）
+- `--input <path>` 初稿输入 JSON（标题 + 大纲 + 资料，如 `03-draft-input.json`）；`draft` / `run` 用，跳过前置步骤
 - `--knowledge-source <s>` 覆盖知识来源：`local` | `weknora` | `both`
 - `--article <path>` 已有稿件路径（`review`/`illustrate`/`publish` 用；也可从路径推断 `--type`）
 - `--output <dir>` 输出目录，默认 `output/wechat-article/<type>/<date>-<slug>`（分步执行时请复用同一目录）

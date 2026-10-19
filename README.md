@@ -39,10 +39,13 @@ npm run wechat-article -- manual --type ai-news --title "某模型正式开源" 
 ```bash
 DIR=output/wa-demo
 npm run wechat-article -- topic   --type ai-news --output $DIR   # 1a 自动选题
-npm run wechat-article -- sources --type ai-news --output $DIR   # 2  资料收集（local/weknora/both）
+npm run wechat-article -- sources --type ai-news --output $DIR   # 2  资料收集（本地目录）
 npm run wechat-article -- outline --type ai-news --output $DIR   # 1b 纲要
-npm run wechat-article -- draft   --type ai-news --output $DIR   # 3  初稿
+npm run wechat-article -- bundle  --type ai-news --output $DIR   # 3  打包初稿输入
+npm run wechat-article -- draft   --type ai-news --output $DIR   # 4  初稿
 ```
+
+`bundle` 会把**标题 + 大纲 + 相关资料**写成 `03-draft-input.json`（格式见 [`skills/wechat-article/config/draft-input.schema.json`](skills/wechat-article/config/draft-input.schema.json)）。可以手改这份 JSON，再用 `draft --input <文件> --output <目录>` 写初稿；`draft` / `run` 也可以用 `validate --input <文件>` 先校验。
 
 手动选题只有一步：`outline --type ai-news --topic "主题"`（跳过选题模型）。
 

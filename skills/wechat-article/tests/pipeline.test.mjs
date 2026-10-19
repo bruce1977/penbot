@@ -35,6 +35,7 @@ import {
 } from "../scripts/lib/knowledge.mjs";
 import { normalizeIssues, applyCorrections } from "../scripts/lib/corrector.mjs";
 import { composePrompt, resolveImageCount, planImages } from "../scripts/lib/illustrate.mjs";
+import { buildDraftInput, normalizeDraftInput, validateDraftInput, toPromptParts, summarizeDraftInput } from "../scripts/lib/draft-input.mjs";
 import { bodyOnly, emailShell, markdownToHtml } from "../scripts/lib/publish.mjs";
 
 function tempDir(prefix) {
@@ -350,6 +351,97 @@ test("extractAgentText concatenates NDJSON text parts and raises errors", () => 
   assert.throws(() => extractAgentText(err), /boom/);
 
   assert.equal(extractAgentText("纯文本输出"), "纯文本输出");
+});
+
+/* ------------------------------------------------------------------ */
+/* draft input（标题 + 大纲 + 资料）                                    */
+/* ------------------------------------------------------------------ */
+
+const DRAFT_TYPE = { id: "t1", name: "T1", style: { audience: "读者" }, length: { min: 100, target: 150, max: 200 } };
+
+function sampleDraftInput() {
+  return buildDraftInput({
+    type: DRAFT_TYPE,
+    topic: { title: "备选标题", thesis: "备选判断" },
+    outline: {
+      title: "文章标题",
+      thesis: "核心判断",
+      hook: "一个场景",
+      outline: [{ heading: "第一节", points: ["要点一"], target_words: 150, source_indexes: [1] }],
+      counterpoint: "反方观点",
+      takeaway: "结尾结论",
+      image_plan: [{ position: "cover", description: "封面画面", prompt: "cover art" }],
+    },
+    sources: [
+      {
+        index: 1,
+        title: "素材一",
+        date: "2026-01-01",
+        origin: "local",
+        file: "/tmp/a.md",
+        summary: "摘要",
+        excerpts: ["段落一", "段落二"],
+      },
+    ],
+  });
+}
+
+test("buildDraftInput 打包标题、大纲与资料", () => {
+  const input = sampleDraftInput();
+  assert.equal(input.version, 1);
+  assert.equal(input.type, "t1");
+  assert.equal(input.type_name, "T1");
+  assert.equal(input.title, "文章标题");
+  assert.equal(input.thesis, "核心判断");
+  assert.equal(input.audience, "读者");
+  assert.equal(input.outline.length, 1);
+  assert.deepEqual(input.outline[0].source_refs, [1]);
+  assert.equal(input.materials[0].id, 1);
+  assert.equal(input.materials[0].origin, "local");
+  assert.deepEqual(input.materials[0].paragraphs, ["段落一", "段落二"]);
+  assert.equal(input.images.count, 1);
+  assert.equal(input.images.cover, true);
+  assert.equal(validateDraftInput(input).ok, true);
+  assert.equal(summarizeDraftInput(input).length, 4);
+});
+
+test("validateDraftInput 拦住缺标题、空大纲、空资料", () => {
+  const report = validateDraftInput({ version: 1, type: "t1", title: "", outline: [], materials: [] });
+  assert.equal(report.ok, false);
+  assert.ok(report.errors.some((e) => e.includes("title")));
+  assert.ok(report.errors.some((e) => e.includes("outline")));
+  assert.ok(report.errors.some((e) => e.includes("materials")));
+});
+
+test("validateDraftInput 报出指向不存在素材的 source_refs", () => {
+  const raw = sampleDraftInput();
+  raw.outline[0].source_refs = [9];
+  const report = validateDraftInput(raw);
+  assert.equal(report.ok, false);
+  assert.ok(report.errors.some((e) => e.includes("不存在的素材")));
+});
+
+test("normalizeDraftInput 补 id 并丢弃失效引用", () => {
+  const input = normalizeDraftInput({
+    title: "T",
+    outline: [{ heading: "一", points: ["p"], source_refs: [7, 2] }],
+    materials: [
+      { title: "A", paragraphs: ["x"] },
+      { title: "B", paragraphs: ["y"], id: 2 },
+    ],
+  });
+  assert.deepEqual(input.materials.map((m) => m.id), [1, 2]);
+  assert.deepEqual(input.outline[0].source_refs, [2]);
+});
+
+test("toPromptParts 还原成初稿提示词要的结构", () => {
+  const parts = toPromptParts(sampleDraftInput());
+  assert.equal(parts.outline.title, "文章标题");
+  assert.equal(parts.outline.thesis, "核心判断");
+  assert.deepEqual(parts.outline.outline[0].source_indexes, [1]);
+  assert.equal(parts.sources[0].index, 1);
+  assert.equal(parts.sources[0].file, "/tmp/a.md");
+  assert.deepEqual(parts.sources[0].excerpts, ["段落一", "段落二"]);
 });
 
 /* ------------------------------------------------------------------ */

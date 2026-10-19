@@ -33,6 +33,7 @@ import {
   collectLocalImages,
 } from "./lib/markdown.mjs";
 import { createCorrector, applyCorrections } from "./lib/corrector.mjs";
+import { buildDraftInput, normalizeDraftInput, validateDraftInput, toPromptParts, summarizeDraftInput } from "./lib/draft-input.mjs";
 import { generateImages, resolveImageCount, planImages } from "./lib/illustrate.mjs";
 import { sendEmail, publishToWechat, markdownToHtml, emailShell, bodyOnly } from "./lib/publish.mjs";
 
@@ -40,6 +41,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = path.resolve(__dirname, "..");
 const PROJECT_ROOT = findProjectRoot(process.cwd());
 const VERSION = "1.0.0";
+/** 写初稿前必须准备好的东西：标题 + 大纲 + 相关资料（见 config/draft-input.schema.json）。 */
+const DRAFT_INPUT_FILE = "03-draft-input.json";
 
 const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
 
@@ -53,13 +56,14 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   topics             列出候选文章；加 --count N --output <目录> 则生成 N 个候选主题（含提纲）的 Markdown
   kbs                列出 WeKnora 知识库（获取 kb_ids）
   topic              只做选题（自动选题，或 --topic 手动记录）
-  sources            只收集相关资料（本地知识库 / WeKnora）
+  sources            只收集相关资料（本地知识库）
   outline            只生成纲要（需要 --topic 或 --topic-file，或复用输出目录里的选题）
-  draft              只生成初稿（需要纲要在输出目录里，或 --outline-file）
+  bundle             只做准备工作：把标题 + 大纲 + 相关资料写成 03-draft-input.json
+  draft              只生成初稿（读 03-draft-input.json，或 --input 指定一份）
   review             对已有稿件执行核稿/评稿/修正循环
   illustrate         为已有稿件生成并替换配图
   publish            发布已有稿件（邮件 / 公众号草稿）
-  validate           校验配置文件
+  validate           校验配置文件（加 --input <file> 可同时校验初稿输入）
   doctor             检查环境与依赖
 
 两个入口（后续步骤完全一致，都可用 --stage 提前停止）:
@@ -85,6 +89,7 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   --requirements <text>  手动补充写作要求
   --topic-file <path>    复用已有选题 JSON（如 01-topic.json）
   --sources-file <path>  复用已有素材 JSON（如 02-sources.json）
+  --input <path>         初稿输入 JSON（标题 + 大纲 + 资料）；draft / run 可用，跳过前置步骤
   --article <path>       已有稿件路径（review/illustrate/publish 用）
   --output <dir>         输出目录（分步执行时请复用同一目录；默认 output/wechat-article/<type>/<date>-<slug>）
   --model <profile>      覆盖写作模型 profile
@@ -128,7 +133,7 @@ async function main() {
 
   switch (command) {
     case "validate":
-      return cmdValidate(config);
+      return cmdValidate(config, options);
     case "doctor":
       return cmdDoctor(config, options);
     case "topics":
@@ -141,6 +146,7 @@ async function main() {
     case "sources":
     case "outline":
     case "draft":
+    case "bundle":
     case "run":
       return cmdPipeline(config, options, command);
     case "review":
@@ -160,7 +166,7 @@ async function main() {
 /* validate / doctor                                                   */
 /* ------------------------------------------------------------------ */
 
-function cmdValidate(config) {
+function cmdValidate(config, options = {}) {
   const issues = validateConfig(config);
   const rows = config.types.map((type) => ({
     id: type.id,
@@ -180,6 +186,26 @@ function cmdValidate(config) {
     process.exitCode = 1;
   } else {
     console.log("配置校验通过。");
+  }
+
+  // 可选：校验一份初稿输入（标题 + 大纲 + 资料）
+  const inputArg = options.input || options["draft-input"];
+  if (inputArg) {
+    const file = path.resolve(PROJECT_ROOT, String(inputArg));
+    if (!fs.existsSync(file)) {
+      console.error(`\n初稿输入不存在：${file}`);
+      process.exitCode = 1;
+      return;
+    }
+    const raw = readJson(file);
+    const input = normalizeDraftInput(raw, { type: config.types.find((t) => t.id === raw.type) });
+    const report = validateDraftInput(input);
+    console.log(`\n初稿输入：${file}`);
+    for (const line of summarizeDraftInput(input)) console.log(`  ${line}`);
+    for (const warning of report.warnings) console.warn(`  [warn] ${warning}`);
+    for (const error of report.errors) console.error(`  [error] ${error}`);
+    if (report.ok) console.log("初稿输入校验通过。");
+    else process.exitCode = 1;
   }
 }
 
@@ -601,12 +627,20 @@ async function cmdPipeline(config, options, command) {
   const mock = asBool(options.mock);
   const fullPipeline = ["run", "auto", "manual"].includes(command);
   const manualEntry = command === "manual";
+  const bundleOnly = command === "bundle";
   const stopStage = fullPipeline ? String(options.stage || "publish") : command;
-  const resume = !fullPipeline;
+  const resume = !fullPipeline && !bundleOnly;
+  const inputArg = options.input || options["draft-input"];
+  const inputProvided = Boolean(inputArg);
+  if (inputProvided && !["draft", "run"].includes(command)) {
+    throw new Error("--input 只用于 draft / run：给它一份 03-draft-input.json（标题 + 大纲 + 资料）");
+  }
   // Entry 2: the user supplies the title (and outline); the topic model is skipped.
   if (manualEntry && !options.topic && entryTitle) options.topic = entryTitle;
   const stamp = timestamp();
-  const outputRoot = path.resolve(PROJECT_ROOT, options.output || path.join(config.project.output_dir, type.id, `${stamp.date}-${slugify(options.topic || entryTitle || type.id)}`));
+  const inputFile = inputProvided ? path.resolve(PROJECT_ROOT, String(inputArg)) : "";
+  const defaultOutput = inputFile ? path.dirname(inputFile) : path.join(config.project.output_dir, type.id, `${stamp.date}-${slugify(options.topic || entryTitle || type.id)}`);
+  const outputRoot = path.resolve(PROJECT_ROOT, options.output || defaultOutput);
   ensureDir(outputRoot);
   const logger = createLogger({ file: path.join(outputRoot, "pipeline.log"), verbose, label: type.id });
 
@@ -647,35 +681,52 @@ async function cmdPipeline(config, options, command) {
     if (needLocal && notes.length === 0) throw new Error(`知识库为空：${type.knowledge_dirs.join(", ")}`);
     ctx.notes = notes;
 
-    const topic = await resolveTopic(ctx, notes, resume);
-    ctx.topic = topic;
-    writeJson(path.join(outputRoot, "01-topic.json"), topic);
-    writeText(path.join(outputRoot, "01-topic.md"), renderTopicMarkdown(topic));
-    logger.step(`选题完成：《${topic.title || topic.topic}》`);
-    ctx.state.stages.topic = { ok: true, title: topic.title || topic.topic, reused: Boolean(ctx.topicReused) };
-    if (stopStage === "topic") return finish(ctx);
+    // --input 直接把「标题 + 大纲 + 资料」交给初稿阶段，跳过选题/检索/纲要。
+    let topic = null;
+    let sources = [];
+    let outline = null;
+    if (!inputProvided) {
+      topic = await resolveTopic(ctx, notes, resume);
+      ctx.topic = topic;
+      writeJson(path.join(outputRoot, "01-topic.json"), topic);
+      writeText(path.join(outputRoot, "01-topic.md"), renderTopicMarkdown(topic));
+      logger.step(`选题完成：《${topic.title || topic.topic}》`);
+      ctx.state.stages.topic = { ok: true, title: topic.title || topic.topic, reused: Boolean(ctx.topicReused) };
+      if (stopStage === "topic") return finish(ctx);
 
-    // Stage 2: sources -------------------------------------------------
-    const sources = await resolveSources(ctx, topic, resume);
-    ctx.sources = sources;
-    const counts = sources.reduce((acc, s) => ({ ...acc, [s.origin || "local"]: (acc[s.origin || "local"] || 0) + 1 }), {});
-    const breakdown = Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(" + ") || "none";
-    logger.info(`收集到 ${sources.length} 篇素材（${breakdown}）：${sources.map((s) => s.title.slice(0, 24)).join(" / ") || "（无）"}`);
-    writeJson(path.join(outputRoot, "02-sources.json"), sources);
-    ctx.state.stages.sources = { ok: true, count: sources.length, source: type.knowledge.source };
-    if (stopStage === "sources") return finish(ctx);
+      // Stage 2: sources -----------------------------------------------
+      sources = await resolveSources(ctx, topic, resume);
+      ctx.sources = sources;
+      const counts = sources.reduce((acc, s) => ({ ...acc, [s.origin || "local"]: (acc[s.origin || "local"] || 0) + 1 }), {});
+      const breakdown = Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(" + ") || "none";
+      logger.info(`收集到 ${sources.length} 篇素材（${breakdown}）：${sources.map((s) => s.title.slice(0, 24)).join(" / ") || "（无）"}`);
+      writeJson(path.join(outputRoot, "02-sources.json"), sources);
+      ctx.state.stages.sources = { ok: true, count: sources.length, source: type.knowledge.source };
+      if (stopStage === "sources") return finish(ctx);
 
-    // Stage 3: outline -------------------------------------------------
-    const outline = manualEntry ? buildManualOutline(ctx, topic) : await resolveOutline(ctx, sources, resume);
-    ctx.outline = outline;
-    writeJson(path.join(outputRoot, "02-outline.json"), outline);
-    writeText(path.join(outputRoot, "02-outline.md"), renderOutlineMarkdown(outline));
-    logger.step(`纲要完成：${(outline.outline || []).length} 个小节，${(outline.image_plan || []).length} 张配图`);
-    ctx.state.stages.outline = { ok: true, sections: (outline.outline || []).length };
-    if (stopStage === "outline") return finish(ctx);
+      // Stage 3: outline -----------------------------------------------
+      outline = manualEntry ? buildManualOutline(ctx, topic) : await resolveOutline(ctx, sources, resume);
+      ctx.outline = outline;
+      writeJson(path.join(outputRoot, "02-outline.json"), outline);
+      writeText(path.join(outputRoot, "02-outline.md"), renderOutlineMarkdown(outline));
+      logger.step(`纲要完成：${(outline.outline || []).length} 个小节，${(outline.image_plan || []).length} 张配图`);
+      ctx.state.stages.outline = { ok: true, sections: (outline.outline || []).length };
+      if (stopStage === "outline") return finish(ctx);
+    }
+
+    // Draft input: 标题 + 大纲 + 相关资料 打包成一份 JSON，初稿阶段只读它。
+    const draftInput = resolveDraftInput(ctx, { topic, outline, sources });
+    ctx.draftInput = draftInput;
+    logger.info(`初稿输入：${path.basename(DRAFT_INPUT_FILE)}（${summarizeDraftInput(draftInput).join("｜")}）`);
+    ctx.state.stages.bundle = { ok: true, file: path.join(outputRoot, DRAFT_INPUT_FILE) };
+    if (bundleOnly) {
+      logger.step(`准备完成：已生成 ${DRAFT_INPUT_FILE}，可用 draft --input 继续写初稿`);
+      return finish(ctx);
+    }
 
     // Stage 3: draft ---------------------------------------------------
-    let article = await generateDraft(ctx, sources, outline);
+    const view = toPromptParts(draftInput);
+    let article = await generateDraft(ctx, view.sources, view.outline);
     const draftFile = path.join(outputRoot, "03-draft.md");
     writeText(draftFile, article);
     ctx.article = article;
@@ -1013,6 +1064,44 @@ function fallbackOutline(type, topic, sources) {
     takeaway: "",
     image_plan: [],
   };
+}
+
+/**
+ * Resolve the draft input: `--input <file>` wins, otherwise it is built from
+ * the topic / outline / sources stages. Either way the result is validated and
+ * written to `03-draft-input.json` so the draft step reads one stable artifact.
+ */
+function resolveDraftInput(ctx, { topic, outline, sources } = {}) {
+  const { options, type, logger, outputDir } = ctx;
+  const target = path.join(outputDir, DRAFT_INPUT_FILE);
+  let input;
+
+  if (options.input || options["draft-input"]) {
+    const file = path.resolve(PROJECT_ROOT, String(options.input || options["draft-input"]));
+    if (!fs.existsSync(file)) throw new Error(`--input 不存在：${file}`);
+    input = normalizeDraftInput(readJson(file), { type });
+    if (input.type && input.type !== type.id) {
+      throw new Error(`--input 里的 type 是 ${input.type}，与当前 --type ${type.id} 不一致`);
+    }
+    input.type = type.id;
+    logger.info(`初稿输入：复用 ${file}`);
+  } else {
+    input = buildDraftInput({
+      type,
+      topic: topic || ctx.topic || {},
+      outline: outline || ctx.outline || {},
+      sources: sources || ctx.sources || [],
+      requirements: options.requirements ? String(options.requirements) : "",
+    });
+  }
+
+  const report = validateDraftInput(input);
+  for (const warning of report.warnings) logger.warn(`初稿输入：${warning}`);
+  if (!report.ok) {
+    throw new Error(`初稿输入不完整（${DRAFT_INPUT_FILE}）：\n  - ${report.errors.join("\n  - ")}`);
+  }
+  writeJson(target, input);
+  return input;
 }
 
 async function generateDraft(ctx, sources, outline) {
@@ -1608,9 +1697,16 @@ function applyKnowledgeSource(config, type, options) {
   return type;
 }
 
-/** Resolve the article type from --type, else PB_ARTICLE_TYPE / ARTICLE_TYPE in .env. */
+/** Resolve the article type from --type, else PB_ARTICLE_TYPE / ARTICLE_TYPE, else --input's type. */
 function resolveTypeId(options) {
-  const value = options.type || env("PB_ARTICLE_TYPE") || env("ARTICLE_TYPE");
+  let value = options.type || env("PB_ARTICLE_TYPE") || env("ARTICLE_TYPE");
+  if (!value && (options.input || options["draft-input"])) {
+    try {
+      value = readJson(path.resolve(PROJECT_ROOT, String(options.input || options["draft-input"]))).type;
+    } catch {
+      /* fall through to the error below */
+    }
+  }
   if (!value || value === true) {
     throw new Error("缺少文章类型：用 --type <id> 指定，或在 .env 里设置 PB_ARTICLE_TYPE=<id>");
   }
