@@ -1,7 +1,0 @@
-{
-  "type": "module",
-  "dependencies": {
-    "fastmcp": "^4.3.0",
-    "zod": "^4.4.3"
-  }
-}
