@@ -98,7 +98,7 @@ export function normalizeConfig(config, root = process.cwd()) {
   // The article root comes from BASE_OUTPUT_FOLDER only (env/config), never from a CLI flag.
   project.base_output_folder = path.resolve(root, project.base_output_folder);
 
-  const classifier = normalizeClassifier(config.classifier, defaults);
+  const classifier = normalizeClassifier(config.classifier);
 
   return {
     ...config,
@@ -110,19 +110,19 @@ export function normalizeConfig(config, root = process.cwd()) {
   };
 }
 
-function normalizeClassifier(classifier = {}, defaults = {}) {
-  const model = classifier.model || "systemone";
+function normalizeClassifier(classifier = {}) {
   return {
     enabled: toBool(classifier.enabled, true),
     provider: classifier.provider || "systemone",
     base_url: classifier.base_url || "",
-    endpoint: classifier.endpoint || "/v1/chat/completions",
+    endpoint: classifier.endpoint || "/v1/systemone",
     api_key: classifier.api_key || "",
-    model,
-    timeout_ms: Number(classifier.timeout_ms || 30000),
+    model: classifier.model || "jev-latest",
+    question: classifier.question || "article_type",
+    timeout_ms: Number(classifier.timeout_ms || 15000),
+    max_retries: Number(classifier.max_retries ?? 2),
     min_confidence: Number(classifier.min_confidence ?? 0.5),
-    json_mode: classifier.json_mode !== false,
-    default_type: classifier.default_type || defaults.model_type || "",
+    default_type: classifier.default_type || "",
   };
 }
 

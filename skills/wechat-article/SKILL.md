@@ -334,24 +334,43 @@ pipeline.log                             运行日志
 
 新增类型：在 `config/types/` 加一个 YAML，再把 id 写进 `article-types.yaml` 的 `types:`，跑 `validate`。
 
-### 判断模型（systemone）
+### 判断模型（System One）
 
-`article-types.yaml` 的 `classifier` 段配置一个 OpenAI 兼容端点：
+`article-types.yaml` 的 `classifier` 段配置 System One 决策模型端点（TypeSafe Jev / 基石智算 Laya / vLLM 同一协议）：
 
 ```yaml
 classifier:
   enabled: true
-  base_url: "${SYSTEMONE_BASE_URL}"
-  endpoint: "/v1/chat/completions"
+  base_url: "${SYSTEMONE_BASE_URL}"      # 例：https://routellm.abacus.ai/v1
+  endpoint: "/v1/systemone"
   api_key: "${SYSTEMONE_API_KEY}"
-  model: "${SYSTEMONE_MODEL:-systemone}"
+  model: "${SYSTEMONE_MODEL:-jev-latest}"
+  question: article_type
   min_confidence: 0.5
   default_type: ai-news
 ```
 
+请求不是 chat/completions，而是一次 `choice` 判断：
+
+```json
+{
+  "model": "jev-latest",
+  "state": "标题：…\n\n提纲：\n## …",
+  "questions": {
+    "article_type": {
+      "type": "choice",
+      "instructions": "判断这篇公众号文章最适合归入哪个类型…",
+      "criteria": { "ai-news": "…", "ai-insight": "…" }
+    }
+  }
+}
+```
+
+响应取 `answers.article_type.choice` / `probabilities` / `confidence`；`base_url` 已带 `/v1` 时不会重复拼接。
+
 - `manual` 入口有标题 + 提纲，未显式给 `--type` 时会先调用判断模型。
 - `auto` 入口只有在提供了 `--topic` 时才会尝试分类；否则直接用 `classifier.default_type`。
-- 未配置 `SYSTEMONE_*`、请求失败或置信度低于 `min_confidence` 时，回退到 `classifier.default_type`。
+- 未配置 `SYSTEMONE_*`、请求失败或置信度低于 `min_confidence` 时，回退到 `classifier.default_type`；429/503 会按 `Retry-After` 重试。
 - 单独验证：`classify --title "..." --outline-file outline.md`；`--mock` 不发请求。
 
 ## 资料收集（本地目录为主）
@@ -417,7 +436,7 @@ classifier:
 | `KNOWLEDGE_PIPELINE_DIR` | 发布成功后终稿的待入库目录，默认 `D:/knowledge/pipeline` |
 | `BASE_OUTPUT_FOLDER` | 文章根目录（下面自动建 `draft/` 与 `published/`，默认 `output/wechat-article`） |
 | `PB_ARTICLE_TYPE` | 默认文章类型 id（命令行 `--type` 优先；未设置时交给判断模型） |
-| `SYSTEMONE_BASE_URL` / `SYSTEMONE_API_KEY` / `SYSTEMONE_MODEL` | 判断模型（OpenAI 兼容端点）；留空则回退 `classifier.default_type` |
+| `SYSTEMONE_BASE_URL` / `SYSTEMONE_API_KEY` / `SYSTEMONE_MODEL` | 判断模型（System One `/v1/systemone`，默认 `jev-latest`）；留空则回退 `classifier.default_type` |
 | `PB_USE_WEKNORA` | WeKnora 总开关，默认 `false`（只用本地知识库目录） |
 
 配置里支持 `${VAR}` 与 `${VAR:-默认值}` 展开。

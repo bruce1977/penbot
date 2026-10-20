@@ -35,7 +35,13 @@ import {
   validateWarnings,
   deepMerge,
 } from "../scripts/lib/config.mjs";
-import { buildClassifyPrompt, classifyArticle, classifyOrFallback, normalizeClassifyResult } from "../scripts/lib/classify.mjs";
+import {
+  buildSystemOneBody,
+  classifyArticle,
+  classifyOrFallback,
+  normalizeClassifyResult,
+  systemOneUrl,
+} from "../scripts/lib/classify.mjs";
 import {
   indexKnowledge,
   pickRecent,
@@ -718,8 +724,9 @@ test("validateWarnings flags an unconfigured classifier and unknown default_type
   assert.ok(warnings.some((w) => w.includes("default_type")));
 });
 
-test("buildClassifyPrompt lists candidates, title and outline", () => {
-  const prompt = buildClassifyPrompt({
+test("buildSystemOneBody turns the types into a choice question", () => {
+  const body = buildSystemOneBody({
+    model: "jev-latest",
     types: [
       {
         id: "ai-news",
@@ -728,56 +735,144 @@ test("buildClassifyPrompt lists candidates, title and outline", () => {
         style: { persona: "科技媒体主编", audience: "从业者" },
         topic: { keywords: ["发布", "开源"] },
       },
+      { id: "ai-insight", name: "AI 深度观点", description: "围绕一个判断展开" },
     ],
     title: "某模型开源",
     outline: "## 发生了什么\n- 细节",
   });
-  assert.match(prompt, /ai-news（AI 资讯快评）/);
-  assert.match(prompt, /某模型开源/);
-  assert.match(prompt, /## 发生了什么/);
-  assert.match(prompt, /"type"/);
+  assert.equal(body.model, "jev-latest");
+  assert.match(body.state, /标题：某模型开源/);
+  assert.match(body.state, /## 发生了什么/);
+  const question = body.questions.article_type;
+  assert.equal(question.type, "choice");
+  assert.deepEqual(Object.keys(question.criteria).sort(), ["ai-insight", "ai-news"]);
+  assert.match(question.criteria["ai-news"], /单条新闻快速解读/);
+  assert.match(question.instructions, /不要依据选项/);
 });
 
-test("normalizeClassifyResult rejects unknown types and clamps confidence", () => {
-  const types = [{ id: "ai-news" }];
-  assert.equal(normalizeClassifyResult({ type: "ghost", confidence: 1 }, types).ok, false);
-  assert.equal(normalizeClassifyResult({ reason: "nothing" }, types).ok, false);
-  const ok = normalizeClassifyResult({ type: "ai-news", confidence: 2 }, types);
-  assert.equal(ok.ok, true);
-  assert.equal(ok.confidence, 1);
+test("systemOneUrl does not duplicate /v1", () => {
+  assert.equal(systemOneUrl("https://routellm.abacus.ai/v1"), "https://routellm.abacus.ai/v1/systemone");
+  assert.equal(systemOneUrl("https://routellm.abacus.ai", "/v1/systemone"), "https://routellm.abacus.ai/v1/systemone");
+  assert.equal(systemOneUrl("https://routellm.abacus.ai/", "/v1/systemone"), "https://routellm.abacus.ai/v1/systemone");
 });
 
-test("classifyArticle parses an OpenAI-compatible chat response", async () => {
+test("normalizeClassifyResult reads answers.<question>.choice and clamps confidence", () => {
+  const types = [{ id: "ai-news" }, { id: "ai-insight" }];
+  const good = normalizeClassifyResult(
+    {
+      answers: {
+        article_type: {
+          type: "choice",
+          choice: "ai-news",
+          probabilities: { "ai-news": 0.94, "ai-insight": 0.06 },
+          confidence: 2,
+        },
+      },
+    },
+    types,
+  );
+  assert.equal(good.ok, true);
+  assert.equal(good.type, "ai-news");
+  assert.equal(good.confidence, 1);
+  assert.equal(good.probabilities["ai-news"], 0.94);
+
+  const byProbability = normalizeClassifyResult(
+    { answers: { article_type: { probabilities: { "ai-insight": 0.7, "ai-news": 0.3 } } } },
+    types,
+  );
+  assert.equal(byProbability.type, "ai-insight");
+
+  assert.equal(normalizeClassifyResult({ answers: {} }, types).ok, false);
+  assert.equal(normalizeClassifyResult({ answers: { article_type: { choice: "ghost" } } }, types).ok, false);
+});
+
+test("classifyArticle calls /v1/systemone and parses answers", async () => {
   const config = {
     classifier: {
       enabled: true,
-      base_url: "http://systemone.local",
-      endpoint: "/v1/chat/completions",
+      base_url: "http://systemone.local/v1",
+      endpoint: "/v1/systemone",
       api_key: "k",
-      model: "systemone",
+      model: "jev-latest",
+      question: "article_type",
       timeout_ms: 1000,
+      max_retries: 0,
       min_confidence: 0.5,
-      json_mode: true,
     },
-    types: [{ id: "ai-news", name: "AI 资讯快评", enabled: true }],
+    types: [
+      { id: "ai-news", name: "AI 资讯快评", enabled: true },
+      { id: "ai-insight", name: "AI 深度观点", enabled: true },
+    ],
   };
   let seen;
   const fetchImpl = async (url, init) => {
-    seen = { url, body: JSON.parse(init.body) };
+    seen = { url, headers: init.headers, body: JSON.parse(init.body) };
     return new Response(
       JSON.stringify({
-        choices: [{ message: { content: '```json\n{"type":"ai-news","confidence":0.88,"reason":"新闻事件","scores":{"ai-news":0.88}}\n```' } }],
+        id: "systemone-1",
+        object: "systemone.classification",
+        model: "jev-1.13.0",
+        answers: {
+          article_type: {
+            type: "choice",
+            choice: "ai-news",
+            probabilities: { "ai-news": 0.91, "ai-insight": 0.09 },
+            confidence: 0.88,
+          },
+        },
+        usage: { input_tokens: 120, output_tokens: 2 },
       }),
       { status: 200 },
     );
   };
   const result = await classifyArticle({ config, title: "某模型开源", outline: "## 事实", fetchImpl });
-  assert.equal(seen.url, "http://systemone.local/v1/chat/completions");
-  assert.equal(seen.body.response_format.type, "json_object");
+  assert.equal(seen.url, "http://systemone.local/v1/systemone");
+  assert.equal(seen.headers.Authorization, "Bearer k");
+  assert.equal(seen.body.model, "jev-latest");
+  assert.equal(seen.body.questions.article_type.type, "choice");
+  assert.match(seen.body.state, /某模型开源/);
   assert.equal(result.ok, true);
   assert.equal(result.type, "ai-news");
   assert.equal(result.confidence, 0.88);
-  assert.equal(result.reason, "新闻事件");
+  assert.equal(result.model, "jev-1.13.0");
+  assert.equal(result.probabilities["ai-news"], 0.91);
+});
+
+test("classifyArticle retries 429 before giving up", async () => {
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    if (calls === 1) {
+      return new Response(JSON.stringify({ error: { message: "slow down" } }), {
+        status: 429,
+        headers: { "retry-after": "0.01" },
+      });
+    }
+    return new Response(
+      JSON.stringify({
+        answers: { article_type: { type: "choice", choice: "ai-news", probabilities: { "ai-news": 0.9 }, confidence: 0.9 } },
+      }),
+      { status: 200 },
+    );
+  };
+  const config = {
+    classifier: {
+      enabled: true,
+      base_url: "http://systemone.local",
+      endpoint: "/v1/systemone",
+      api_key: "k",
+      model: "jev-latest",
+      question: "article_type",
+      timeout_ms: 1000,
+      max_retries: 1,
+      min_confidence: 0.5,
+    },
+    types: [{ id: "ai-news", name: "AI 资讯快评", enabled: true }],
+  };
+  const result = await classifyArticle({ config, title: "某模型开源", fetchImpl });
+  assert.equal(calls, 2);
+  assert.equal(result.ok, true);
+  assert.equal(result.type, "ai-news");
 });
 
 test("classifyOrFallback degrades to classifier.default_type", async () => {

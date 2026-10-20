@@ -10,21 +10,28 @@ project:
   language: zh-CN
 
 # ---------------------------------------------------------------------------
-# 判断模型（systemone）：根据「标题 + 提纲」自动选择文章类型
+# 判断模型（System One 决策模型）：根据「标题 + 提纲」自动选择文章类型
 #
-# 走 OpenAI 兼容的 /v1/chat/completions；如果 systemone 的路径不同，
-# 改 endpoint 即可。未配置 base_url / api_key 时自动跳过，回退到 default_type。
+# 走 System One 协议：POST {base_url}/v1/systemone
+#   body:     { model, state, questions: { article_type: { type: choice, ... } } }
+#   response: { answers: { article_type: { choice, probabilities, confidence } } }
+# 兼容 TypeSafe Jev、基石智算 Laya、vLLM /v1/systemone。
+# base_url 可带 /v1（https://routellm.abacus.ai/v1），也可只写域名。
+# 未配置 base_url / api_key 时自动跳过，回退到 default_type。
 # ---------------------------------------------------------------------------
 classifier:
   enabled: true
   provider: systemone
   base_url: "${SYSTEMONE_BASE_URL}"
-  endpoint: "/v1/chat/completions"
+  endpoint: "/v1/systemone"
   api_key: "${SYSTEMONE_API_KEY}"
-  model: "${SYSTEMONE_MODEL:-systemone}"
-  timeout_ms: 30000
+  # Jev 用 jev-latest；Laya / 自建 vLLM 换成对应的模型名
+  model: "${SYSTEMONE_MODEL:-jev-latest}"
+  # questions 里的问题名，答案会从 answers.<question> 读取
+  question: article_type
+  timeout_ms: 15000
+  max_retries: 2
   min_confidence: 0.5
-  json_mode: true
   # 判断失败/置信度不足时用哪个类型
   default_type: ai-news
 
