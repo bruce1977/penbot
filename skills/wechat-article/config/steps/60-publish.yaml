@@ -1,12 +1,10 @@
 # 发布阶段：发布 → 归档
 #
-# 节点默认值在 config/steps.yaml 的 defaults；这里只写节点差异。
+# key = step_name。节点默认值在 config/steps.yaml 的 defaults。
+# 这两个节点不调用模型，也不需要提示词，只引用数据结构 id。
 
 steps:
-  # -------------------------------------------------------------------------
-  # 12. 发布
-  # -------------------------------------------------------------------------
-  - step_name: publish
+  publish:
     label: 发布
     description: 生成终稿，按渠道开关投递邮件和公众号草稿；未真实成功则留在 draft/。
     stage: publish
@@ -14,6 +12,7 @@ steps:
     modes: [auto, manual, run, publish]
     handler: builtin:publish_article
     model: none
+    schema: publish.publish
     handler_options:
       channels:
         email:
@@ -22,14 +21,6 @@ steps:
           enabled: "${PB_WECHAT_ENABLED:-false}"
           command: "${PB_WECHAT_COMMAND:-npx --yes @wenyan-md/cli}"
       auto_publish: "${PB_AUTO_PUBLISH:-false}"
-    input_format:
-      article: "string"
-      images: "Array<Image>"
-      title: "string"
-    output_format:
-      status: "published|partial|skipped|dry_run|failed"
-      channels: "Record<string, {ok: boolean, detail?: string}>"
-      archive: "{ enabled: boolean, knowledge_file?: string, zip?: string }"
     retry_limit: 1
     timeout: 300000
     artifacts:
@@ -37,10 +28,7 @@ steps:
       writes: ["08-final.md", "08-final.html?", "09-publish.json"]
     depends_on: [image_generation]
 
-  # -------------------------------------------------------------------------
-  # 13. 归档
-  # -------------------------------------------------------------------------
-  - step_name: archive
+  archive:
     label: 归档
     description: 发布成功后复制终稿到知识库 pipeline，打包到 published/，再删除 draft/<slug>/。
     stage: archive
@@ -48,13 +36,7 @@ steps:
     modes: [auto, manual, run, publish]
     handler: builtin:archive_article
     model: none
-    input_format:
-      publish: "09-publish.json"
-      article_dir: "string"
-    output_format:
-      zip: "string"
-      knowledge_file: "string?"
-      removed: "boolean"
+    schema: publish.archive
     retry_limit: 1
     timeout: 120000
     artifacts:

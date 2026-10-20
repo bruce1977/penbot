@@ -8,13 +8,16 @@
 #   50-revision.yaml  修正 / 去 AI 化 / 配图
 #   60-publish.yaml   发布 / 归档
 #
+# 节点配置用 key → value：key 是 step_name，value 是步骤参数。
+# 提示词和数据结构不在这里配置，节点只写 id：
+#   config/prompts/<命名空间>.yaml
+#   config/schemas/<命名空间>.yaml
+#
 # 这个文件只保留：
 #   - defaults：所有节点的默认值（模型 id、重试、超时）
-#   - steps：阶段文件的加载顺序
-#
-# 节点字段、类型覆盖和提示词优先级见 SKILL.md。
+#   - phases：阶段名 → 阶段文件
 
-version: 1
+version: 2
 
 defaults:
   retry_limit: 2
@@ -22,11 +25,10 @@ defaults:
   # 模型 id 定义在 config/models.yaml
   model: llm.local
 
-# 顺序 = 正常执行顺序；每个文件里的 steps: 会依次展开。
-steps:
-  - steps/10-topic.yaml
-  - steps/20-outline.yaml
-  - steps/30-draft.yaml
-  - steps/40-review.yaml
-  - steps/50-revision.yaml
-  - steps/60-publish.yaml
+phases:
+  topic: steps/10-topic.yaml
+  outline: steps/20-outline.yaml
+  draft: steps/30-draft.yaml
+  review: steps/40-review.yaml
+  revision: steps/50-revision.yaml
+  publish: steps/60-publish.yaml

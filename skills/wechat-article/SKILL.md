@@ -309,7 +309,7 @@ pipeline.log                             运行日志
 
 ## 流程节点（`config/steps/`）
 
-`config/steps.yaml` 只保留全局默认值（模型 id、重试、超时）和阶段文件顺序；节点按大步骤拆到 `config/steps/`：
+`config/steps.yaml` 只保留全局默认值（模型 id、重试、超时）和阶段文件顺序；节点按大步骤拆到 `config/steps/`。只有步骤文件带 `number-` 前缀，其他配置目录不带：
 
 | 阶段文件 | 节点 |
 | --- | --- |
@@ -320,7 +320,61 @@ pipeline.log                             运行日志
 | `50-revision.yaml` | `revision` → `de_ai` → `image_generation` |
 | `60-publish.yaml` | `publish` → `archive` |
 
-每个节点声明处理方式、模型、输入输出、重试、超时和默认提示词。节点顺序就是正常执行顺序：
+每个阶段文件里的节点用 `key → value` 写，key 就是 `step_name`。节点只引用提示词和数据结构 id，不在步骤文件里展开内容：
+
+```yaml
+steps:
+  select_topic:
+    label: 选题
+    handler: builtin:select_topic
+    model: llm.local
+    prompt: topic.select_topic
+    schema: topic.select_topic
+    retry_limit: 2
+    timeout: 900000
+```
+
+### 提示词与数据结构 id
+
+id 的格式是 `<文件名>.<配置项名>`，能直接定位到文件里的某一项：
+
+| id | 文件 | 配置项 |
+| --- | --- | --- |
+| `topic.classify_type` | `config/prompts/topic.yaml` | `prompts.classify_type` |
+| `topic.select_topic` | `config/prompts/topic.yaml` | `prompts.select_topic` |
+| `review.scoring` | `config/prompts/review.yaml` | `prompts.scoring` |
+| `publish.publish` | `config/schemas/publish.yaml` | `schemas.publish` |
+
+提示词文件：
+
+```yaml
+# config/prompts/topic.yaml
+prompts:
+  select_topic:
+    system: |
+      你是「{{type_name}}」栏目的选题编辑。
+    user: |
+      {{mode_line}}
+      {{candidates}}
+```
+
+数据结构文件：
+
+```yaml
+# config/schemas/topic.yaml
+schemas:
+  select_topic:
+    input:
+      type: ArticleType
+      candidates: "Array<Candidate>"
+    output:
+      topic: string
+      thesis: string
+```
+
+`prompts/draft.json` 是初稿输入的特殊模板（同时含校验 schema），不参与 id 注册；`draft.draft_writing` 通过 `template: prompts/draft.json` 引用它。
+
+节点顺序就是正常执行顺序：
 
 | step_name | 作用 | 处理方式 | 默认模型 |
 | --- | --- | --- | --- |
@@ -360,7 +414,7 @@ defaults:
 
 # config/steps/10-topic.yaml
 steps:
-  - step_name: select_topic
+  select_topic:
     model: llm.large
 ```
 
@@ -394,22 +448,32 @@ systemone:           # System One 决策模型
 
 ### 类型覆盖
 
-类型文件可以覆盖同名节点的模型、超时、重试和提示词，优先级：`type.steps.<step>` > `steps.yaml` 的节点配置 > `defaults`。
+类型文件可以覆盖同名节点的模型、超时、重试，也可以把某个节点切换到另一份提示词或数据结构：
 
 ```yaml
 # config/types/ai-news.yaml
 steps:
+  select_topic:
+    prompt: ai-news.select_topic   # 对应 config/prompts/ai-news.yaml 的 select_topic
+    schema: ai-news.select_topic   # 对应 config/schemas/ai-news.yaml 的 select_topic
   draft_writing:
-    prompt:
-      system: |
-        你是「AI 资讯快评」栏目的作者，先事实后观点。
-      extra: "第一段不超过 80 字，直接说清事件。"
     model: llm.large
     timeout: 900000
     retry_limit: 1
 ```
 
-旧字段 `prompts.outline_extra` / `draft_extra` / `revise_extra` 仍然生效，会追加到对应节点的 `prompt.extra`。
+类型专用提示词放在 `config/prompts/<类型 id>.yaml`：
+
+```yaml
+# config/prompts/ai-news.yaml
+prompts:
+  select_topic:
+    system: |
+      你是「AI 资讯快评」栏目的选题编辑，先事实后观点。
+    extra: "只选 48 小时内、能落到具体产品变化的事件。"
+```
+
+覆盖按字段合并：只写 `extra` 时，仍保留基础提示词的 `system` / `user`。旧字段 `prompts.outline_extra` / `draft_extra` / `revise_extra` 仍然生效，会追加到对应节点的 `prompt.extra`。
 
 ### 查看节点
 
@@ -433,9 +497,20 @@ node skills/wechat-article/scripts/wechat-article.mjs steps --json
 
 - 全局默认：`config/defaults.yaml`（输出目录、判断模型行为、文章级默认值）。
 - 模型总表：`config/models.yaml`（`llm` / `opencode` / `systemone` 三类）。
-- 类型注册表：`config/article-types.yaml`，只保留 `types:` 列表和加载顺序。
+- 类型注册表：`config/article-types.yaml`，`types:` 是 `id → 文件名` 的映射，顺序即加载顺序。
 - 类型明细：`config/types/<id>.yaml`，一个类型一个文件；`types:` 决定加载顺序，省略时自动扫描目录。
-- 字段说明：`config/types/README.md`。
+- 提示词：`config/prompts/<命名空间>.yaml`，id = `命名空间.配置项`。
+- 数据结构：`config/schemas/<命名空间>.yaml`，id 规则同上。
+- 字段说明：`config/types/README.md`、`config/prompts/README.md`、`config/schemas/README.md`。
+
+```yaml
+# config/article-types.yaml
+types:
+  ai-insight: ai-insight.yaml
+  ai-news: ai-news.yaml
+  tech-explainer: tech-explainer.yaml
+  homelab-practice: homelab-practice.yaml
+```
 
 内置类型：
 
@@ -458,9 +533,9 @@ node skills/wechat-article/scripts/wechat-article.mjs steps --json
 - `image_count`：`1-5`、`3` 或 `{ min, max, default, cover }`
 - `image_position_format`：正文配图占位符模板，默认 `[[img:{index}]]`
 - `topic`：`keywords`、`exclude_keywords`、`lookback_days`、`candidates`
-- `model` / `prompts`：写作模型与追加要求
+- `model` / `steps`：写作模型与节点覆盖（`prompt` / `schema` 写注册表 id）
 
-新增类型：在 `config/types/` 加一个 YAML，再把 id 写进 `article-types.yaml` 的 `types:`，跑 `validate`。
+新增类型：在 `config/types/` 加一个 YAML，再把 `id: 文件名` 写进 `article-types.yaml` 的 `types:`，跑 `validate`。类型专用提示词/数据结构放 `config/prompts/<id>.yaml` 和 `config/schemas/<id>.yaml`，然后在 `steps` 里用 id 覆盖。
 
 ### 判断模型（System One）
 
@@ -598,11 +673,12 @@ skills/wechat-article/
 ├── config/
 │   ├── defaults.yaml            全局默认：输出目录 / 判断模型行为 / 文章级默认值
 │   ├── models.yaml              模型总表：llm / opencode / systemone
-│   ├── article-types.yaml       类型注册表：只保留 types: 列表
-│   ├── steps.yaml               流程入口：默认值 + 阶段文件顺序
-│   ├── steps/                   按大步骤拆分的节点（10-topic … 60-publish）
-│   ├── types/                   各类型明细（<id>.yaml）+ 字段说明 README.md
-│   └── prompts/                 提示词与初稿 schema（draft.json 等）
+│   ├── article-types.yaml       类型注册表：key = 类型 id，value = types/<id>.yaml
+│   ├── steps.yaml               流程入口：默认值 + phases 阶段映射
+│   ├── steps/                   按大步骤拆分的节点（10-topic … 60-publish，仅这里带序号）
+│   ├── prompts/                 提示词注册表：<命名空间>.yaml，id = 文件名.配置项
+│   ├── schemas/                 数据结构注册表：<命名空间>.yaml，id = 文件名.配置项
+│   └── types/                   各类型明细（<id>.yaml）+ 字段说明 README.md
 └── scripts/
     ├── wechat-article.mjs       命令行入口（编排全部阶段）
     └── lib/

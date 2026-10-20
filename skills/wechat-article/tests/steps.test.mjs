@@ -114,6 +114,107 @@ test("steps.yaml expands phase files, file overrides and inline steps", () => {
   }
 });
 
+test("prompts/schemas use file-scoped ids and type overrides can switch ids", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wa-step-map-"));
+  try {
+    fs.mkdirSync(path.join(dir, "prompts"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "schemas"), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "prompts", "topic.yaml"),
+      ["prompts:", "  a:", "    system: from-file", "  b:", "    user: b-user", ""].join("\n"),
+    );
+    fs.writeFileSync(
+      path.join(dir, "prompts", "ai-news.yaml"),
+      ["prompts:", "  a:", "    system: type-system", ""].join("\n"),
+    );
+    fs.writeFileSync(
+      path.join(dir, "schemas", "topic.yaml"),
+      [
+        "schemas:",
+        "  a:",
+        "    input:",
+        "      x: string",
+        "    output:",
+        "      y: number",
+        "  b:",
+        "    input:",
+        "      z: boolean",
+        "",
+      ].join("\n"),
+    );
+    fs.writeFileSync(
+      path.join(dir, "schemas", "ai-news.yaml"),
+      ["schemas:", "  a:", "    input:", "      z: string", ""].join("\n"),
+    );
+    fs.writeFileSync(
+      path.join(dir, "phase-topic.yaml"),
+      [
+        "steps:",
+        "  a:",
+        "    handler: builtin:a",
+        "    prompt: topic.a",
+        "    schema: topic.a",
+        "  b:",
+        "    handler: builtin:b",
+        "    prompt: topic.b",
+        "    schema: topic.b",
+        "",
+      ].join("\n"),
+    );
+    fs.writeFileSync(
+      path.join(dir, "steps.yaml"),
+      [
+        "defaults:",
+        "  model:",
+        "    PROVIDER: ollama",
+        "    MODEL_NAME: base",
+        "phases:",
+        "  topic: phase-topic.yaml",
+        "",
+      ].join("\n"),
+    );
+
+    const steps = loadSteps(path.join(dir, "steps.yaml"));
+    assert.deepEqual(stepNames(steps), ["a", "b"]);
+    assert.deepEqual(Object.keys(steps.prompts).sort(), ["ai-news.a", "topic.a", "topic.b"]);
+    assert.deepEqual(Object.keys(steps.schemas).sort(), ["ai-news.a", "topic.a", "topic.b"]);
+    assert.equal(getStep(steps, "a").prompt.system, "from-file");
+    assert.equal(getStep(steps, "a").prompt_id, "topic.a");
+    assert.equal(getStep(steps, "a").schema_id, "topic.a");
+    assert.equal(getStep(steps, "a").input_format.x, "string");
+    assert.equal(getStep(steps, "a").output_format.y, "number");
+    assert.equal(getStep(steps, "b").prompt.user, "b-user");
+
+    const type = {
+      steps: {
+        a: { prompt: "ai-news.a", schema: "ai-news.a" },
+      },
+    };
+    const resolved = resolveStep("a", { steps, type });
+    assert.equal(resolved.prompt.system, "type-system");
+    assert.equal(resolved.input_format.z, "string");
+    assert.equal(resolved.output_format.y, "number");
+
+    const switched = resolveStep("a", { steps, type: { steps: { a: { prompt: "topic.b", schema: "topic.b" } } } });
+    assert.equal(switched.prompt.user, "b-user");
+    assert.equal(switched.input_format.z, "boolean");
+    assert.equal(switched.output_format.y, "number");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("real phase files load prompts and schemas by file-scoped id", () => {
+  const steps = loadSteps(STEPS_FILE);
+  const select = getStep(steps, "select_topic");
+  assert.match(select.prompt.system, /选题编辑/);
+  assert.equal(select.prompt_id, "topic.select_topic");
+  assert.equal(select.schema_id, "topic.select_topic");
+  assert.equal(select.input_format.type, "ArticleType");
+  assert.equal(getStep(steps, "draft_writing").prompt.template, "prompts/draft.json");
+  assert.equal(getStep(steps, "archive").output_format.removed, "boolean");
+});
+
 test("steps.yaml reports a missing phase file", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wa-missing-phase-"));
   try {
@@ -262,6 +363,18 @@ test("validateSteps warns about unknown type overrides", () => {
   const steps = inlineSteps([{ step_name: "draft_writing", handler: "builtin:draft" }]);
   const report = validateSteps(steps, { types: [{ id: "ai-news", steps: { ghost: {} } }] });
   assert.ok(report.warnings.some((line) => line.includes("未知步骤")));
+});
+
+test("validateSteps rejects unknown prompt/schema ids in type overrides", () => {
+  const steps = inlineSteps([{ step_name: "draft_writing", handler: "builtin:draft" }]);
+  const report = validateSteps(steps, {
+    types: [{
+      id: "ai-news",
+      steps: { draft_writing: { prompt: "ai-news.draft_writing", schema: "ai-news.draft_writing" } },
+    }],
+  });
+  assert.ok(report.errors.some((line) => line.includes("提示词 id")));
+  assert.ok(report.errors.some((line) => line.includes("数据结构 id")));
 });
 
 test("loadSteps expands environment variables in model fields", () => {

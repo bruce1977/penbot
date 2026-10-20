@@ -3,6 +3,8 @@
 > 目标：每篇文章一个独立目录，每个阶段一个固定产物；中断后看「最后一个产物」就能知道从哪继续。
 >
 > 流程节点（处理方法 / 模型 / I/O / 重试 / 超时 / 提示词）定义在 [`config/steps/`](../config/steps/)（入口 [`steps.yaml`](../config/steps.yaml)）；节点的 `stage` 字段对应下表的阶段。
+>
+> 节点只引用提示词和数据结构的 id（`<文件名>.<配置项>`，例如 `topic.classify_type`），内容分别在 [`config/prompts/`](../config/prompts/) 和 [`config/schemas/`](../config/schemas/)。
 
 ## 1. 目录布局
 

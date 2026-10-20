@@ -1,0 +1,28 @@
+# 输入/输出结构：修正阶段
+# key = 配置项名；完整 id = <文件名>.<key>，例如 topic.classify_type。
+
+schemas:
+  revision:
+    input:
+      article: "string"
+      review: "ScoreResult"
+      round: "number"
+    output:
+      article: "string（Markdown）"
+
+  de_ai:
+    input:
+      article: "string"
+      style: "string?"
+    output:
+      article: "string（Markdown）"
+      changes: "Array<{before: string, after: string, reason: string}>?"
+
+  image_generation:
+    input:
+      article: "string"
+      image_plan: "Array<{position: string, description: string, prompt: string}>"
+      count: "number?"
+      style: "string?"
+    output:
+      images: "Array<{index: number, position: string, file?: string, provider?: string, status: string, error?: string}>"

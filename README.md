@@ -67,8 +67,10 @@ npm run wechat-article -- draft   --article <slug>                  # 4  初稿
 - 技能说明与完整命令参考：[`skills/wechat-article/SKILL.md`](skills/wechat-article/SKILL.md)
 - 全局默认（输出目录 / 判断模型行为 / 文章级默认值）：[`skills/wechat-article/config/defaults.yaml`](skills/wechat-article/config/defaults.yaml)
 - 模型总表（llm / opencode / systemone）：[`skills/wechat-article/config/models.yaml`](skills/wechat-article/config/models.yaml)
-- 类型注册表：[`skills/wechat-article/config/article-types.yaml`](skills/wechat-article/config/article-types.yaml)
-- 流程节点（按大步骤拆分）：[`skills/wechat-article/config/steps/`](skills/wechat-article/config/steps/)；入口 [`steps.yaml`](skills/wechat-article/config/steps.yaml)
+- 类型注册表（id → 文件名）：[`skills/wechat-article/config/article-types.yaml`](skills/wechat-article/config/article-types.yaml)
+- 流程节点（`phases` 映射 + 节点 key/value）：[`skills/wechat-article/config/steps/`](skills/wechat-article/config/steps/)；入口 [`steps.yaml`](skills/wechat-article/config/steps.yaml)
+- 提示词（id = 文件名.配置项）：[`skills/wechat-article/config/prompts/`](skills/wechat-article/config/prompts/)
+- 数据结构（id = 文件名.配置项）：[`skills/wechat-article/config/schemas/`](skills/wechat-article/config/schemas/)
 - 类型明细与字段说明：[`skills/wechat-article/config/types/`](skills/wechat-article/config/types/)
 
 ## 内置文章类型

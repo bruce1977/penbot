@@ -698,6 +698,41 @@ test("normalizeModelMap flattens groups and keeps legacy flat models", () => {
   assert.equal(models["systemone.classifier"].provider, "systemone");
 });
 
+test("loadConfig accepts a types map keyed by type id", () => {
+  const dir = tempDir("wa-types-map-");
+  const typesDir = path.join(dir, "types");
+  fs.mkdirSync(typesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(typesDir, "t1.yaml"),
+    stringifyYaml({
+      id: "file-id",
+      type: "T1",
+      knowledge_base_path: dir,
+      style: { persona: "p", tone: "t", audience: "a" },
+      word_limit: "100-200",
+      pass_score: 80,
+      scoring_criteria: [{ id: "a", name: "A", weight: 1 }],
+      image_count: 1,
+      topic: {},
+    }),
+  );
+  fs.writeFileSync(
+    path.join(dir, "article-types.yaml"),
+    stringifyYaml({
+      types: {
+        "t1": "t1.yaml",
+        "t2": { file: "t1.yaml", type: "T2" },
+      },
+    }),
+  );
+
+  const config = loadConfig(path.join(dir, "article-types.yaml"), { root: dir });
+  assert.deepEqual(config.types.map((type) => type.id), ["t1", "t2"]);
+  assert.equal(config.types[0].name, "T1");
+  assert.equal(config.types[1].name, "T2");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test("loadConfig reads defaults.yaml before the article-types registry", () => {
   const dir = tempDir("wa-split-");
   const typesDir = path.join(dir, "types");

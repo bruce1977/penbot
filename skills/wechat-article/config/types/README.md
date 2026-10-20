@@ -21,7 +21,7 @@
 | `topic` | 否 | `keywords` / `exclude_keywords` / `lookback_days` / `candidates` |
 | `model` | 否 | 写作模型 id（如 `llm.local`、`llm.large`），默认 `defaults.model` |
 | `review` | 否 | 覆盖 `model` / `max_rounds` / `pass_score` / `correct_cn` |
-| `steps` | 否 | 按节点覆盖 `model` / `timeout` / `retry_limit` / `prompt`；优先级高于 `config/steps/` |
+| `steps` | 否 | 按节点覆盖 `model` / `timeout` / `retry_limit` / `prompt` / `schema`；`prompt` 和 `schema` 写注册表 id |
 | `prompts` | 否 | 旧字段：`outline_extra` / `draft_extra` / `revise_extra`，会追加到对应节点的 `prompt.extra` |
 | `publish` | 否 | 一般不用配；终稿归档目录统一在 `config/defaults.yaml` 的 `defaults.publish.archive.knowledge_dir` |
 
@@ -49,15 +49,14 @@ model: llm.local
 
 ## 覆盖步骤（可选）
 
-`config/steps/` 定义每个节点的默认处理方法、模型和提示词。类型只需要写有差异的部分，优先级高于阶段文件：
+`config/steps/` 定义每个节点的默认处理方法、模型，以及提示词/数据结构的 id。类型只需要写有差异的部分，优先级高于阶段文件：
 
 ```yaml
 steps:
+  select_topic:
+    prompt: ai-news.select_topic   # 对应 config/prompts/ai-news.yaml 的 select_topic
+    schema: ai-news.select_topic   # 对应 config/schemas/ai-news.yaml 的 select_topic
   draft_writing:
-    prompt:
-      system: |
-        你是「AI 资讯快评」栏目的作者，先事实后观点。
-      extra: "第一段不超过 80 字，直接说清事件。"
     model: llm.large
     timeout: 900000
     retry_limit: 1
@@ -65,8 +64,22 @@ steps:
     timeout: 900000
 ```
 
+提示词 id 的格式是 `<文件名>.<配置项>`，能直接定位到文件里的某一项：
+
+```yaml
+# config/prompts/ai-news.yaml
+prompts:
+  select_topic:
+    system: |
+      你是「AI 资讯快评」栏目的选题编辑，先事实后观点。
+    extra: "只选 48 小时内、能落到具体产品变化的事件。"
+```
+
+只写 `extra` 时，会保留基础提示词的 `system` / `user`；写 `system` / `user` 则覆盖对应字段。
+
 - `step_name` 必须与 `config/steps/` 里的节点一致。
 - 只写要覆盖的字段；`model` 只写 `config/models.yaml` 里的 id。
+- 提示词/数据结构只写 id，不在这里展开内容。
 - 查看合并后的结果：`wechat-article.mjs steps --type <id>`。
 
 ## 配图标记

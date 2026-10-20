@@ -1,0 +1,18 @@
+# 输入/输出结构：初稿阶段
+# key = 配置项名；完整 id = <文件名>.<key>，例如 topic.classify_type。
+
+schemas:
+  draft_writing:
+    input:
+      draft_input: "DraftInput（见 04-draft-input.json）"
+    output:
+      article: "string（Markdown，含 frontmatter 和配图标记）"
+
+  length_adjust:
+    input:
+      article: "string"
+      word_count: "number"
+      direction: "expand|condense"
+      target: "number"
+    output:
+      article: "string"

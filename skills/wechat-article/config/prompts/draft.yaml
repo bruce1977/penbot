@@ -1,0 +1,24 @@
+# 提示词：初稿阶段
+# key = 配置项名；完整 id = <文件名>.<key>，例如 topic.classify_type。
+#
+# draft_writing 的长模板在 prompts/draft.json（同时包含初稿输入的校验 schema）。
+
+prompts:
+  draft_writing:
+    template: "prompts/draft.json"
+
+  length_adjust:
+    system: |
+      你是「{{type_name}}」栏目的改稿编辑。只输出完整的 Markdown 文章，
+      不要输出任何说明、对比或解释。
+    retry: |
+      上一稿不合格（第 {{retry_tag}} 次尝试）：
+      {{errors}}
+
+      修改要求：
+      {{length_fix}}
+
+      保留第一行 frontmatter、所有小节标题和配图标记；只输出完整 Markdown 正文。
+
+      ## 原稿
+      {{article}}

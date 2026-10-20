@@ -1,12 +1,10 @@
 # 选题阶段：判断类型 → 选题 → 收集素材
 #
-# 节点默认值在 config/steps.yaml 的 defaults；这里只写节点差异。
+# key = step_name。节点默认值在 config/steps.yaml 的 defaults。
+# 提示词和数据结构只引用 id：config/prompts/、config/schemas/。
 
 steps:
-  # -------------------------------------------------------------------------
-  # 0. 判断文章类型（可跳过）
-  # -------------------------------------------------------------------------
-  - step_name: classify_type
+  classify_type:
     label: 判断文章类型
     description: 根据标题 + 提纲，用 System One 决策模型选择最合适的文章类型。
     stage: type
@@ -14,35 +12,16 @@ steps:
     modes: [auto, manual, run]
     handler: builtin:classify_type
     model: systemone.classifier
-    input_format:
-      title: "string"
-      outline: "string?"
-      types: "Array<{id: string, description?: string}>"
-    output_format:
-      type: "string"
-      confidence: "number(0..1)"
-      probabilities: "Record<string, number>?"
-      source: "classifier|default|manual"
+    prompt: topic.classify_type
+    schema: topic.classify_type
     retry_limit: 2
     timeout: 30000
     artifacts:
       reads: ["01-topic.json", "03-outline.json"]
       writes: ["state.json#classification"]
     depends_on: []
-    prompt:
-      instructions: |
-        判断这篇公众号文章最适合归入哪个类型。只依据标题和提纲表达的内容与体裁，
-        不要依据选项在列表中的顺序，也不要因为某个类型的描述更长而偏向它。
-      state: |
-        标题：{{title}}
 
-        提纲：
-        {{outline}}
-
-  # -------------------------------------------------------------------------
-  # 1. 选题
-  # -------------------------------------------------------------------------
-  - step_name: select_topic
+  select_topic:
     label: 选题
     description: 从近期知识库文章中提炼一个可写、可证伪的主题；手动入口可跳过。
     stage: topic
@@ -51,55 +30,16 @@ steps:
     handler: builtin:select_topic
     # 不写 model 就继承 defaults.model；需要更大模型时改成 llm.large。
     model: llm.local
-    input_format:
-      type: "ArticleType"
-      mode: "auto|manual"
-      candidates: "Array<{title: string, date: string, summary?: string, tags: string[]}>"
-      count: "number?"
-      user_topic: "string?"
-      requirements: "string?"
-    output_format:
-      topic: "string(1..30)"
-      title: "string(1..64)"
-      thesis: "string"
-      angle: "string"
-      rationale: "string"
-      keywords: "string[]"
-      source_hints: "string[]"
-      title_candidates: "string[]"
+    prompt: topic.select_topic
+    schema: topic.select_topic
     retry_limit: 2
     timeout: 900000
     artifacts:
       reads: ["01-sources.json"]
       writes: ["01-topic.json", "01-topic.md"]
     depends_on: []
-    prompt:
-      system: |
-        你是「{{type_name}}」栏目的选题编辑。{{type_description}}
-        目标读者：{{audience}}。
-        你的任务是从近期知识库文章中提炼{{count_label}}值得写的主题，而不是简单复述某一篇。
-        只输出一个合法 JSON 对象，不要输出 Markdown 代码块、解释或前后缀。
-        所有字符串使用中文，除专有名词外不要夹杂英文。
-        不要编造素材中不存在的事实、数字、机构或引用。
-      user: |
-        {{mode_line}}
 
-        近期文章候选：
-        {{candidates}}
-
-        选题要求：
-        1. 主题要具体，能用一个明确判断或问题概括，不要写成「AI 行业观察」这类空泛题目。
-        2. 优先选择有事实密度、有冲突或反常识、且近期讨论度高的方向。
-        3. 与已有文章形成差异，不要重复同一事件的消息面。
-        4. 目标篇幅 {{length.min}}-{{length.max}} 字。
-
-        输出 JSON 结构：
-        {{output_schema}}
-
-  # -------------------------------------------------------------------------
-  # 2. 收集素材
-  # -------------------------------------------------------------------------
-  - step_name: gather_materials
+  gather_materials:
     label: 收集素材
     description: 按主题关键词扫描本地知识库，截取相关段落并排序。
     stage: sources
@@ -107,14 +47,7 @@ steps:
     modes: [auto, manual, run]
     handler: builtin:gather_materials
     model: none
-    input_format:
-      topic: "Topic"
-      keywords: "string[]"
-      knowledge_dirs: "string[]"
-      max_sources: "number?"
-      lookback_days: "number?"
-    output_format:
-      sources: "Array<{title: string, path: string, date: string, tags: string[], excerpt: string, score: number}>"
+    schema: topic.gather_materials
     retry_limit: 1
     timeout: 120000
     artifacts:

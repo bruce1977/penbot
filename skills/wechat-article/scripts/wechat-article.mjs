@@ -276,6 +276,9 @@ function cmdValidate(config, options = {}) {
         timeout: `${Math.round(step.timeout / 1000)}s`,
       })),
     );
+    console.log(
+      `提示词注册表：${Object.keys(config.steps.prompts || {}).length} 个 id；数据结构注册表：${Object.keys(config.steps.schemas || {}).length} 个 id`,
+    );
   } else {
     console.warn(`\n未找到步骤配置：${config.stepsPath}（可用 --steps 指定）`);
   }
@@ -348,6 +351,8 @@ function cmdSteps(config, options = {}) {
     console.log(`重试：${step.retry_limit} 次；超时：${step.timeout}ms`);
     console.log(`依赖：${step.depends_on.join(", ") || "（无）"}`);
     console.log(`产物：读 ${step.artifacts.reads.join(", ") || "（无）"} → 写 ${step.artifacts.writes.join(", ") || "（无）"}`);
+    if (step.prompt_id) console.log(`提示词 id：${step.prompt_id}`);
+    if (step.schema_id) console.log(`数据结构 id：${step.schema_id}`);
     if (step.handler_options && Object.keys(step.handler_options).length) {
       console.log(`\n处理参数：`);
       console.log(JSON.stringify(redactSecrets(step.handler_options), null, 2));

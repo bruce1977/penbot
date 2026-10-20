@@ -1,12 +1,10 @@
 # 审稿阶段：核稿 → 评稿
 #
-# 节点默认值在 config/steps.yaml 的 defaults；这里只写节点差异。
+# key = step_name。节点默认值在 config/steps.yaml 的 defaults。
+# 提示词和数据结构只引用 id：config/prompts/、config/schemas/。
 
 steps:
-  # -------------------------------------------------------------------------
-  # 7. 核稿（错别字 / 敏感词）
-  # -------------------------------------------------------------------------
-  - step_name: review
+  review:
     label: 核稿
     description: 先走中文校对接口，接口不可用时用模型兜底；只修错别字和敏感词。
     stage: review
@@ -14,6 +12,8 @@ steps:
     modes: [auto, manual, run, review]
     handler: builtin:review_article
     model: llm.local
+    prompt: review.review
+    schema: review.review
     handler_options:
       correct_cn:
         enabled: true
@@ -24,36 +24,14 @@ steps:
         apply: issues
         fallback_llm: true
         timeout: 180000
-    input_format:
-      article: "string"
-      round: "number"
-    output_format:
-      article: "string（修正后）"
-      issues: "Array<{type: string, original: string, corrected: string, suggestion?: string}>"
-      channel: "correct-cn|llm|none"
     retry_limit: 1
     timeout: 180000
     artifacts:
       reads: ["05-draft.md"]
       writes: ["06-review/round-<n>/before.md", "06-review/round-<n>/correct.json", "06-review/round-<n>/after-correct.md"]
     depends_on: [draft_writing]
-    prompt:
-      system: |
-        你是中文校对员。只修复错别字、敏感词和语法错误，不润色文风，不改变结构和事实。
-        只输出修正后的完整 Markdown。
-      user: |
-        ## 待修复问题
-        {{issues}}
 
-        ## 原文
-        {{article}}
-
-        请输出修正后的完整文章：
-
-  # -------------------------------------------------------------------------
-  # 8. 评稿
-  # -------------------------------------------------------------------------
-  - step_name: scoring
+  scoring:
     label: 评稿
     description: 按类型评分维度打分，输出总分、问题和修改建议。
     stage: review
@@ -61,19 +39,8 @@ steps:
     modes: [auto, manual, run, review]
     handler: builtin:score_article
     model: llm.local
-    input_format:
-      article: "string"
-      word_count: "number"
-      round: "number"
-      scoring_criteria: "Array<{id: string, name: string, weight: number, description?: string}>"
-    output_format:
-      dimensions: "Array<{id: string, name: string, score: number, comment: string}>"
-      total: "number(0..100)"
-      verdict: "pass|revise"
-      strengths: "string[]"
-      issues: "Array<{severity: string, dimension: string, location: string, problem: string, fix: string}>"
-      must_fix: "string[]"
-      suggested_title: "string?"
+    prompt: review.scoring
+    schema: review.scoring
     retry_limit: 2
     timeout: 900000
     loop:
@@ -84,31 +51,3 @@ steps:
       reads: ["06-reviewed.md", "05-draft.md"]
       writes: ["06-review/round-<n>/score.json"]
     depends_on: [review]
-    prompt:
-      system: |
-        你是微信公众号「{{type_name}}」栏目的终审编辑，以严格、具体、可执行为标准评稿。
-        你不负责鼓励作者，只负责指出真实问题。
-        评分必须区分档次：有明显硬伤的稿件不得高于 75 分；达到发表水准才给 80 分以上。
-        只输出一个合法 JSON 对象，不要输出 Markdown 代码块、解释或前后缀。
-      user: |
-        请对下面这篇稿件进行第 {{round}} 轮评稿。
-
-        ## 栏目要求
-        - 篇幅要求：{{length.min}}-{{length.max}} 字，当前 {{word_count}} 字。
-        - 目标读者：{{audience}}
-        - 文风：{{tone}}
-        - 结构：{{structure}}
-        - 必须做到：{{dos}}
-        - 必须避免：{{donts}}
-        - 通过分数线：{{pass_score}}
-
-        ## 评分维度（每个维度 0-100 分）
-        {{scoring_dimensions}}
-
-        ## 稿件
-        {{article}}
-
-        ## 输出 JSON 结构
-        {{output_schema}}
-
-        注意：total 必须等于各维度按权重加权后的结果。

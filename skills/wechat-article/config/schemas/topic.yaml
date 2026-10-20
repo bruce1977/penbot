@@ -1,0 +1,42 @@
+# 输入/输出结构：选题阶段
+# key = 配置项名；完整 id = <文件名>.<key>，例如 topic.classify_type。
+
+schemas:
+  classify_type:
+    input:
+      title: "string"
+      outline: "string?"
+      types: "Array<{id: string, description?: string}>"
+    output:
+      type: "string"
+      confidence: "number(0..1)"
+      probabilities: "Record<string, number>?"
+      source: "classifier|default|manual"
+
+  select_topic:
+    input:
+      type: "ArticleType"
+      mode: "auto|manual"
+      candidates: "Array<{title: string, date: string, summary?: string, tags: string[]}>"
+      count: "number?"
+      user_topic: "string?"
+      requirements: "string?"
+    output:
+      topic: "string(1..30)"
+      title: "string(1..64)"
+      thesis: "string"
+      angle: "string"
+      rationale: "string"
+      keywords: "string[]"
+      source_hints: "string[]"
+      title_candidates: "string[]"
+
+  gather_materials:
+    input:
+      topic: "Topic"
+      keywords: "string[]"
+      knowledge_dirs: "string[]"
+      max_sources: "number?"
+      lookback_days: "number?"
+    output:
+      sources: "Array<{title: string, path: string, date: string, tags: string[], excerpt: string, score: number}>"

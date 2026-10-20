@@ -1,0 +1,22 @@
+# 输入/输出结构：发布阶段
+# key = 配置项名；完整 id = <文件名>.<key>，例如 topic.classify_type。
+
+schemas:
+  publish:
+    input:
+      article: "string"
+      images: "Array<Image>"
+      title: "string"
+    output:
+      status: "published|partial|skipped|dry_run|failed"
+      channels: "Record<string, {ok: boolean, detail?: string}>"
+      archive: "{ enabled: boolean, knowledge_file?: string, zip?: string }"
+
+  archive:
+    input:
+      publish: "09-publish.json"
+      article_dir: "string"
+    output:
+      zip: "string"
+      knowledge_file: "string?"
+      removed: "boolean"

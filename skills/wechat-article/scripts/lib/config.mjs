@@ -64,17 +64,24 @@ function readYaml(file) {
 }
 
 /**
- * types 支持三种写法：
- *   - ai-news                         → config/types/ai-news.yaml
- *   - { file: ai-news.yaml, ... }     → 读文件，再用内联字段覆盖
- *   - { id: ai-news, ... }            → 完全内联（测试/临时配置用）
+ * types 支持两种写法：
+ *
+ *   # 推荐：key = 类型 id，value = config/types/ 下的文件名
+ *   types:
+ *     ai-news: ai-news.yaml
+ *
+ *   # 兼容旧写法：数组
+ *   types:
+ *     - ai-news
+ *     - { file: ai-news.yaml, ... }
+ *
  * 省略 types 时自动扫描 config/types/*.yaml。
  */
 function loadTypeFiles(base, configDir) {
   const typesDir = path.resolve(configDir, "types");
-  const entries = Array.isArray(base.types) ? base.types : [];
+  const entries = base.types;
 
-  if (entries.length === 0) {
+  if (entries === undefined || entries === null || (Array.isArray(entries) && entries.length === 0)) {
     if (!fs.existsSync(typesDir)) return [];
     return fs
       .readdirSync(typesDir)
@@ -83,15 +90,33 @@ function loadTypeFiles(base, configDir) {
       .map((name) => readTypeFile(typesDir, name));
   }
 
-  return entries.map((entry) => {
-    if (typeof entry === "string") return readTypeFile(typesDir, entry);
-    if (entry && typeof entry === "object") {
-      if (!entry.file) return entry;
-      const { file, ...inline } = entry;
-      return { ...readTypeFile(typesDir, file), ...inline };
-    }
-    throw new Error(`types 里的条目必须是类型 id、文件路径或对象：${JSON.stringify(entry)}`);
-  });
+  if (Array.isArray(entries)) {
+    return entries.map((entry) => {
+      if (typeof entry === "string") return readTypeFile(typesDir, entry);
+      if (isPlainObject(entry)) {
+        if (!entry.file) return entry;
+        const { file, ...inline } = entry;
+        return { ...readTypeFile(typesDir, file), ...inline };
+      }
+      throw new Error(`types 里的条目必须是类型 id、文件路径或对象：${JSON.stringify(entry)}`);
+    });
+  }
+
+  if (isPlainObject(entries)) {
+    return Object.entries(entries).map(([id, value]) => {
+      if (typeof value === "string") {
+        return { ...readTypeFile(typesDir, value), id };
+      }
+      if (isPlainObject(value)) {
+        const { file, ...overrides } = value;
+        const inline = file ? readTypeFile(typesDir, file) : {};
+        return { ...inline, ...overrides, id: overrides.id || id };
+      }
+      throw new Error(`types.${id} 必须是文件名或对象：${JSON.stringify(value)}`);
+    });
+  }
+
+  throw new Error(`types 必须是对象或数组：${JSON.stringify(entries)}`);
 }
 
 function readTypeFile(typesDir, ref) {
