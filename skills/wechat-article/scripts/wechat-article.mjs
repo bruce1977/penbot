@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, asNumber, asBool, asList } from "./lib/args.mjs";
 import { findProjectRoot, loadDotEnv, env } from "./lib/env.mjs";
-import { loadConfig, findType, listTypes, getModelProfile, validateConfig, DEFAULT_CONFIG_PATH } from "./lib/config.mjs";
+import { loadConfig, findType, listTypes, getModelProfile, validateConfig, validateWarnings, DEFAULT_CONFIG_PATH } from "./lib/config.mjs";
 import { ensureDir, writeText, writeJson, readJson, readText, exists, uniqueDir, relativeTo, timestamp, slugify } from "./lib/fsx.mjs";
 import { createLogger } from "./lib/log.mjs";
 import { createModelClient } from "./lib/models.mjs";
@@ -28,6 +28,7 @@ import {
   parseImageMarkers,
   replaceImageMarkers,
   normalizeImageMarkers,
+  formatImageMarker,
   ensureSectionHeadings,
   parseOutlineMarkdown,
   splitFrontmatter,
@@ -39,6 +40,7 @@ import { createCorrector, applyCorrections } from "./lib/corrector.mjs";
 import { buildDraftInput, normalizeDraftInput, validateDraftInput, loadDraftTemplate, summarizeDraftInput } from "./lib/draft-input.mjs";
 import { generateImages, resolveImageCount, planImages } from "./lib/illustrate.mjs";
 import { sendEmail, publishToWechat, markdownToHtml, emailShell, bodyOnly, derivePublishStatus } from "./lib/publish.mjs";
+import { classifyArticle, classifyOrFallback, formatOutline } from "./lib/classify.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = path.resolve(__dirname, "..");
@@ -61,6 +63,7 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   manual             入口 2：用你给的标题 + 提纲，直接往下写（跳过选题与纲要模型）
   run                完整管线（等价 auto，保留兼容）
   topics             列出候选文章；加 --count N --output <目录> 则生成 N 个候选主题（含提纲）的 Markdown
+  classify           只用判断模型（systemone）根据标题 + 提纲选类型，打印得分
   kbs                列出 WeKnora 知识库（获取 kb_ids）
   topic              只做选题（自动选题，或 --topic 手动记录）
   sources            只收集相关资料（本地知识库）
@@ -97,12 +100,12 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
 
 通用参数:
   --config <path>        配置文件，默认 ${DEFAULT_CONFIG_PATH}
-  --type <id>            文章类型 id（也可在 .env 设置 PB_ARTICLE_TYPE）
+  --type <id>            文章类型 id（也可在 .env 设置 PB_ARTICLE_TYPE；都缺省时由判断模型自动分类）
   --article <slug>       选择/续跑 draft 下的文章；latest = 最近一篇；分步命令省略时自动选中唯一一篇
   --file <path>          review/illustrate/publish 直接指定稿件文件（也可继续用 --article <path>）
   --slug <name>          新建文章时覆盖目录名（默认取标题的 slug）
   --title <text>         手动入口的文章标题
-  --outline-file <path>  手动入口的提纲文件（.md 或 .json）；分步时也可复用自动生成的 03-outline.json
+  --outline-file <path>  手动入口 / classify 的提纲文件（.md 或 .json）；分步时也可复用自动生成的 03-outline.json
   --outline <text>       手动入口的内联提纲（Markdown 或 JSON）
   --topic <text>         手动指定主题（省略则自动选题；手动时跳过选题模型调用）
   --requirements <text>  手动补充写作要求
@@ -142,7 +145,10 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   node skills/wechat-article/scripts/wechat-article.mjs draft --input output/wa-demo/04-draft-input.json
   node skills/wechat-article/scripts/wechat-article.mjs review --article my-article-slug
   node skills/wechat-article/scripts/wechat-article.mjs publish --article my-article-slug --to me@example.com
+  node skills/wechat-article/scripts/wechat-article.mjs classify --title "某模型开源" --outline-file outline.md
 
+配置：config/article-types.yaml（总配置）+ config/types/<id>.yaml（各类型明细）
+判断模型：SYSTEMONE_BASE_URL / SYSTEMONE_API_KEY / SYSTEMONE_MODEL（未配置时回退 classifier.default_type）
 提示词与初稿校验规则：skills/wechat-article/config/prompts/draft.json（prompt + schema）
 `;
 
@@ -164,6 +170,8 @@ async function main() {
       return cmdDoctor(config, options);
     case "topics":
       return cmdTopics(config, options);
+    case "classify":
+      return cmdClassify(config, options);
     case "kbs":
       return cmdListKbs(config, options);
     case "auto":
@@ -194,6 +202,7 @@ async function main() {
 
 function cmdValidate(config, options = {}) {
   const issues = validateConfig(config);
+  const warnings = validateWarnings(config);
   const rows = config.types.map((type) => ({
     id: type.id,
     name: type.name,
@@ -203,9 +212,14 @@ function cmdValidate(config, options = {}) {
     dimensions: type.scoring.dimensions.length,
     pass_score: type.scoring.pass_score,
     images: `${type.illustrations.min}-${type.illustrations.max}`,
+    image_format: type.illustrations.position_format,
   }));
   console.log(`配置文件：${config.__path}`);
   console.table(rows);
+  const classifier = config.classifier || {};
+  console.log(
+    `判断模型：${classifier.enabled ? "启用" : "禁用"}（${classifier.model || "systemone"} @ ${classifier.base_url || "未配置"}，默认类型 ${classifier.default_type || "未设置"}）`,
+  );
   if (issues.length) {
     console.error("\n发现问题：");
     for (const issue of issues) console.error(`  - ${issue}`);
@@ -213,6 +227,7 @@ function cmdValidate(config, options = {}) {
   } else {
     console.log("配置校验通过。");
   }
+  for (const warning of warnings) console.warn(`  [warn] ${warning}`);
 
   // 可选：校验一份初稿输入（标题 + 大纲 + 资料）
   const inputArg = options.input || options["draft-input"];
@@ -247,6 +262,20 @@ async function cmdDoctor(config, options) {
   for (const type of listTypes(config)) {
     const missing = type.knowledge_dirs.filter((dir) => !fs.existsSync(dir));
     add(`知识库 ${type.id}`, missing.length === 0, missing.length ? `缺失：${missing.join(", ")}` : `${type.knowledge_dirs.length} 个目录`);
+  }
+
+  // 判断模型（systemone）
+  const classifier = config.classifier || {};
+  if (!classifier.enabled) {
+    add("判断模型 systemone", true, "已禁用（classifier.enabled=false）");
+  } else if (!classifier.base_url || !classifier.api_key) {
+    add(
+      "判断模型 systemone",
+      true,
+      `未配置（缺 ${!classifier.base_url ? "SYSTEMONE_BASE_URL" : ""}${!classifier.base_url && !classifier.api_key ? " / " : ""}${!classifier.api_key ? "SYSTEMONE_API_KEY" : ""}），将回退 ${classifier.default_type || "（无默认类型）"}`,
+    );
+  } else {
+    add("判断模型 systemone", true, `${classifier.model} @ ${classifier.base_url}`);
   }
 
   // WeKnora remote knowledge source
@@ -354,6 +383,37 @@ async function cmdDoctor(config, options) {
 }
 
 /* ------------------------------------------------------------------ */
+/* classify                                                            */
+/* ------------------------------------------------------------------ */
+
+async function cmdClassify(config, options) {
+  const title = String(options.title || options.topic || "").trim();
+  if (!title) throw new Error('classify 需要 --title "文章标题"（也可用 --topic）');
+  const outline = readOutlineText(options);
+  const logger = createLogger({ verbose: asBool(options.verbose), label: "classify" });
+  const result = await classifyArticle({ config, title, outline, logger, mock: asBool(options.mock) });
+  const fallback = config.classifier?.default_type || "";
+
+  console.log(`判断模型：${config.classifier?.model || "systemone"} @ ${config.classifier?.base_url || "（未配置）"}`);
+  if (outline) console.log(`提纲：${outline.split(/\r?\n/).filter(Boolean).length} 行`);
+  const scores = Object.entries(result.scores || {});
+  if (scores.length) console.table(scores.map(([id, score]) => ({ type: id, score })));
+
+  if (result.ok) {
+    console.log(`选择：${result.type}（置信度 ${result.confidence}）`);
+    if (result.reason) console.log(`理由：${result.reason}`);
+    const min = Number(config.classifier?.min_confidence ?? 0.5);
+    if (result.confidence < min) {
+      console.log(`置信度低于 ${min}，实际运行会回退到 ${fallback || "（无默认类型，直接报错）"}`);
+    }
+  } else {
+    console.log(`分类失败：${result.reason}`);
+    if (fallback) console.log(`实际运行会回退到：${fallback}`);
+    process.exitCode = 1;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* topics                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -371,7 +431,7 @@ async function cmdListKbs(config, options) {
   const data = await res.json();
   const rows = (data.data || []).map((kb) => ({ id: kb.id, name: kb.name, docs: kb.knowledge_count, type: kb.type }));
   console.table(rows);
-  console.log(`\n共 ${rows.length} 个知识库（${base}）。把 id 填到 config 里对应类型的 knowledge.weknora.kb_ids。`);
+  console.log(`\n共 ${rows.length} 个知识库（${base}）。如需启用远端检索，把 id 填到 article-types.yaml 的 defaults.knowledge.weknora.kb_ids。`);
 }
 
 async function cmdTopics(config, options) {
@@ -651,8 +711,12 @@ async function cmdPipeline(config, options, command) {
   // 先定位文章目录，这样 --type 也可以从 state.json 里推断。
   const selector = options.article && options.article !== true ? String(options.article) : "";
   const existing = selector ? openArticle(config, selector) : null;
-  const typeId = resolveTypeId(options, existing?.article?.type);
-  const type = findType(config, typeId);
+  const typeInfo = await resolveTypeForEntry(config, options, {
+    title: entryTitle,
+    command,
+    existing,
+  });
+  const type = findType(config, typeInfo.typeId);
   if (!type.enabled) throw new Error(`文章类型 ${type.id} 已禁用`);
 
   applyKnowledgeSource(config, type, options);
@@ -711,6 +775,8 @@ async function cmdPipeline(config, options, command) {
       article: article ? { ...article.article, title: article.article.title || entryTitle } : null,
       type: type.id,
       typeName: type.name,
+      typeSource: typeInfo.source,
+      classification: typeInfo.classification || undefined,
       startedAt: new Date().toISOString(),
       outputDir: article?.dir || "",
       mock,
@@ -733,6 +799,8 @@ async function cmdPipeline(config, options, command) {
 
   logger.step(`管线启动：${type.name}（${type.id}）`);
   logger.info(`入口：${manualEntry ? "手动（标题 + 提纲）" : "自动（基于知识库选题 + 自动纲要）"}`);
+  logger.info(`类型来源：${TYPE_SOURCE_LABEL[typeInfo.source] || typeInfo.source}`);
+  if (typeInfo.classification?.reason) logger.info(`分类理由：${typeInfo.classification.reason}`);
   logger.info(`文章根目录：${config.project.base_output_folder}`);
   logger.info(`知识来源：${type.knowledge.source}${type.knowledge.source !== "local" ? `（WeKnora ${type.knowledge.weknora.kb_ids.length} 个知识库）` : ""}`);
   logger.info(`模型：写作=${options.model || type.model}，评稿=${options["review-model"] || type.review.model || type.model}`);
@@ -1260,7 +1328,12 @@ async function generateDraft(ctx, input) {
       "",
       `这是 ${type.name} 的 mock 初稿，用于验证脚本管线。`,
       "",
-      "[[img:1|一张用于验证流程的示意图|abstract blue geometric network, minimal editorial illustration]]",
+      formatImageMarker(
+        type.illustrations.position_format,
+        1,
+        "一张用于验证流程的示意图",
+        "abstract blue geometric network, minimal editorial illustration",
+      ),
       "",
       "## 第一节",
       "",
@@ -1270,7 +1343,12 @@ async function generateDraft(ctx, input) {
       "",
       "如果你看到这篇文章，说明脚本的模型调用被替换成了 mock。",
       "",
-      "[[img:2|第二张示意图|abstract data flow lines, minimal editorial illustration]]",
+      formatImageMarker(
+        type.illustrations.position_format,
+        2,
+        "第二张示意图",
+        "abstract data flow lines, minimal editorial illustration",
+      ),
       "",
       "## 结尾",
       "",
@@ -1292,7 +1370,7 @@ async function generateDraft(ctx, input) {
   article = normalizeArticle(stripCodeFence(article), { title: input.title, type: type.id });
   article = ensureSectionHeadings(article, input.outline.map((section) => section.heading));
   const count = resolveImageCount(type, { image_plan: input.images }, { count: options.images ? asNumber(options.images) : undefined });
-  article = normalizeImageMarkers(article, count, input.images);
+  article = normalizeImageMarkers(article, count, input.images, { format: type.illustrations.position_format });
   article = await fitLength(ctx, article, input);
   return article;
 }
@@ -1308,7 +1386,8 @@ async function fitLength(ctx, article, input) {
   const range = { min: type.length.min, max: type.length.max };
   const model = options.model || type.model;
   const maxAttempts = clamp(asNumber(options.lengthAttempts, 2), 0, 4);
-  const markers = Math.max(parseImageMarkers(article).length, 0);
+  const imageFormat = type.illustrations.position_format;
+  const markers = Math.max(parseImageMarkers(article, { format: imageFormat }).length, 0);
   const headings = input.outline.map((section) => section.heading);
   let current = article;
 
@@ -1337,7 +1416,7 @@ async function fitLength(ctx, article, input) {
       });
       candidate = normalizeArticle(stripCodeFence(text), { title: input.title, type: type.id });
       candidate = ensureSectionHeadings(candidate, headings);
-      if (markers) candidate = normalizeImageMarkers(candidate, markers, input.images);
+      if (markers) candidate = normalizeImageMarkers(candidate, markers, input.images, { format: imageFormat });
     } catch (error) {
       logger.warn(`篇幅调整失败（${error.message}），保留当前稿件`);
       return current;
@@ -1544,9 +1623,12 @@ export function normalizeScore(type, result, wordCount) {
 
 export function ruleBasedScore(type, article, wordCount) {
   const { body } = splitFrontmatter(article);
-  const paragraphs = body.split(/\r?\n\s*\r?\n/).filter((p) => p.trim() && !p.startsWith("[[img:"));
+  const imageFormat = type.illustrations.position_format;
+  const paragraphs = body
+    .split(/\r?\n\s*\r?\n/)
+    .filter((p) => p.trim() && parseImageMarkers(p, { format: imageFormat }).length === 0);
   const longParagraphs = paragraphs.filter((p) => p.replace(/[^\n]/g, "").length > 5 || p.length > 220).length;
-  const markers = parseImageMarkers(article).length;
+  const markers = parseImageMarkers(article, { format: imageFormat }).length;
   const inRange = wordCount >= type.length.min && wordCount <= type.length.max;
   const lengthScore = inRange ? 90 : Math.max(40, 90 - Math.abs(wordCount - type.length.target) / Math.max(1, type.length.target) * 80);
   const structureScore = clamp(100 - longParagraphs * 8, 40, 100);
@@ -1590,7 +1672,13 @@ async function reviseArticle(ctx, article, score, round) {
       logger.warn(`修正稿长度异常（${(ratio * 100).toFixed(0)}%），保留原稿`);
       return article;
     }
-    return normalizeImageMarkers(candidate, parseImageMarkers(article).length || type.illustrations.min);
+    const imageFormat = type.illustrations.position_format;
+    return normalizeImageMarkers(
+      candidate,
+      parseImageMarkers(article, { format: imageFormat }).length || type.illustrations.min,
+      [],
+      { format: imageFormat },
+    );
   } catch (error) {
     logger.warn(`修正模型失败：${error.message}`);
     return article;
@@ -1611,7 +1699,13 @@ async function illustrateArticle(ctx, article) {
       return { ...plan, success: true, pipeline: "mock", file };
     });
     const replacements = new Map(images.map((image) => [image.index, relativeTo(outputDir, image.file)]));
-    return { article: replaceImageMarkers(article, replacements, { onFailure: type.illustrations.on_failure }), images };
+    return {
+      article: replaceImageMarkers(article, replacements, {
+        onFailure: type.illustrations.on_failure,
+        format: type.illustrations.position_format,
+      }),
+      images,
+    };
   }
 
   logger.step(`开始生成 ${plans.length} 张配图`);
@@ -1628,7 +1722,10 @@ async function illustrateArticle(ctx, article) {
     if (image.success) replacements.set(image.index, relativeTo(outputDir, image.file));
   }
   writeJson(path.join(outputDir, ARTIFACT.images), images);
-  const next = replaceImageMarkers(article, replacements, { onFailure: type.illustrations.on_failure || "comment" });
+  const next = replaceImageMarkers(article, replacements, {
+    onFailure: type.illustrations.on_failure || "comment",
+    format: type.illustrations.position_format,
+  });
   return { article: next, images };
 }
 
@@ -1921,6 +2018,88 @@ function resolveTypeId(options, fallback = "") {
     throw new Error("缺少文章类型：用 --type <id> 指定，或在 .env 里设置 PB_ARTICLE_TYPE=<id>");
   }
   return String(value);
+}
+
+const TYPE_SOURCE_LABEL = {
+  cli: "--type 指定",
+  env: "环境变量 PB_ARTICLE_TYPE",
+  input: "初稿输入的 type",
+  article: "续跑文章的 state.json",
+  classifier: "判断模型（systemone）自动分类",
+  default: "classifier.default_type",
+};
+
+/**
+ * 入口阶段的类型解析（异步版）：
+ *   --type > 续跑文章 > PB_ARTICLE_TYPE > --input.type > 判断模型 > default_type
+ * 判断模型只在能拿到标题/提纲时才有意义；auto 入口没有标题时直接走 default_type。
+ */
+async function resolveTypeForEntry(config, options, { title = "", command, existing } = {}) {
+  if (options.type && options.type !== true) return { typeId: String(options.type), source: "cli" };
+  if (existing?.article?.type) return { typeId: existing.article.type, source: "article" };
+
+  const envType = env("PB_ARTICLE_TYPE") || env("ARTICLE_TYPE");
+  if (envType) return { typeId: envType, source: "env" };
+
+  const inputArg = options.input || options["draft-input"];
+  if (inputArg && inputArg !== true) {
+    try {
+      const raw = readJson(path.resolve(PROJECT_ROOT, String(inputArg)));
+      if (raw.type) return { typeId: String(raw.type), source: "input" };
+    } catch {
+      /* 读不出来就继续往下走 */
+    }
+  }
+
+  const outline = readOutlineText(options);
+  const headline = String(title || options.topic || "").trim();
+  if (headline || outline) {
+    const classifierLogger = createLogger({ verbose: asBool(options.verbose), label: "classify" });
+    const outcome = await classifyOrFallback({
+      config,
+      title: headline || outline.split(/\r?\n/).find((line) => line.trim())?.replace(/^#+\s*/, "").trim() || "",
+      outline,
+      logger: classifierLogger,
+      mock: asBool(options.mock),
+    });
+    if (outcome.typeId) {
+      if (outcome.source === "classifier") {
+        classifierLogger.info(
+          `判断模型选择：${outcome.typeId}（置信度 ${outcome.result?.confidence ?? "?"}）${outcome.result?.reason ? `：${outcome.result.reason}` : ""}`,
+        );
+      }
+      return { typeId: outcome.typeId, source: outcome.source, classification: outcome.result };
+    }
+  }
+
+  throw new Error(
+    "缺少文章类型：用 --type <id> 指定，或在 .env 设置 PB_ARTICLE_TYPE；也可以配置 SYSTEMONE_* 让判断模型根据标题和提纲自动分类",
+  );
+}
+
+/** 读取 manual 入口的提纲文本（Markdown 原样返回，JSON 转成可读文本）。 */
+function readOutlineText(options) {
+  const fileArg = options["outline-file"];
+  if (fileArg && fileArg !== true) {
+    const file = path.resolve(PROJECT_ROOT, String(fileArg));
+    if (fs.existsSync(file)) {
+      const text = fs.readFileSync(file, "utf8");
+      return String(fileArg).toLowerCase().endsWith(".json") ? outlineJsonToText(text) : text;
+    }
+  }
+  if (options.outline !== undefined && options.outline !== true) {
+    const text = String(options.outline);
+    return text.trim().startsWith("{") ? outlineJsonToText(text) : text;
+  }
+  return "";
+}
+
+function outlineJsonToText(text) {
+  try {
+    return formatOutline(JSON.parse(text));
+  } catch {
+    return text;
+  }
 }
 
 /**

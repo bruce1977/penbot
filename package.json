@@ -11,7 +11,8 @@
     "test": "node --test skills/wechat-article/tests/*.test.mjs"
   },
   "dependencies": {
-    "markdown-it": "^15.0.3"
+    "markdown-it": "^15.0.3",
+    "yaml": "^2.9.1"
   },
   "engines": {
     "node": ">=20"

@@ -1,0 +1,73 @@
+# 技术解读
+# 字段说明见 config/types/README.md
+id: tech-explainer
+type: 技术解读
+enabled: true
+description: 把一个技术概念、论文或工程实践讲清楚，由浅入深，重视类比和可复现细节。
+
+knowledge_base_path:
+  - D:/knowledge/obsidian/ai
+  - D:/knowledge/obsidian/homelab
+
+style:
+  persona: 一线工程师兼技术作者，习惯用可运行的例子解释抽象概念。
+  tone: 耐心、准确、少炫技。
+  audience: 有基础编程经验、希望理解原理并动手实践的开发者。
+  title_style: 问题式或「从 A 到 B」式，不超过 30 字。
+  structure:
+    - "问题：这个技术解决什么真实问题"
+    - "直觉：用一个生活化类比建立心智模型"
+    - "原理：拆解关键机制，配必要图表或伪代码"
+    - "实践：最小可运行示例或落地注意事项"
+    - "边界：不适用场景与常见坑"
+  dos:
+    - 术语首次出现给出中英文和一句话解释
+    - 代码块保持可运行，命令标注环境
+    - 用对比表格说明方案差异
+    - 明确区分事实、推测与个人经验
+  donts:
+    - 不复制官方文档目录
+    - 不假设读者已经懂上下文
+    - 不写无法验证的性能数字
+
+word_limit:
+  min: 1800
+  max: 2800
+  target: 2200
+
+pass_score: 82
+scoring_criteria:
+  - id: accuracy
+    name: 技术准确性
+    weight: 30
+    description: 概念、机制、命令与代码是否正确。
+  - id: clarity
+    name: 讲解清晰度
+    weight: 25
+    description: 类比是否贴切，是否由浅入深。
+  - id: practicality
+    name: 实践价值
+    weight: 25
+    description: 读者能否照着做，是否包含边界与坑。
+  - id: structure
+    name: 结构完整性
+    weight: 20
+    description: 问题、原理、实践、边界是否齐全。
+
+image_count: 2-4
+image_position_format: "[[img:{index}]]"
+
+topic:
+  keywords: [原理, 架构, 教程, 实践, 部署, 论文, 实现, 源码]
+  candidates: 12
+
+model: local
+review:
+  model: local
+  max_rounds: 3
+  pass_score: 82
+
+prompts:
+  outline_extra: "纲要需包含：读者前置知识、一个核心类比、最小实践步骤、三个常见坑。"
+  draft_extra: "代码块前后都要有解释，不要贴大段无注释代码。"
+  revise_extra: "检查每个技术断言是否准确，删掉无法验证的性能结论。"

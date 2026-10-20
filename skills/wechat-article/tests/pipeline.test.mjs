@@ -18,13 +18,24 @@ import {
   replaceImageMarkers,
   ensureImageMarkers,
   normalizeImageMarkers,
+  formatImageMarker,
   ensureSectionHeadings,
 } from "../scripts/lib/markdown.mjs";
 import { buildLengthPrompt, buildDraftPrompt, buildTopicPrompt } from "../scripts/lib/prompts.mjs";
 import { parseOutlineMarkdown } from "../scripts/lib/markdown.mjs";
 
 import { parseJsonFromText, extractAgentText } from "../scripts/lib/models.mjs";
-import { normalizeConfig, validateConfig, deepMerge } from "../scripts/lib/config.mjs";
+import {
+  loadConfig,
+  findType,
+  normalizeConfig,
+  normalizeWordLimit,
+  normalizeImageCount,
+  validateConfig,
+  validateWarnings,
+  deepMerge,
+} from "../scripts/lib/config.mjs";
+import { buildClassifyPrompt, classifyArticle, classifyOrFallback, normalizeClassifyResult } from "../scripts/lib/classify.mjs";
 import {
   indexKnowledge,
   pickRecent,
@@ -44,6 +55,8 @@ import { archiveArticle } from "../scripts/lib/archive.mjs";
 import { listZipEntries, zipDirectory } from "../scripts/lib/zip.mjs";
 
 const CONFIG_DIR = path.join(import.meta.dirname, "..", "config");
+const PROJECT_ROOT = path.resolve(import.meta.dirname, "../../..");
+const DEFAULT_CONFIG_REL = "skills/wechat-article/config/article-types.yaml";
 const DRAFT_TEMPLATE = loadDraftTemplate(CONFIG_DIR);
 
 function tempDir(prefix) {
@@ -149,6 +162,34 @@ test("ensureImageMarkers pads to the requested count", () => {
   const md = buildFrontmatter({ title: "t" }) + "第一段。\n\n第二段。\n\n[[img:1|已有|c]]\n";
   const out = ensureImageMarkers(md, 3);
   assert.equal(parseImageMarkers(out).length, 3);
+});
+
+test("image_position_format drives marker generation, parsing and replacement", () => {
+  const format = "<<img:{index}>>";
+  assert.equal(formatImageMarker(format, 3, "说明", "prompt"), "<<img:3|说明|prompt>>");
+  assert.equal(formatImageMarker("[[img:{index}]]", 2, "图二"), "[[img:2|图二]]");
+
+  const markers = parseImageMarkers("A\n\n<<img:2|图二|a diagram>>\n\nB", { format });
+  assert.equal(markers.length, 1);
+  assert.equal(markers[0].index, 2);
+  assert.equal(markers[0].description, "图二");
+  assert.equal(markers[0].prompt, "a diagram");
+
+  const replaced = replaceImageMarkers("<<img:1|封面>>", new Map([[1, "images/01.png"]]), { format });
+  assert.equal(replaced, "![封面](images/01.png)");
+
+  const ensured = ensureImageMarkers("## A\n\n正文段落。\n\n## B\n\n正文段落。", 1, [{ description: "示意图" }], { format });
+  assert.match(ensured, /<<img:1\|示意图>>/);
+  assert.equal(parseImageMarkers(ensured, { format }).length, 1);
+});
+
+test("normalizeImageMarkers renumbers custom-format markers", () => {
+  const format = "<!-- img:{index} -->";
+  const md = "<!-- img:5|甲 -->\n\n<!-- img:5|重复 -->\n\n<!-- img:9|乙 -->";
+  const out = normalizeImageMarkers(md, 2, [], { format });
+  const markers = parseImageMarkers(out, { format });
+  assert.deepEqual(markers.map((m) => m.index), [1, 2]);
+  assert.deepEqual(markers.map((m) => m.description), ["甲", "乙"]);
 });
 
 /* ------------------------------------------------------------------ */
@@ -601,6 +642,152 @@ test("normalizeConfig normalizes weights, dirs and numeric ranges", () => {
   assert.equal(type.illustrations.min, 1);
   assert.equal(type.illustrations.max, 5);
   assert.equal(type.knowledge.max_sources, 8);
+});
+
+test("loadConfig reads the YAML base config and config/types/*.yaml", () => {
+  const config = loadConfig(DEFAULT_CONFIG_REL, { root: PROJECT_ROOT });
+  assert.equal(config.types.length, 4);
+  const news = findType(config, "ai-news");
+  assert.equal(news.name, "AI 资讯快评");
+  assert.deepEqual([news.length.min, news.length.max], [800, 1300]);
+  assert.equal(news.illustrations.position_format, "[[img:{index}]]");
+  assert.equal(news.knowledge.source, "local");
+  assert.equal(news.knowledge_dirs.length, 1);
+  assert.equal(news.scoring.pass_score, 78);
+  assert.ok(news.scoring.dimensions.every((d) => d.weight > 0 && d.weight <= 1));
+  assert.equal(config.classifier.provider, "systemone");
+  assert.equal(config.classifier.default_type, "ai-news");
+  assert.equal(path.isAbsolute(config.project.base_output_folder), true);
+});
+
+test("word_limit and image_count accept YAML shorthands", () => {
+  assert.deepEqual(normalizeWordLimit("800-1300"), { min: 800, max: 1300, target: 1050 });
+  assert.deepEqual(normalizeWordLimit("1500"), { min: 1500, max: 1500, target: 1500 });
+  assert.deepEqual(normalizeWordLimit({ min: 1000, max: 2000, target: 1400 }), { min: 1000, max: 2000, target: 1400 });
+  assert.deepEqual(normalizeImageCount("1-3"), { min: 1, max: 3 });
+  assert.deepEqual(normalizeImageCount(2), { min: 2, max: 2, count: 2 });
+  assert.deepEqual(normalizeImageCount({ min: 1, max: 5, default: 3, cover: false }), { min: 1, max: 5, count: 3, cover: false });
+  assert.deepEqual(normalizeImageCount(undefined), {});
+});
+
+test("normalizeConfig maps YAML-style type fields into the runtime shape", () => {
+  const dir = tempDir("wa-cfg-yaml-");
+  const config = normalizeConfig(
+    {
+      defaults: { review: { pass_score: 80 }, illustrations: { style: "扁平插画" } },
+      models: { local: { provider: "mock" } },
+      types: [
+        {
+          id: "t1",
+          type: "测试类型",
+          knowledge_base_path: ["./kb"],
+          style: "冷静的观察者",
+          word_limit: "500-800",
+          pass_score: 70,
+          scoring_criteria: [
+            { id: "a", name: "A", weight: 1 },
+            { id: "b", name: "B", weight: 3 },
+          ],
+          image_count: { min: 1, max: 4, default: 2 },
+          image_position_format: "<<img:{index}>>",
+        },
+      ],
+    },
+    dir,
+  );
+  const type = config.types[0];
+  assert.equal(type.name, "测试类型");
+  assert.equal(type.style.persona, "冷静的观察者");
+  assert.deepEqual(type.length, { min: 500, max: 800, target: 650 });
+  assert.equal(type.scoring.pass_score, 70);
+  assert.deepEqual(type.scoring.dimensions.map((d) => d.weight), [0.25, 0.75]);
+  assert.equal(type.illustrations.style, "扁平插画");
+  assert.equal(type.illustrations.count, 2);
+  assert.equal(type.illustrations.position_format, "<<img:{index}>>");
+  assert.equal(type.knowledge.source, "local");
+  assert.equal(path.isAbsolute(type.knowledge_dirs[0]), true);
+});
+
+test("validateWarnings flags an unconfigured classifier and unknown default_type", () => {
+  const dir = tempDir("wa-cfg-");
+  const raw = rawConfig(dir);
+  raw.classifier = { enabled: true, base_url: "", api_key: "", default_type: "missing" };
+  const config = normalizeConfig(raw, dir);
+  const warnings = validateWarnings(config);
+  assert.ok(warnings.some((w) => w.includes("SYSTEMONE")));
+  assert.ok(warnings.some((w) => w.includes("default_type")));
+});
+
+test("buildClassifyPrompt lists candidates, title and outline", () => {
+  const prompt = buildClassifyPrompt({
+    types: [
+      {
+        id: "ai-news",
+        name: "AI 资讯快评",
+        description: "单条新闻快速解读",
+        style: { persona: "科技媒体主编", audience: "从业者" },
+        topic: { keywords: ["发布", "开源"] },
+      },
+    ],
+    title: "某模型开源",
+    outline: "## 发生了什么\n- 细节",
+  });
+  assert.match(prompt, /ai-news（AI 资讯快评）/);
+  assert.match(prompt, /某模型开源/);
+  assert.match(prompt, /## 发生了什么/);
+  assert.match(prompt, /"type"/);
+});
+
+test("normalizeClassifyResult rejects unknown types and clamps confidence", () => {
+  const types = [{ id: "ai-news" }];
+  assert.equal(normalizeClassifyResult({ type: "ghost", confidence: 1 }, types).ok, false);
+  assert.equal(normalizeClassifyResult({ reason: "nothing" }, types).ok, false);
+  const ok = normalizeClassifyResult({ type: "ai-news", confidence: 2 }, types);
+  assert.equal(ok.ok, true);
+  assert.equal(ok.confidence, 1);
+});
+
+test("classifyArticle parses an OpenAI-compatible chat response", async () => {
+  const config = {
+    classifier: {
+      enabled: true,
+      base_url: "http://systemone.local",
+      endpoint: "/v1/chat/completions",
+      api_key: "k",
+      model: "systemone",
+      timeout_ms: 1000,
+      min_confidence: 0.5,
+      json_mode: true,
+    },
+    types: [{ id: "ai-news", name: "AI 资讯快评", enabled: true }],
+  };
+  let seen;
+  const fetchImpl = async (url, init) => {
+    seen = { url, body: JSON.parse(init.body) };
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: '```json\n{"type":"ai-news","confidence":0.88,"reason":"新闻事件","scores":{"ai-news":0.88}}\n```' } }],
+      }),
+      { status: 200 },
+    );
+  };
+  const result = await classifyArticle({ config, title: "某模型开源", outline: "## 事实", fetchImpl });
+  assert.equal(seen.url, "http://systemone.local/v1/chat/completions");
+  assert.equal(seen.body.response_format.type, "json_object");
+  assert.equal(result.ok, true);
+  assert.equal(result.type, "ai-news");
+  assert.equal(result.confidence, 0.88);
+  assert.equal(result.reason, "新闻事件");
+});
+
+test("classifyOrFallback degrades to classifier.default_type", async () => {
+  const config = {
+    classifier: { enabled: true, base_url: "", api_key: "", default_type: "ai-news", min_confidence: 0.5 },
+    types: [{ id: "ai-news", name: "AI 资讯快评", enabled: true }],
+  };
+  const outcome = await classifyOrFallback({ config, title: "某模型开源" });
+  assert.equal(outcome.typeId, "ai-news");
+  assert.equal(outcome.source, "default");
 });
 
 test("validateConfig reports missing knowledge dirs and unknown models", () => {

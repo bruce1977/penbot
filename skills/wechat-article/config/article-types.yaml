@@ -1,0 +1,177 @@
+# 公众号文章类型总配置（基础配置）
+#
+# 这里只放“全局”的东西：输出目录、模型 profile、各类默认值、类型清单、判断模型。
+# 每种文章的具体写作要求放在 config/types/<id>.yaml，本文件只负责登记和兜底。
+version: 2
+
+project:
+  # 文章根目录：只认环境变量，命令行不能覆盖
+  base_output_folder: "${BASE_OUTPUT_FOLDER:-output/wechat-article}"
+  language: zh-CN
+
+# ---------------------------------------------------------------------------
+# 判断模型（systemone）：根据「标题 + 提纲」自动选择文章类型
+#
+# 走 OpenAI 兼容的 /v1/chat/completions；如果 systemone 的路径不同，
+# 改 endpoint 即可。未配置 base_url / api_key 时自动跳过，回退到 default_type。
+# ---------------------------------------------------------------------------
+classifier:
+  enabled: true
+  provider: systemone
+  base_url: "${SYSTEMONE_BASE_URL}"
+  endpoint: "/v1/chat/completions"
+  api_key: "${SYSTEMONE_API_KEY}"
+  model: "${SYSTEMONE_MODEL:-systemone}"
+  timeout_ms: 30000
+  min_confidence: 0.5
+  json_mode: true
+  # 判断失败/置信度不足时用哪个类型
+  default_type: ai-news
+
+# ---------------------------------------------------------------------------
+# 模型 profile（BASE_URL / MODEL_NAME / API_KEY）
+# ---------------------------------------------------------------------------
+models:
+  local:
+    provider: ollama
+    base_url: "${LOCAL_LLM_BASE_URL:-http://localhost:11434}"
+    model: "${LOCAL_LLM_BASE_MODEL:-qwen3.5:9b}"
+    api_key: "${LOCAL_LLM_API_KEY}"
+    timeout_ms: 600000
+    temperature: 0.7
+    num_ctx: 32768
+    max_tokens: 4096
+
+  local-small:
+    provider: ollama
+    base_url: "${LOCAL_LLM_BASE_URL:-http://localhost:11434}"
+    model: "${LOCAL_LLM_SMALL_MODEL:-qwen3.5:4b}"
+    api_key: "${LOCAL_LLM_API_KEY}"
+    timeout_ms: 600000
+    temperature: 0.7
+    num_ctx: 32768
+    max_tokens: 4096
+
+  local-large:
+    provider: ollama
+    base_url: "${LOCAL_LLM_BASE_URL:-http://localhost:11434}"
+    model: "${LOCAL_LLM_LARGE_MODEL:-qwen3.6:35b}"
+    api_key: "${LOCAL_LLM_API_KEY}"
+    timeout_ms: 1200000
+    temperature: 0.7
+    num_ctx: 32768
+    max_tokens: 4096
+
+  opencode:
+    provider: opencode
+    command: opencode
+    agent: wechat-article-writer
+    timeout_ms: 600000
+
+  remote:
+    provider: openai
+    base_url: "${PB_LLM_BASE_URL:-https://api.deepseek.com}"
+    model: "${PB_LLM_MODEL:-deepseek-chat}"
+    api_key: "${PB_LLM_API_KEY}"
+    timeout_ms: 300000
+    temperature: 0.7
+    max_tokens: 4096
+
+  mock:
+    provider: mock
+
+# ---------------------------------------------------------------------------
+# 默认值：所有类型先吃这里，再被 config/types/<id>.yaml 覆盖
+# ---------------------------------------------------------------------------
+defaults:
+  model: local
+
+  review:
+    model: local
+    max_rounds: 3
+    pass_score: 80
+    llm_scoring: true
+    correct_cn:
+      enabled: true
+      base_url: "${PB_PYCORRECTOR_API_URL:-https://corrector.myehome.cn}"
+      endpoint: "/api/pipeline"
+      api_key: "${PB_PYCORRECTOR_AUTH_KEY}"
+      auth_header: X-Auth-Key
+      enable_audit: false
+      enable_final_suggestion: false
+      apply: issues
+      timeout_ms: 180000
+      fallback_llm: true
+
+  knowledge:
+    source: local
+    use_weknora: "${PB_USE_WEKNORA:-false}"
+    max_sources: 8
+    excerpt_chars: 1800
+    lookback_days: 365
+    max_file_bytes: 400000
+    weknora:
+      base_url: "${WEKNORA_BASE_URL}"
+      api_key: "${WEKNORA_API_KEY}"
+      auth_header: X-API-Key
+      match_count: 8
+      timeout_ms: 30000
+
+  illustrations:
+    min: 1
+    max: 5
+    cover: true
+    concurrency: 2
+    on_failure: comment
+    # 配图标记模板：{index} 会被替换成 1..N
+    position_format: "[[img:{index}]]"
+    style: "扁平化科技插画，干净留白，克制的蓝紫与暖橙配色，适合微信公众号阅读，不要出现文字"
+    negative_prompt: "photorealistic, 3d render, oil painting, western fantasy, anime style, manga, chibi, too many details, cluttered composition, bright neon colors, over-saturated, soft focus, blurry, deformed hands, extra limbs, signature, watermark, text, words, logo"
+    scenes:
+      wechat-cover: { width: 900, height: 383 }
+      wechat-cover-thumb: { width: 500, height: 500 }
+      article-inline: { width: 1080, height: 810 }
+    modelscope:
+      enabled: true
+      base_url: https://api-inference.modelscope.cn
+      api_key: "${PB_MODEL_IMAGE_API_KEY}"
+      model: Tongyi-MAI/Z-Image-Turbo
+      timeout_ms: 90000
+      poll_interval_ms: 5000
+      max_polls: 18
+    pollinations:
+      enabled: true
+      base_url: https://image.pollinations.ai
+      model: turbo
+      timeout_ms: 90000
+
+  publish:
+    auto_publish: false
+    archive:
+      enabled: true
+      # 终稿统一落到本地知识库的 pipeline 目录，由后续入库脚本扫描处理；空 = 跳过复制
+      knowledge_dir: "${KNOWLEDGE_PIPELINE_DIR:-D:/knowledge/pipeline}"
+      filename: "{date}-{slug}.md"
+    email:
+      enabled: false
+      to: ["jiangyifeng@myehome.cn"]
+      from: "${PB_RESEND_FROM:-penbot@myehome.cn}"
+      api_key: "${PB_RESEND_API_KEY}"
+      subject: "{title}"
+    wechat:
+      enabled: false
+      theme: default
+      highlight: solarized-light
+      env_file: .env
+      command: npx --yes @wenyan-md/cli
+      dry_run: false
+
+# ---------------------------------------------------------------------------
+# 类型清单：按顺序加载 config/types/<id>.yaml
+# 也可以直接写对象（内联类型），或写成 { id: xxx, file: yyy.yaml }
+# ---------------------------------------------------------------------------
+types:
+  - ai-insight
+  - ai-news
+  - tech-explainer
+  - homelab-practice

@@ -157,6 +157,35 @@ export function countWords(text) {
 
 const IMAGE_MARKER = /\[\[\s*img\s*[:：]\s*(\d+)\s*(?:\|\s*([\s\S]*?))?\]\]|\[图\s*(\d+)\s*[:：]\s*([^\]]*)\]/gi;
 
+export const DEFAULT_IMAGE_FORMAT = "[[img:{index}]]";
+
+function escapeRegExp(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * 配图标记的正则：默认格式继续兼容旧的 `[图1：说明]`；
+ * 自定义格式只认模板本身（`{index}` → 序号，`]]` 结尾时允许 `|说明|prompt`）。
+ */
+function markerRegex(format) {
+  const template = String(format || DEFAULT_IMAGE_FORMAT);
+  const at = template.indexOf("{index}");
+  if (template === DEFAULT_IMAGE_FORMAT || at < 0) return IMAGE_MARKER;
+  const prefix = escapeRegExp(template.slice(0, at));
+  const suffix = escapeRegExp(template.slice(at + "{index}".length));
+  return new RegExp(`${prefix}(\\d+)(?:\\|\\s*([\\s\\S]*?))?${suffix}`, "gi");
+}
+
+/** 按类型配置的模板生成一个配图占位符（`{index}` 后面接 `|说明|prompt`）。 */
+export function formatImageMarker(format, index, description = "", prompt = "") {
+  const template = String(format || DEFAULT_IMAGE_FORMAT);
+  const at = template.indexOf("{index}");
+  if (at < 0) return template;
+  const payload = prompt ? `${description}|${prompt}` : description;
+  const marker = template.slice(0, at) + String(index) + (payload ? `|${payload}` : "") + template.slice(at + "{index}".length);
+  return marker;
+}
+
 /**
  * Decide whether a draft is too short, too long or fine for the given range.
  * Returns "expand" | "condense" | null.
@@ -173,12 +202,13 @@ export function lengthAction(wordCount, { min, max } = {}) {
  * Legacy marker also supported:
  *   [图1：图片说明]
  */
-export function parseImageMarkers(markdown) {
+export function parseImageMarkers(markdown, { format } = {}) {
   const markers = [];
   const text = String(markdown || "");
+  const regex = markerRegex(format);
   let match;
-  IMAGE_MARKER.lastIndex = 0;
-  while ((match = IMAGE_MARKER.exec(text))) {
+  regex.lastIndex = 0;
+  while ((match = regex.exec(text))) {
     const index = Number(match[1] || match[3]);
     const payload = (match[2] || match[4] || "").trim();
     const [description, prompt] = splitMarkerPayload(payload);
@@ -202,9 +232,9 @@ function splitMarkerPayload(payload) {
 }
 
 /** Replace every marker with an image or a failure placeholder. */
-export function replaceImageMarkers(markdown, replacements, { onFailure = "comment" } = {}) {
+export function replaceImageMarkers(markdown, replacements, { onFailure = "comment", format } = {}) {
   const text = String(markdown || "");
-  return text.replace(IMAGE_MARKER, (whole, a, b, c, d) => {
+  return text.replace(markerRegex(format), (whole, a, b, c, d) => {
     const index = Number(a || c);
     const payload = (b || d || "").trim();
     const [description] = splitMarkerPayload(payload);
@@ -220,8 +250,8 @@ export function replaceImageMarkers(markdown, replacements, { onFailure = "comme
 }
 
 /** Insert missing markers near paragraph boundaries when the model ignored them. */
-export function ensureImageMarkers(markdown, count, plans = []) {
-  const markers = parseImageMarkers(markdown);
+export function ensureImageMarkers(markdown, count, plans = [], { format } = {}) {
+  const markers = parseImageMarkers(markdown, { format });
   if (markers.length >= count) return markdown;
   const { data, body } = splitFrontmatter(markdown);
   const paragraphs = body.split(/\r?\n\s*\r?\n/);
@@ -236,7 +266,7 @@ export function ensureImageMarkers(markdown, count, plans = []) {
     const plan = plans[item.index - 1] || {};
     const description = String(plan.description || "").trim() || `配图 ${item.index}`;
     const prompt = String(plan.prompt || "").trim();
-    paragraphs.splice(item.at, 0, `[[img:${item.index}|${description}${prompt ? `|${prompt}` : ""}]]`);
+    paragraphs.splice(item.at, 0, formatImageMarker(format, item.index, description, prompt));
   }
   return `${buildFrontmatter(data)}${paragraphs.join("\n\n")}\n`;
 }
@@ -246,10 +276,10 @@ export function ensureImageMarkers(markdown, count, plans = []) {
  * drop duplicate indices, cap at `count`, renumber sequentially
  * (1..N in document order), then pad when there are too few.
  */
-export function normalizeImageMarkers(markdown, count, plans = []) {
+export function normalizeImageMarkers(markdown, count, plans = [], { format } = {}) {
   const text = String(markdown || "");
-  const markers = parseImageMarkers(text);
-  if (markers.length === 0) return ensureImageMarkers(text, count, plans);
+  const markers = parseImageMarkers(text, { format });
+  if (markers.length === 0) return ensureImageMarkers(text, count, plans, { format });
 
   const limit = Number.isFinite(count) && count > 0 ? count : Infinity;
   const keep = new Map();
@@ -262,7 +292,7 @@ export function normalizeImageMarkers(markdown, count, plans = []) {
     keep.set(marker.start, { index: next, description: marker.description, prompt: marker.prompt });
     next += 1;
   }
-  if (keep.size === 0) return ensureImageMarkers(text, count, plans);
+  if (keep.size === 0) return ensureImageMarkers(text, count, plans, { format });
 
   let out = "";
   let cursor = 0;
@@ -271,14 +301,13 @@ export function normalizeImageMarkers(markdown, count, plans = []) {
     out += text.slice(cursor, marker.start);
     const kept = keep.get(marker.start);
     if (kept) {
-      const payload = kept.prompt ? `${kept.description}|${kept.prompt}` : kept.description;
-      out += `[[img:${kept.index}|${payload}]]`;
+      out += formatImageMarker(format, kept.index, kept.description, kept.prompt);
     }
     cursor = marker.end;
   }
   out += text.slice(cursor);
 
-  return keep.size < limit ? ensureImageMarkers(out, count, plans) : out;
+  return keep.size < limit ? ensureImageMarkers(out, count, plans, { format }) : out;
 }
 
 /**

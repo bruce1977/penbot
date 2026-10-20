@@ -42,7 +42,7 @@ function copyToKnowledge({ config, type, dir, slug, title, stamp, archive, logge
 
 /**
  * 发布成功后的归档：
- *   1. 终稿复制到知识库目录（按类型配置，失败不阻塞）
+ *   1. 终稿复制到本地知识库的 pipeline 待入库目录（失败不阻塞）
  *   2. 整个 article 目录打包到 published/<YYYYMMDD>-<slug>.zip
  *   3. 删除 draft/<slug>
  *

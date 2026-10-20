@@ -56,7 +56,7 @@ npm run wechat-article -- draft   --article <slug>                  # 4  初稿
 
 `bundle` 会把**标题 + 大纲 + 相关资料**写成 `04-draft-input.json`；提示词与校验规则都在 [`skills/wechat-article/config/prompts/draft.json`](skills/wechat-article/config/prompts/draft.json)（`prompt` + 紧凑 `schema`）。可以手改这份 JSON，再用 `draft --article <slug> --input <文件>` 写初稿；也可以用 `validate --input <文件>` 先校验。
 
-发布成功后（邮件/公众号至少一个真实投递成功）会自动归档：终稿复制到类型配置的 `publish.archive.knowledge_dir` → 整个文章目录打包到 `published/` → 删除 `draft/<slug>/`。
+发布成功后（邮件/公众号至少一个真实投递成功）会自动归档：终稿复制到本地知识库的 `pipeline/` 待入库目录（`KNOWLEDGE_PIPELINE_DIR`）→ 整个文章目录打包到 `published/` → 删除 `draft/<slug>/`。
 
 手动选题只有一步：`outline --type ai-news --topic "主题"`（跳过选题模型）。
 
@@ -65,19 +65,19 @@ npm run wechat-article -- draft   --article <slug>                  # 4  初稿
 ## 文档
 
 - 技能说明与完整命令参考：[`skills/wechat-article/SKILL.md`](skills/wechat-article/SKILL.md)
-- 文章类型 / 模型 / 审稿 / 配图 / 发布配置：[`skills/wechat-article/config/article-types.json`](skills/wechat-article/config/article-types.json)
-- 配置结构：[`skills/wechat-article/config/article-types.schema.json`](skills/wechat-article/config/article-types.schema.json)
+- 总配置（模型 / 默认值 / 判断模型 / 类型清单）：[`skills/wechat-article/config/article-types.yaml`](skills/wechat-article/config/article-types.yaml)
+- 类型明细与字段说明：[`skills/wechat-article/config/types/`](skills/wechat-article/config/types/)
 
 ## 内置文章类型
 
 | id | 名称 | 知识库 | 目标字数 | 通过分 |
 | --- | --- | --- | --- | --- |
-| `ai-insight` | AI 深度观点 | `D:/knowledge/obsidian/ai` + `AI 知识荟萃` | 1500-2200 | 82 |
-| `ai-news` | AI 资讯快评 | `D:/knowledge/obsidian/ai` + `AI 知识荟萃` | 800-1300 | 78 |
-| `tech-explainer` | 技术解读 | `ai` + `homelab` + 两个 AI 库 | 1800-2800 | 82 |
-| `homelab-practice` | Homelab 实践笔记 | `D:/knowledge/obsidian/homelab` + `家庭服务器折腾指南(WIKI)` | 1200-2000 | 78 |
+| `ai-insight` | AI 深度观点 | `D:/knowledge/obsidian/ai` | 1500-2200 | 82 |
+| `ai-news` | AI 资讯快评 | `D:/knowledge/obsidian/ai` | 800-1300 | 78 |
+| `tech-explainer` | 技术解读 | `ai` + `homelab` | 1800-2800 | 82 |
+| `homelab-practice` | Homelab 实践笔记 | `D:/knowledge/obsidian/homelab` | 1200-2000 | 78 |
 
-`knowledge.source` 可选 `local`（默认）/`weknora`/`both`；`kbs` 命令可列出 WeKnora 知识库以获取 `kb_ids`。
+类型明细在 `config/types/<id>.yaml`；不配置 `weknora`，默认只读本地目录。判断模型（systemone）会根据标题 + 提纲自动选类型。
 
 ## 目录结构
 

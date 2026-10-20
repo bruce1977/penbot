@@ -224,6 +224,7 @@ node skills/wechat-article/scripts/wechat-article.mjs draft --article <slug> --i
 | `manual` | **入口 2**：用 `--title` + `--outline`/`--outline-file` 直接往下写，跳过选题与纲要模型 |
 | `run` | 完整管线（保留兼容，等同 `auto`） |
 | `topics` | 列出候选文章；`--count N --output <目录>` 生成 N 个候选主题（含提纲）的 Markdown |
+| `classify` | 只用判断模型（systemone）根据标题 + 提纲选类型，打印选择与得分 |
 | `kbs` | 列出 WeKnora 知识库（获取 `kb_ids`） |
 | `topic` | 只做选题（自动选题，或 `--topic` 手动记录；新文章目录按标题 slug 创建） |
 | `sources` | 只收集相关资料（本地目录 / WeKnora / 两者） |
@@ -238,13 +239,13 @@ node skills/wechat-article/scripts/wechat-article.mjs draft --article <slug> --i
 
 ### 通用参数
 
-- `--config <path>` 配置文件，默认 `skills/wechat-article/config/article-types.json`
-- `--type <id>` 文章类型 id（`run`/`topic`/`sources`/`outline`/`draft`/`review`/`illustrate`/`publish` 需要）
+- `--config <path>` 配置文件，默认 `skills/wechat-article/config/article-types.yaml`
+- `--type <id>` 文章类型 id；省略时依次取 `PB_ARTICLE_TYPE` → 判断模型自动分类 → `classifier.default_type`
 - `--topic <text>` 手动主题（省略则自动选题；手动时**跳过选题模型**）
 - `--requirements <text>` 手动补充写作要求
 - `--topic-file <path>` 复用已有选题 JSON（如 `01-topic.json`）
 - `--sources-file <path>` 复用已有素材 JSON（如 `02-sources.json`）
-- `--outline-file <path>` 复用已有纲要 JSON（如 `03-outline.json`）
+- `--outline-file <path>` `manual` / `classify` 的提纲文件（Markdown 或 `03-outline.json`）
 - `--input <path>` 初稿输入 JSON（标题 + 大纲 + 资料，如 `04-draft-input.json`）；`draft` / `run` 用，跳过前置步骤
 - `--knowledge-source <s>` 覆盖知识来源：`local` | `weknora` | `both`
 - `--article <slug>` 选择/续跑 `draft/<slug>/` 这篇文章；`latest` = 最近一篇；分步命令省略时自动选中唯一一篇
@@ -296,7 +297,7 @@ pipeline.log                             运行日志
 
 只有 `09-publish.json` 的 `status` 为 `published`（至少一个渠道**真实投递成功**）才会归档：
 
-1. 终稿复制到该类型配置的 `publish.archive.knowledge_dir`（失败只记录，不阻塞）；
+1. 终稿复制到本地知识库的 pipeline 待入库目录（`defaults.publish.archive.knowledge_dir`，即 `KNOWLEDGE_PIPELINE_DIR`；失败只记录，不阻塞）；
 2. 整个文章目录打包到 `published/<YYYYMMDD>-<slug>.zip`；
 3. 删除 `draft/<slug>/`。
 
@@ -304,7 +305,11 @@ pipeline.log                             运行日志
 
 ## 文章类型与配置
 
-所有类型定义在 `config/article-types.json`（结构见 `config/article-types.schema.json`）。内置类型：
+- 总配置：`config/article-types.yaml`（输出目录、模型 profile、各类默认值、判断模型、类型清单）。
+- 类型明细：`config/types/<id>.yaml`，一个类型一个文件；`types:` 决定加载顺序，省略时自动扫描目录。
+- 字段说明：`config/types/README.md`。
+
+内置类型：
 
 | id | 名称 | 知识库目录 | 目标字数 | 通过分 |
 | --- | --- | --- | --- | --- |
@@ -313,65 +318,49 @@ pipeline.log                             运行日志
 | `tech-explainer` | 技术解读 | `ai` + `homelab` | 1800-2800 | 82 |
 | `homelab-practice` | Homelab 实践笔记 | `D:/knowledge/obsidian/homelab` | 1200-2000 | 78 |
 
-每个类型可配置：
+每个类型文件可配置：
 
-- `knowledge_dirs`：本地知识库目录（相对项目根或绝对路径）
-- `knowledge`：资料收集方式，见下
-- `style`：人格 / 语气 / 受众 / 标题风格 / 结构 / 该做与不该做
-- `length`：`min` / `max` / `target` 字数
-- `scoring.dimensions`：评分维度与权重，`pass_score` 通过线
+- `type`：中文类型名（`id` 缺省取文件名）
+- `description`：一句话说明，判断模型用它分类
+- `knowledge_base_path`：本地知识库目录（字符串或数组）
+- `style`：风格描述，字符串或 `persona`/`tone`/`audience`/`title_style`/`structure`/`dos`/`donts`
+- `word_limit`：`800-1300`、`1500` 或 `{ min, max, target }`
+- `scoring_criteria`：评分维度数组（`id`/`name`/`weight`/`description`/`criteria`），`pass_score` 为通过线
 - `review`：`max_rounds`、`pass_score`、`correct_cn`（核稿服务）
-- `illustrations`：`min`/`max`/`cover`/`style`/`negative_prompt`/图像服务
+- `image_count`：`1-5`、`3` 或 `{ min, max, default, cover }`
+- `image_position_format`：正文配图占位符模板，默认 `[[img:{index}]]`
 - `topic`：`keywords`、`exclude_keywords`、`lookback_days`、`candidates`
-- `publish`：`auto_publish`、`archive`（`knowledge_dir` / `filename`，发布成功后归档到知识库）、`email`（Resend）、`wechat`（wenyan）
+- `model` / `prompts`：写作模型与追加要求
 
-新增一个类型：复制 `types` 里的一段，改 `id`/`name`/`knowledge_dirs`/`length`/`scoring` 即可，然后 `validate`。
+新增类型：在 `config/types/` 加一个 YAML，再把 id 写进 `article-types.yaml` 的 `types:`，跑 `validate`。
 
-## 资料收集（本地目录 / WeKnora）
+### 判断模型（systemone）
 
-`knowledge.source` 三选一：
+`article-types.yaml` 的 `classifier` 段配置一个 OpenAI 兼容端点：
 
-| 取值 | 行为 |
-| --- | --- |
-| `local` | 只用 `knowledge_dirs` 里的本地 Markdown（默认） |
-| `weknora` | 只用远程 WeKnora 知识库（按 `kb_ids` 混合检索） |
-| `both` | 两者都用，**配额交错**合并（各占一半，避免本地高分淹没远端） |
-
-WeKnora 相关配置（`knowledge.weknora`，可写在 `defaults` 里共享，类型内只覆盖 `kb_ids`）：
-
-```jsonc
-"knowledge": {
-  "source": "both",
-  "max_sources": 8,
-  "weknora": {
-    "base_url": "${WEKNORA_BASE_URL}",   // 例：https://weknora.myehome.top/api/v1
-    "api_key": "${WEKNORA_API_KEY}",
-    "auth_header": "X-API-Key",
-    "kb_ids": ["<knowledge-base-id>"],   // node ... kbs 查看
-    "match_count": 8
-  }
-}
+```yaml
+classifier:
+  enabled: true
+  base_url: "${SYSTEMONE_BASE_URL}"
+  endpoint: "/v1/chat/completions"
+  api_key: "${SYSTEMONE_API_KEY}"
+  model: "${SYSTEMONE_MODEL:-systemone}"
+  min_confidence: 0.5
+  default_type: ai-news
 ```
 
-内置类型已预置 `kb_ids`：`AI 知识荟萃`（`ai-*`/`tech-explainer`）、`AI 知识荟萃(WIKI)`、`家庭服务器折腾指南(WIKI)`（`homelab-practice`）。检索走 `POST {base_url}/knowledge-bases/{id}/hybrid-search`，命中片段会做清洗（去图片占位符），并从文档前置元数据里取 `date`/`keywords` 作为素材的日期与标签。
+- `manual` 入口有标题 + 提纲，未显式给 `--type` 时会先调用判断模型。
+- `auto` 入口只有在提供了 `--topic` 时才会尝试分类；否则直接用 `classifier.default_type`。
+- 未配置 `SYSTEMONE_*`、请求失败或置信度低于 `min_confidence` 时，回退到 `classifier.default_type`。
+- 单独验证：`classify --title "..." --outline-file outline.md`；`--mock` 不发请求。
 
-运行中切换：`--knowledge-source local|weknora|both`。
+## 资料收集（本地目录为主）
 
-### WeKnora 总开关（当前默认关闭）
+当前流程只读本地知识库目录（`knowledge_base_path`）。WeKnora 作为可选能力保留在 `defaults.knowledge`，默认关闭（`PB_USE_WEKNORA=false`）；类型文件不需要配置 `weknora`。
 
-```jsonc
-"defaults": {
-  "knowledge": {
-    "use_weknora": "${PB_USE_WEKNORA:-false}",  // false = 全部退回本地目录
-    "weknora": { /* ... */ }
-  }
-}
-```
-
-- `use_weknora=false` 时，**任何**类型的 `source` 都会被压回 `local`，即使类型里写了 `both`/`weknora`；WeKnora 配置保留但不使用。
-- 想临时启用：设 `PB_USE_WEKNORA=true`（或在配置里写 `true`），`doctor` 会显示「未启用/已开启」。
-- 关闭状态下 `--knowledge-source both|weknora` 会直接报错，避免你以为在用远端其实没用。
-- `kbs` 命令仍可列出远端知识库（只读查看，不影响管线）。
+- 本地检索：扫描目录下的 Markdown，按关键词、标题与日期排序取最新素材。
+- 发布成功后的终稿统一落到 `KNOWLEDGE_PIPELINE_DIR`（默认 `D:/knowledge/pipeline`），由后续入库脚本处理。
+- `kbs` 仍可只读查看远端知识库；`--knowledge-source` 仅在显式启用 WeKnora 时有意义。
 
 ## 模型 profile
 
@@ -390,21 +379,21 @@ WeKnora 相关配置（`knowledge.weknora`，可写在 `defaults` 里共享，�
 
 ## 配图
 
-- 初稿中用标记占位：`[[img:N|中文说明|English prompt]]`（兼容旧格式 `[图N：说明]`）。
-- 纲要阶段规划 1-5 张（含封面），`--images N` 可指定数量。
+- 初稿中用标记占位：`[[img:N|中文说明|English prompt]]`（兼容旧格式 `[图N：说明]`）；类型可用 `image_position_format` 改模板（保留 `{index}`）。
+- 纲要阶段按 `image_count` 规划（默认 1-5 张，含封面），`--images N` 可指定数量。
 - 优先 ModelScope（`PB_MODEL_IMAGE_API_KEY`），失败回退 Pollinations，并行生成。
 - 生成成功后标记被替换为本地图片相对路径；失败按 `illustrations.on_failure`（`comment`/`remove`）处理。
 
 ## 初稿与篇幅控制
 
-初稿生成后会自动做**篇幅适配**：字数低于 `length.min` 时扩写、高于 `length.max` 时压缩，最多 `--length-attempts`（默认 2）次；每次只保留确有改善的结果（扩写后更短 / 压缩后更长则丢弃）。扩写提示词要求"补实质信息、不注水、不得编造数据、每段 2-5 句"，同时抑制一句一段的碎片化。若用尽次数仍不达标，日志会给出明确告警，随后的审稿循环里 `length` 维度也会继续扣分。
+初稿生成后会自动做**篇幅适配**：字数低于 `word_limit.min` 时扩写、高于 `word_limit.max` 时压缩，最多 `--length-attempts`（默认 2）次；每次只保留确有改善的结果（扩写后更短 / 压缩后更长则丢弃）。扩写提示词要求"补实质信息、不注水、不得编造数据、每段 2-5 句"，同时抑制一句一段的碎片化。若用尽次数仍不达标，日志会给出明确告警，随后的审稿循环里 `length` 维度也会继续扣分。
 
 ## 审稿循环
 
 每轮：**核稿 → 评稿 → 修正**，最多 `review.max_rounds`（默认 3）轮。
 
 - **核稿**：`correct-cn` 的 `POST {base_url}/api/pipeline`（`X-Auth-Key`），按 `apply: "issues"` 做字面替换；服务不可用时回退到 LLM 校对（长度异常则保留原稿）。
-- **评稿**：按类型的 `scoring.dimensions` 多维度打分，加权/总分 ≥ `pass_score` 且无 high 级问题即通过；模型失败时用规则评分兜底。
+- **评稿**：按类型的 `scoring_criteria` 多维度打分，加权/总分 ≥ `pass_score` 且无 high 级问题即通过；模型失败时用规则评分兜底。
 - **修正**：按评分意见改写，长度比例异常（<0.55 或 >1.6）时保留原稿。
 
 ## 发布
@@ -425,8 +414,10 @@ WeKnora 相关配置（`knowledge.weknora`，可写在 `defaults` 里共享，�
 | `PB_LLM_BASE_URL` / `PB_LLM_MODEL` / `PB_LLM_API_KEY` | 远程 OpenAI 兼容模型 |
 | `WECHAT_MP_APP_ID` / `WECHAT_MP_APP_SECRET` | 公众号草稿发布 |
 | `PB_KNOWLEDGE_BASE_PATH` | 知识库根目录（配置里可用 `${...}` 引用） |
+| `KNOWLEDGE_PIPELINE_DIR` | 发布成功后终稿的待入库目录，默认 `D:/knowledge/pipeline` |
 | `BASE_OUTPUT_FOLDER` | 文章根目录（下面自动建 `draft/` 与 `published/`，默认 `output/wechat-article`） |
-| `PB_ARTICLE_TYPE` | 默认文章类型 id（命令行 `--type` 优先，可省略 `--type`） |
+| `PB_ARTICLE_TYPE` | 默认文章类型 id（命令行 `--type` 优先；未设置时交给判断模型） |
+| `SYSTEMONE_BASE_URL` / `SYSTEMONE_API_KEY` / `SYSTEMONE_MODEL` | 判断模型（OpenAI 兼容端点）；留空则回退 `classifier.default_type` |
 | `PB_USE_WEKNORA` | WeKnora 总开关，默认 `false`（只用本地知识库目录） |
 
 配置里支持 `${VAR}` 与 `${VAR:-默认值}` 展开。
@@ -441,8 +432,8 @@ WeKnora 相关配置（`knowledge.weknora`，可写在 `defaults` 里共享，�
 
 ## 排障
 
-- 先跑 `doctor`：会检查 Node 版本、配置文件、各类型知识库目录、WeKnora 可达性与 `kb_ids`、模型可达性、correct-cn / 配图 / 邮件 / 公众号配置。
-- 用 `kbs` 列出 WeKnora 知识库，把 `id` 填到对应类型的 `knowledge.weknora.kb_ids`。
+- 先跑 `doctor`：会检查 Node 版本、配置文件、各类型知识库目录、判断模型配置、模型可达性、correct-cn / 配图 / 邮件 / 公众号配置。
+- 分类结果不符合预期时，用 `classify --title "..." --outline-file <提纲>` 单独调试；再检查类型的 `description` 是否足够区分。
 - 知识库索引有 mtime/size 缓存（`.temp/wechat-article/knowledge-index.json`），重复运行很快；改过文件会自动重建。
 - 不确定环境是否配全时，先用 `--mock` 跑通流程，再逐步替换为真实模型与服务（mock 模式不会访问网络）。
 - correct-cn 不可达时不要卡住：脚本会自动回退到 LLM 校对。
@@ -453,13 +444,15 @@ WeKnora 相关配置（`knowledge.weknora`，可写在 `defaults` 里共享，�
 skills/wechat-article/
 ├── SKILL.md                     本文件
 ├── config/
-│   ├── article-types.json       文章类型 / 模型 / 审稿 / 配图 / 发布配置
-│   └── article-types.schema.json
+│   ├── article-types.yaml       总配置：输出目录 / 模型 / 默认值 / 判断模型 / 类型清单
+│   ├── types/                   各类型明细（<id>.yaml）+ 字段说明 README.md
+│   └── prompts/                 提示词与初稿 schema（draft.json 等）
 └── scripts/
     ├── wechat-article.mjs       命令行入口（编排全部阶段）
     └── lib/
         ├── args.mjs             参数解析
-        ├── config.mjs           配置加载/归一化/校验
+        ├── config.mjs           配置加载/归一化/校验（YAML + types/*.yaml）
+        ├── classify.mjs         判断模型（systemone）客户端与回退
         ├── env.mjs              .env 与项目根探测
         ├── fsx.mjs              文件工具
         ├── log.mjs              日志

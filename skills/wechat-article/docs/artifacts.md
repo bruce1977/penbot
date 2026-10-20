@@ -133,21 +133,19 @@ $BASE_OUTPUT_FOLDER/                 # 环境变量，默认 output/wechat-artic
 
 > 崩溃恢复：`09-publish.json` 里的 `archive.zip` 是第一执行标记，zip 文件是第二执行标记；两者都在时只需删目录。
 
-### 4.3 知识库归档（流程先留，目录后定）
+### 4.3 知识库归档（统一落到 pipeline 待入库目录）
 
-```jsonc
-// article-types.json → types[].publish
-"publish": {
-  "archive": {
-    "enabled": true,
-    "knowledge_dir": "D:/knowledge/obsidian/ai/inbox",  // 空 = 跳过这一步
-    "filename": "{date}-{slug}.md"                      // 可选
-  }
-}
+```yaml
+# article-types.yaml → defaults.publish.archive
+publish:
+  archive:
+    enabled: true
+    knowledge_dir: "${KNOWLEDGE_PIPELINE_DIR:-D:/knowledge/pipeline}"  # 空 = 跳过这一步
+    filename: "{date}-{slug}.md"
 ```
 
-- 目录按类型配置（`ai-news` → `ai/`，`homelab-practice` → `homelab/`）。
-- 写入时基于 `08-final.md` 补一层 frontmatter（`title` / `type` / `published_at`），供知识库管线消费。
+- 所有类型统一落到本地知识库的 `pipeline/` 目录，由后续入库脚本扫描处理；类型文件不单独配置归档目录。
+- 写入时基于 `08-final.md` 补一层 frontmatter（`title` / `type` / `published_at`），供入库脚本消费。
 - `knowledge_dir` 为空就跳过，不影响打包与删除——**这一步失败不应阻塞归档**（记录到 `archive.knowledge.error`）。
 
 ## 5. 已确认
@@ -156,4 +154,4 @@ $BASE_OUTPUT_FOLDER/                 # 环境变量，默认 output/wechat-artic
 2. 归档形式：`published/<YYYYMMDD>-<slug>.zip`。
 3. 编号重排：统一为 `01`–`09`，与阶段一一对应。
 4. 输出根目录：只认 `BASE_OUTPUT_FOLDER`（环境变量/配置），取消 `--output`；用 `--article <slug>` 选择文章。
-5. 知识库归档目录：先按 `types[].publish.archive.knowledge_dir` 配置，留空则跳过。
+5. 知识库归档目录：统一用 `defaults.publish.archive.knowledge_dir`（`KNOWLEDGE_PIPELINE_DIR`），等于本地知识库的 `pipeline/` 待入库目录；留空则跳过。

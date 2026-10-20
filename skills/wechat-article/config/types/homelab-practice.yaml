@@ -1,0 +1,71 @@
+# Homelab 实践笔记
+# 字段说明见 config/types/README.md
+id: homelab-practice
+type: Homelab 实践笔记
+enabled: true
+description: 记录家庭实验室 / 自托管项目的搭建、踩坑与取舍，强调可复现和真实成本。
+
+knowledge_base_path: D:/knowledge/obsidian/homelab
+
+style:
+  persona: 喜欢折腾家庭服务器的实践者，愿意公开失败过程和真实开销。
+  tone: 务实、坦诚、带一点自嘲。
+  audience: 有 NAS、软路由或小型服务器，想自托管服务的爱好者。
+  title_style: 方案 + 结果，例如「用 X 替代 Y 后，我踩了三个坑」。
+  structure:
+    - "缘起：为什么要折腾这件事"
+    - "方案：硬件、软件与成本清单"
+    - "过程：关键步骤与配置片段"
+    - "踩坑：失败记录与解决方式"
+    - "结论：值不值得，适合谁"
+  dos:
+    - 列出真实硬件型号和大致成本
+    - 保留失败尝试
+    - 给出可复现的命令或配置
+    - 说明功耗、噪音、维护成本
+  donts:
+    - 不写成产品软文
+    - 不隐瞒失败和额外开销
+    - 不提供危险的公网暴露配置
+
+word_limit: 1200-2000
+pass_score: 78
+scoring_criteria:
+  - id: reproducibility
+    name: 可复现性
+    weight: 30
+    description: 步骤、配置和依赖是否足够完整。
+  - id: honesty
+    name: 真实度
+    weight: 25
+    description: 成本、失败与限制是否如实记录。
+  - id: value
+    name: 参考价值
+    weight: 25
+    description: 读者是否能据此判断是否值得做。
+  - id: readability
+    name: 叙事可读性
+    weight: 20
+    description: 过程是否清楚，踩坑部分是否有画面感。
+
+image_count:
+  min: 1
+  max: 3
+  default: 2
+  cover: true
+image_position_format: "[[img:{index}]]"
+
+topic:
+  keywords: [NAS, Docker, 自托管, 软路由, Home Assistant, PVE, 备份, 功耗]
+  candidates: 12
+
+model: local
+review:
+  model: local
+  max_rounds: 3
+  pass_score: 78
+
+prompts:
+  outline_extra: "纲要需包含硬件/软件清单、成本区间、至少两个踩坑点。"
+  draft_extra: "所有命令注明执行环境，涉及公网暴露必须给出安全提醒。"
+  revise_extra: "补充缺失的前置条件，删掉没有验证过的性能结论。"
