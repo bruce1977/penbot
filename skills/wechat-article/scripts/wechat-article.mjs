@@ -26,6 +26,7 @@ import {
   parseImageMarkers,
   replaceImageMarkers,
   normalizeImageMarkers,
+  ensureSectionHeadings,
   parseOutlineMarkdown,
   splitFrontmatter,
   buildFrontmatter,
@@ -33,7 +34,7 @@ import {
   collectLocalImages,
 } from "./lib/markdown.mjs";
 import { createCorrector, applyCorrections } from "./lib/corrector.mjs";
-import { buildDraftInput, normalizeDraftInput, validateDraftInput, toPromptParts, summarizeDraftInput } from "./lib/draft-input.mjs";
+import { buildDraftInput, normalizeDraftInput, validateDraftInput, loadDraftTemplate, summarizeDraftInput } from "./lib/draft-input.mjs";
 import { generateImages, resolveImageCount, planImages } from "./lib/illustrate.mjs";
 import { sendEmail, publishToWechat, markdownToHtml, emailShell, bodyOnly } from "./lib/publish.mjs";
 
@@ -41,7 +42,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = path.resolve(__dirname, "..");
 const PROJECT_ROOT = findProjectRoot(process.cwd());
 const VERSION = "1.0.0";
-/** 写初稿前必须准备好的东西：标题 + 大纲 + 相关资料（见 config/draft-input.schema.json）。 */
+/** 写初稿前必须准备好的东西：标题 + 大纲 + 相关资料（schema 见 config/prompts/draft.json）。 */
 const DRAFT_INPUT_FILE = "03-draft-input.json";
 
 const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
@@ -116,8 +117,12 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   node skills/wechat-article/scripts/wechat-article.mjs topics --type ai-insight
   node skills/wechat-article/scripts/wechat-article.mjs run --type ai-insight --mock
   node skills/wechat-article/scripts/wechat-article.mjs run --type ai-news --topic "某模型开源" --requirements "重点写对开发者的影响"
+  node skills/wechat-article/scripts/wechat-article.mjs bundle --type ai-news --output output/wa-demo
+  node skills/wechat-article/scripts/wechat-article.mjs draft --input output/wa-demo/03-draft-input.json
   node skills/wechat-article/scripts/wechat-article.mjs review --article output/wechat-article/ai-insight/20261019-x/article.md
   node skills/wechat-article/scripts/wechat-article.mjs publish --article output/.../article-final.md --to me@example.com
+
+提示词与初稿校验规则：skills/wechat-article/config/prompts/draft.json（prompt + schema）
 `;
 
 async function main() {
@@ -198,8 +203,9 @@ function cmdValidate(config, options = {}) {
       return;
     }
     const raw = readJson(file);
-    const input = normalizeDraftInput(raw, { type: config.types.find((t) => t.id === raw.type) });
-    const report = validateDraftInput(input);
+    const input = normalizeDraftInput(raw);
+    const inputType = config.types.find((t) => t.id === input.type);
+    const report = validateDraftInput(raw, { schema: loadDraftTemplate(config.__dir).schema, type: inputType });
     console.log(`\n初稿输入：${file}`);
     for (const line of summarizeDraftInput(input)) console.log(`  ${line}`);
     for (const warning of report.warnings) console.warn(`  [warn] ${warning}`);
@@ -649,6 +655,7 @@ async function cmdPipeline(config, options, command) {
     type,
     logger,
     outputDir: outputRoot,
+    draftTemplate: loadDraftTemplate(config.__dir),
     mock,
     stamp,
     options,
@@ -725,8 +732,7 @@ async function cmdPipeline(config, options, command) {
     }
 
     // Stage 3: draft ---------------------------------------------------
-    const view = toPromptParts(draftInput);
-    let article = await generateDraft(ctx, view.sources, view.outline);
+    let article = await generateDraft(ctx, draftInput);
     const draftFile = path.join(outputRoot, "03-draft.md");
     writeText(draftFile, article);
     ctx.article = article;
@@ -1072,14 +1078,16 @@ function fallbackOutline(type, topic, sources) {
  * written to `03-draft-input.json` so the draft step reads one stable artifact.
  */
 function resolveDraftInput(ctx, { topic, outline, sources } = {}) {
-  const { options, type, logger, outputDir } = ctx;
+  const { options, type, logger, outputDir, draftTemplate } = ctx;
   const target = path.join(outputDir, DRAFT_INPUT_FILE);
   let input;
+  let raw;
 
   if (options.input || options["draft-input"]) {
     const file = path.resolve(PROJECT_ROOT, String(options.input || options["draft-input"]));
     if (!fs.existsSync(file)) throw new Error(`--input 不存在：${file}`);
-    input = normalizeDraftInput(readJson(file), { type });
+    raw = readJson(file);
+    input = normalizeDraftInput(raw);
     if (input.type && input.type !== type.id) {
       throw new Error(`--input 里的 type 是 ${input.type}，与当前 --type ${type.id} 不一致`);
     }
@@ -1093,9 +1101,10 @@ function resolveDraftInput(ctx, { topic, outline, sources } = {}) {
       sources: sources || ctx.sources || [],
       requirements: options.requirements ? String(options.requirements) : "",
     });
+    raw = input;
   }
 
-  const report = validateDraftInput(input);
+  const report = validateDraftInput(raw, { schema: draftTemplate.schema, type });
   for (const warning of report.warnings) logger.warn(`初稿输入：${warning}`);
   if (!report.ok) {
     throw new Error(`初稿输入不完整（${DRAFT_INPUT_FILE}）：\n  - ${report.errors.join("\n  - ")}`);
@@ -1104,12 +1113,12 @@ function resolveDraftInput(ctx, { topic, outline, sources } = {}) {
   return input;
 }
 
-async function generateDraft(ctx, sources, outline) {
-  const { type, models, logger, topic, options, mock } = ctx;
+async function generateDraft(ctx, input) {
+  const { type, models, logger, options, mock } = ctx;
   if (mock) {
     const body = [
       "---",
-      `title: ${outline.title}`,
+      `title: ${input.title}`,
       "---",
       "",
       `这是 ${type.name} 的 mock 初稿，用于验证脚本管线。`,
@@ -1131,22 +1140,23 @@ async function generateDraft(ctx, sources, outline) {
       "流程验证结束。",
       "",
     ].join("\n");
-    return normalizeArticle(body, { title: outline.title, type: type.id });
+    return normalizeArticle(body, { title: input.title, type: type.id });
   }
 
-  const prompt = buildDraftPrompt({ type, topic, outline, sources, maxChars: 18000 });
+  const prompt = buildDraftPrompt({ type, input, template: ctx.draftTemplate, maxChars: 18000 });
   const model = options.model || type.model;
   let article;
   try {
     article = await models.complete(model, { ...prompt, label: "draft", maxTokens: Math.max(4096, Math.round(type.length.max * 2)) });
   } catch (error) {
     logger.warn(`初稿模型失败（${error.message}），尝试分节生成`);
-    article = await generateDraftBySections(ctx, sources, outline);
+    article = await generateDraftBySections(ctx, input);
   }
-  article = normalizeArticle(stripCodeFence(article), { title: outline.title, type: type.id });
-  const count = resolveImageCount(type, outline, { count: options.images ? asNumber(options.images) : undefined });
-  article = normalizeImageMarkers(article, count);
-  article = await fitLength(ctx, article, outline);
+  article = normalizeArticle(stripCodeFence(article), { title: input.title, type: type.id });
+  article = ensureSectionHeadings(article, input.outline.map((section) => section.heading));
+  const count = resolveImageCount(type, { image_plan: input.images }, { count: options.images ? asNumber(options.images) : undefined });
+  article = normalizeImageMarkers(article, count, input.images);
+  article = await fitLength(ctx, article, input);
   return article;
 }
 
@@ -1155,13 +1165,14 @@ async function generateDraft(ctx, sources, outline) {
  * condense when too long. At most `maxAttempts` model calls; keeps the
  * candidate only when it actually moves toward the target.
  */
-async function fitLength(ctx, article, outline) {
-  const { type, models, logger, options, mock } = ctx;
+async function fitLength(ctx, article, input) {
+  const { type, models, logger, options, mock, draftTemplate } = ctx;
   if (mock) return article;
   const range = { min: type.length.min, max: type.length.max };
   const model = options.model || type.model;
   const maxAttempts = clamp(asNumber(options.lengthAttempts, 2), 0, 4);
   const markers = Math.max(parseImageMarkers(article).length, 0);
+  const headings = input.outline.map((section) => section.heading);
   let current = article;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -1172,7 +1183,14 @@ async function fitLength(ctx, article, outline) {
       return current;
     }
     logger.info(`篇幅 ${words} 字，${action === "expand" ? "扩充" : "压缩"}到约 ${type.length.target} 字（第 ${attempt}/${maxAttempts} 次）`);
-    const prompt = buildLengthPrompt({ type, article: current, wordCount: words, direction: action });
+    const prompt = buildLengthPrompt({
+      type,
+      article: current,
+      wordCount: words,
+      direction: action,
+      retry: draftTemplate.prompt.retry,
+      attempt,
+    });
     let candidate;
     try {
       const text = await models.complete(model, {
@@ -1180,8 +1198,9 @@ async function fitLength(ctx, article, outline) {
         label: `length-${action}-${attempt}`,
         maxTokens: Math.max(4096, Math.round(type.length.max * 2)),
       });
-      candidate = normalizeArticle(stripCodeFence(text), { title: outline.title, type: type.id });
-      if (markers) candidate = normalizeImageMarkers(candidate, markers);
+      candidate = normalizeArticle(stripCodeFence(text), { title: input.title, type: type.id });
+      candidate = ensureSectionHeadings(candidate, headings);
+      if (markers) candidate = normalizeImageMarkers(candidate, markers, input.images);
     } catch (error) {
       logger.warn(`篇幅调整失败（${error.message}），保留当前稿件`);
       return current;
@@ -1207,17 +1226,16 @@ async function fitLength(ctx, article, outline) {
   return current;
 }
 
-async function generateDraftBySections(ctx, sources, outline) {
-  const { type, models, options, logger } = ctx;
+async function generateDraftBySections(ctx, input) {
+  const { type, models, options, logger, draftTemplate } = ctx;
   const model = options.model || type.model;
   const parts = [];
-  for (const [i, section] of (outline.outline || []).entries()) {
-    logger.info(`分节生成 ${i + 1}/${outline.outline.length}：${section.heading}`);
+  for (const [i, section] of input.outline.entries()) {
+    logger.info(`分节生成 ${i + 1}/${input.outline.length}：${section.heading}`);
     const prompt = buildDraftPrompt({
       type,
-      topic: ctx.topic,
-      outline: { ...outline, outline: [section], image_plan: [] },
-      sources,
+      input: { ...input, outline: [section], images: [] },
+      template: draftTemplate,
       maxChars: 10000,
     });
     const text = await models.complete(model, {
@@ -1228,7 +1246,7 @@ async function generateDraftBySections(ctx, sources, outline) {
     });
     parts.push(stripCodeFence(text).replace(/^---[\s\S]*?---\s*/, "").trim());
   }
-  return normalizeArticle(`# ${outline.title}\n\n${parts.join("\n\n")}`, { title: outline.title, type: type.id });
+  return normalizeArticle(`# ${input.title}\n\n${parts.join("\n\n")}`, { title: input.title, type: type.id });
 }
 
 async function reviewLoop(ctx, article) {

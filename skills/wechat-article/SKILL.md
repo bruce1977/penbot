@@ -128,56 +128,57 @@ node skills/wechat-article/scripts/wechat-article.mjs topics --type ai-news --co
 写初稿前必须先准备好三样东西，它们全部装在一个 JSON 里，初稿阶段**只读这个文件**：
 
 1. `title` — 文章标题
-2. `outline` — 文章大纲（小节 + 要点 + 建议字数 + 素材引用）
+2. `outline` — 文章大纲（小节 + 要点 + 可选建议字数）
 3. `materials` — 相关资料（整篇或若干段落）
-
-完整结构（JSON Schema：`config/draft-input.schema.json`）：
 
 ```jsonc
 {
-  "version": 1,
-  "type": "ai-news",                       // 决定文风/篇幅/评分维度
-  "type_name": "AI 资讯快评",
-  "created_at": "2026-10-19T15:49:15.997Z",
+  "type": "ai-news",                     // 决定文风/篇幅/评分维度
+  "title": "文章标题",                    // 1) 标题
+  "thesis": "核心判断（可选）",
+  "audience": "目标读者（可选）",
+  "hook": "开篇钩子（可选）",
+  "requirements": "额外要求（可选）",
 
-  "title": "文章标题",                      // 1) 标题
-  "thesis": "全文核心判断，一句话",
-  "audience": "目标读者",
-  "hook": "开篇钩子：场景/数据/冲突",
-  "requirements": "额外写作要求",
-  "length": { "min": 800, "target": 1000, "max": 1300 },
-
-  "outline": [                              // 2) 大纲
-    {
-      "heading": "小节标题",
-      "points": ["这一节要写到的要点"],
-      "target_words": 300,
-      "source_refs": [1, 2]                 // 主要依据的素材 id
-    }
+  "outline": [                           // 2) 大纲
+    { "heading": "小节标题", "points": ["要点一", "要点二"], "target_words": 300 }
   ],
-  "counterpoint": "必须回应的反方观点",
-  "takeaway": "结尾要落到的一句话",
+  "counterpoint": "要回应的反方观点（可选）",
+  "takeaway": "结尾要落到的一句话（可选）",
 
-  "materials": [                            // 3) 相关资料
-    {
-      "id": 1,
-      "title": "来源标题",
-      "date": "2026-10-18",
-      "origin": "local",                    // local | weknora | manual | other
-      "source": "D:/knowledge/obsidian/ai/xxx.md",
-      "url": "",
-      "summary": "一句话摘要",
-      "paragraphs": ["相关段落原文", "再一段"]
-    }
+  "materials": [                         // 3) 资料
+    { "title": "来源标题", "date": "2026-10-18", "source": "D:/knowledge/.../x.md",
+      "paragraphs": ["相关段落原文", "再一段"] }
   ],
 
-  "images": {                               // 可选，缺省按类型配置规划
-    "count": 2,
-    "cover": true,
-    "plan": [{ "position": "cover", "description": "中文画面说明", "prompt": "English prompt" }]
+  "images": [                            // 可选，缺省按类型配置规划
+    { "position": "cover", "description": "中文画面说明", "prompt": "English prompt" }
+  ]
+}
+```
+
+**提示词和校验规则都在 `config/prompts/draft.json`**，一个文件两段：`prompt`（system / user / retry）和 `schema`（一行一个字段）。改文案、调字段上限都不用动代码：
+
+```jsonc
+{
+  "prompt": {
+    "system": "你是「{{type_name}}」栏目的作者……",
+    "user":   "# 任务\n……\n## 纲要\n{{outline}}\n## 可用素材\n{{materials}}\n……",
+    "retry":  "上一稿不合格（第 {{retry_tag}} 次尝试）：\n{{errors}}\n……\n## 原稿\n{{article}}"
+  },
+  "schema": {
+    "title": ["string", 1, 64],
+    "outline": ["array", 1, 12],
+    "outline[].heading": ["string", 1],
+    "outline[].points": ["array", 1, 8],
+    "materials": ["array", 1, 20],
+    "materials[].paragraphs": ["array", 1, 20],
+    "requirements?": "string"
   }
 }
 ```
+
+schema 语法：`"string"` / `["string", 最短]` / `["string", 最短, 最长]` / `["array", 最少, 最多]` / `["number", 最小, 最大]` / `"boolean"`；键尾加 `?` 表示可选；`list[]` 校验数组元素，`list[].field` 校验对象数组的每个字段。
 
 用法：
 
@@ -185,17 +186,17 @@ node skills/wechat-article/scripts/wechat-article.mjs topics --type ai-news --co
 # 只做准备工作：选题 → 检索 → 纲要 → 打包成 03-draft-input.json
 node skills/wechat-article/scripts/wechat-article.mjs bundle --type ai-news --output output/wa-demo
 
-# 校验这份输入（会把错误与警告逐条列出）
+# 校验这份输入（硬错误 + 软警告逐条列出）
 node skills/wechat-article/scripts/wechat-article.mjs validate --input output/wa-demo/03-draft-input.json
 
-# 用它写初稿（可以手改 JSON 后再跑；类型与时序都能从文件里读出来）
+# 用它写初稿（可以手改 JSON 后再跑；类型和输出目录都能从文件推断）
 node skills/wechat-article/scripts/wechat-article.mjs draft --input output/wa-demo/03-draft-input.json
 ```
 
-- `run` / `auto` / `manual` 也会在初稿前自动写出 `03-draft-input.json`，等于每一步都可审查、可手改。
-- **硬错误**（会中止）：缺 `title`、`outline` 为空、`materials` 为空、素材缺正文、`source_refs` 指向不存在的素材 id。
-- **软警告**（不中止）：大纲字数与目标相差过大、某节没有要点或未关联素材、缺 `thesis`/`takeaway`，日志会逐条打印。
-- 只给段落、没有整篇文章时，把段落放进 `paragraphs` 即可；`origin` 写 `manual`。
+- `run` / `auto` / `manual` 也会在初稿前自动写出 `03-draft-input.json`，每一步都可审查、可手改。
+- **硬错误**（会中止）：缺 `title`、`outline` 为空或某节缺 `heading`/`points`、`materials` 为空或素材缺 `paragraphs`、字段超长或超项数上限。
+- **软警告**（不中止）：大纲字数与目标相差过大、某节没有要点、缺 `thesis`/`takeaway`/`requirements`。
+- 只给段落、没有整篇文章时，把段落放进 `paragraphs` 即可。
 
 ## 命令一览
 

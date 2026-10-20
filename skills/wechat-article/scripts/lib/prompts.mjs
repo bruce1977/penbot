@@ -1,4 +1,6 @@
 import { formatSources } from "./knowledge.mjs";
+import { buildDraftVars } from "./draft-input.mjs";
+import { renderTemplate } from "./template.mjs";
 
 const JSON_RULES = [
   "只输出一个合法 JSON 对象，不要输出 Markdown 代码块、解释或前后缀。",
@@ -139,70 +141,11 @@ export function buildOutlinePrompt({ type, topic, sources, userRequirements = ""
   };
 }
 
-export function buildDraftPrompt({ type, topic, outline, sources, maxChars = 14000 }) {
-  const outlineText = (outline.outline || [])
-    .map((section, i) => {
-      const sourcesText = section.source_indexes?.length ? `（素材 ${section.source_indexes.join("、")}）` : "";
-      return `${i + 1}. ${section.heading}${section.target_words ? `｜约 ${section.target_words} 字` : ""}\n   ${(section.points || []).join("\n   ")} ${sourcesText}`;
-    })
-    .join("\n");
-
-  const images = (outline.image_plan || [])
-    .map((img, i) => `${i + 1}. ${img.position || `inline_${i + 1}`}：${img.description}`)
-    .join("\n");
-
+export function buildDraftPrompt({ type, input, template, maxChars = 14000 }) {
+  const vars = buildDraftVars({ type, input, maxChars });
   return {
-    system: [
-      `你是「${type.name}」栏目的作者。${type.style.persona || ""}`,
-      `文风：${type.style.tone || "清晰、克制"}。`,
-      `标题风格：${type.style.title_style || "准确、有信息量"}。`,
-      "直接输出 Markdown 正文，不要输出任何解释、前言或结尾寒暄。",
-      "不要在正文里写「本文将」「下面我们来看」这类元叙述。",
-    ].join("\n"),
-    prompt: [
-      `# 任务`,
-      `根据纲要写一篇完整的微信公众号文章。`,
-      "",
-      `## 主题`,
-      `${outline.title || topic.topic}`,
-      "",
-      `核心判断：${outline.thesis || topic.thesis || ""}`,
-      `开篇钩子：${outline.hook || ""}`,
-      `读者：${outline.audience || type.style.audience || ""}`,
-      "",
-      `## 纲要`,
-      outlineText,
-      "",
-      `## 必须回应的反方观点`,
-      outline.counterpoint || "（无）",
-      "",
-      `## 结尾要落到的结论`,
-      outline.takeaway || "",
-      "",
-      `## 可用素材`,
-      formatSources(sources, { maxChars }) || "（无）",
-      "",
-      `## 硬性要求`,
-      `- 篇幅 ${type.length.min}-${type.length.max} 字，不要低于 ${type.length.min} 字。`,
-      `- 每个小节至少 2 个自然段，每段 2-5 句；不要一句一段，也不要把同一小节的内容写成要点清单。`,
-      `- 每段不超过 5 行，适配手机阅读。`,
-      `- 使用 Markdown：一级标题只出现一次作为文章标题，小节用 ##。`,
-      `- 首行必须是 frontmatter：`,
-      `---`,
-      `title: ${outline.title || topic.topic}`,
-      `---`,
-      `- 正文中按以下格式插入配图标记，全文 ${type.illustrations.min}-${type.illustrations.max} 个，必须使用这种格式：`,
-      `[[img:1|中文画面说明|English image prompt]]`,
-      `- 配图位置建议：`,
-      images || "封面 1 张 + 正文 1-2 张",
-      `- 不要使用 HTML 标签，不要插入真实图片链接，不要写图片来源。`,
-      `- 引用素材中的事实时自然叙述，不要出现「根据素材 3」这类字样。`,
-      type.prompts?.draft_extra ? `- ${type.prompts.draft_extra}` : "",
-      "",
-      "现在开始输出文章：",
-    ]
-      .filter(Boolean)
-      .join("\n"),
+    system: renderTemplate(template.prompt.system, vars),
+    prompt: renderTemplate(template.prompt.user, vars),
   };
 }
 
@@ -316,41 +259,34 @@ export function buildCorrectFallbackPrompt({ article, issues }) {
   };
 }
 
-export function buildLengthPrompt({ type, article, wordCount, direction }) {
-  const target = type.length.target || Math.round((type.length.min + type.length.max) / 2);
+const EXPAND_RULES = [
+  "1. 优先在现有小节内补充：具体机制、可验证的细节、对读者的实际影响、必要的背景解释。",
+  "2. 每个小节至少 2 个自然段，每段 2-5 句；不要一句一段，也不要新增小节标题。",
+  "3. 只能用原稿已有的事实、数据和逻辑做展开，严禁编造新的数据、案例或引用。",
+  "4. 不要写「本文将」「如上所述」这类元叙述，也不要重复同一句话。",
+].join("\n");
+
+const CONDENSE_RULES = [
+  "1. 删除重复表述、空洞形容词和元叙述，不得删除事实与关键判断。",
+  "2. 合并过短的段落，保持每段 2-5 句。",
+  "3. 必须保留所有配图标记和原有小节标题。",
+].join("\n");
+
+export function buildLengthPrompt({ type, article, wordCount, direction, retry, attempt = 1 }) {
   const expand = direction === "expand";
+  const target = type.length.target || Math.round((type.length.min + type.length.max) / 2);
+  const errors = `当前 ${wordCount} 字，要求 ${type.length.min}-${type.length.max} 字（目标约 ${target} 字）。`;
   return {
-    system: [
-      `你是「${type.name}」栏目的改稿编辑。`,
-      expand
-        ? "你的任务是扩充文章篇幅，靠补充实质信息提升密度，绝不注水。"
-        : "你的任务是压缩文章篇幅，删去冗余，保留全部关键信息与结构。",
-      "保留第一行的 frontmatter，以及所有配图标记 [[img:n|中文说明|English prompt]]。",
-      "只输出完整的 Markdown 文章，不要输出任何说明、对比或解释。",
-    ].join("\n"),
-    prompt: [
-      `## 当前篇幅`,
-      `${wordCount} 字，需要调整到 ${type.length.min}-${type.length.max} 字（目标约 ${target} 字）。`,
-      "",
-      expand ? "## 扩充要求" : "## 压缩要求",
-      expand
-        ? [
-            "1. 优先在现有小节内补充：具体机制、可验证的细节、对读者的实际影响、必要的背景解释。",
-            "2. 每个小节至少 2 个自然段，每段 2-5 句；不要一句一段，也不要新增小节标题。",
-            "3. 只能用原稿已有的事实、数据和逻辑做展开，严禁编造新的数据、案例或引用。",
-            "4. 不要写「本文将」「如上所述」这类元叙述，也不要重复同一句话。",
-          ].join("\n")
-        : [
-            "1. 删除重复表述、空洞形容词和元叙述，不得删除事实与关键判断。",
-            "2. 合并过短的段落，保持每段 2-5 句。",
-            "3. 必须保留所有配图标记和原有小节标题。",
-          ].join("\n"),
-      "",
-      `## 原稿`,
+    system: `你是「${type.name}」栏目的改稿编辑。只输出完整的 Markdown 文章，不要输出任何说明、对比或解释。`,
+    prompt: renderTemplate(retry, {
+      retry_tag: attempt,
+      errors,
+      length_fix: expand ? EXPAND_RULES : CONDENSE_RULES,
       article,
-      "",
-      "现在输出调整后的完整文章：",
-    ].join("\n"),
+      word_count: wordCount,
+      target,
+      length: { min: type.length.min, target, max: type.length.max },
+    }),
   };
 }
 

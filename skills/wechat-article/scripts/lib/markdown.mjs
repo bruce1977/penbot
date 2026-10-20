@@ -12,6 +12,41 @@ export function splitFrontmatter(markdown) {
   return { data: parseSimpleYaml(match[1]), body: text.slice(match[0].length).trim() };
 }
 
+/**
+ * Promote plain lines that exactly match an outline heading to `## heading`.
+ * Small models sometimes drop the leading `##`; the headings themselves survive.
+ */
+export function ensureSectionHeadings(markdown, headings = []) {
+  const wanted = new Set(
+    (headings || [])
+      .map((heading) => String(heading || "").trim().replace(/^\d+[.、)]\s*/, ""))
+      .filter(Boolean),
+  );
+  if (wanted.size === 0) return markdown;
+
+  let inFrontmatter = false;
+  let fence = false;
+  const lines = String(markdown || "").split(/\r?\n/).map((line, i) => {
+    const text = line.trim();
+    if (i === 0 && text === "---") {
+      inFrontmatter = true;
+      return line;
+    }
+    if (inFrontmatter) {
+      if (text === "---") inFrontmatter = false;
+      return line;
+    }
+    if (text.startsWith("```")) {
+      fence = !fence;
+      return line;
+    }
+    if (fence || !text || text.startsWith("#")) return line;
+    const bare = text.replace(/^\d+[.、)]\s*/, "");
+    return wanted.has(bare) ? `## ${bare}` : line;
+  });
+  return lines.join("\n");
+}
+
 /** Parse the small YAML subset used by article frontmatter. */
 export function parseSimpleYaml(yamlText) {
   const data = {};
@@ -185,7 +220,7 @@ export function replaceImageMarkers(markdown, replacements, { onFailure = "comme
 }
 
 /** Insert missing markers near paragraph boundaries when the model ignored them. */
-export function ensureImageMarkers(markdown, count) {
+export function ensureImageMarkers(markdown, count, plans = []) {
   const markers = parseImageMarkers(markdown);
   if (markers.length >= count) return markdown;
   const { data, body } = splitFrontmatter(markdown);
@@ -198,7 +233,10 @@ export function ensureImageMarkers(markdown, count) {
   }
   insertions.sort((x, y) => y.at - x.at);
   for (const item of insertions) {
-    paragraphs.splice(item.at, 0, `[[img:${item.index}|配图 ${item.index}]]`);
+    const plan = plans[item.index - 1] || {};
+    const description = String(plan.description || "").trim() || `配图 ${item.index}`;
+    const prompt = String(plan.prompt || "").trim();
+    paragraphs.splice(item.at, 0, `[[img:${item.index}|${description}${prompt ? `|${prompt}` : ""}]]`);
   }
   return `${buildFrontmatter(data)}${paragraphs.join("\n\n")}\n`;
 }
@@ -208,10 +246,10 @@ export function ensureImageMarkers(markdown, count) {
  * drop duplicate indices, cap at `count`, renumber sequentially
  * (1..N in document order), then pad when there are too few.
  */
-export function normalizeImageMarkers(markdown, count) {
+export function normalizeImageMarkers(markdown, count, plans = []) {
   const text = String(markdown || "");
   const markers = parseImageMarkers(text);
-  if (markers.length === 0) return ensureImageMarkers(text, count);
+  if (markers.length === 0) return ensureImageMarkers(text, count, plans);
 
   const limit = Number.isFinite(count) && count > 0 ? count : Infinity;
   const keep = new Map();
@@ -224,7 +262,7 @@ export function normalizeImageMarkers(markdown, count) {
     keep.set(marker.start, { index: next, description: marker.description, prompt: marker.prompt });
     next += 1;
   }
-  if (keep.size === 0) return ensureImageMarkers(text, count);
+  if (keep.size === 0) return ensureImageMarkers(text, count, plans);
 
   let out = "";
   let cursor = 0;
@@ -240,7 +278,7 @@ export function normalizeImageMarkers(markdown, count) {
   }
   out += text.slice(cursor);
 
-  return keep.size < limit ? ensureImageMarkers(out, count) : out;
+  return keep.size < limit ? ensureImageMarkers(out, count, plans) : out;
 }
 
 /**

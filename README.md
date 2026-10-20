@@ -45,7 +45,7 @@ npm run wechat-article -- bundle  --type ai-news --output $DIR   # 3  打包初�
 npm run wechat-article -- draft   --type ai-news --output $DIR   # 4  初稿
 ```
 
-`bundle` 会把**标题 + 大纲 + 相关资料**写成 `03-draft-input.json`（格式见 [`skills/wechat-article/config/draft-input.schema.json`](skills/wechat-article/config/draft-input.schema.json)）。可以手改这份 JSON，再用 `draft --input <文件> --output <目录>` 写初稿；`draft` / `run` 也可以用 `validate --input <文件>` 先校验。
+`bundle` 会把**标题 + 大纲 + 相关资料**写成 `03-draft-input.json`；提示词与校验规则都在 [`skills/wechat-article/config/prompts/draft.json`](skills/wechat-article/config/prompts/draft.json)（`prompt` + 紧凑 `schema`）。可以手改这份 JSON，再用 `draft --input <文件> --output <目录>` 写初稿；也可以用 `validate --input <文件>` 先校验。
 
 手动选题只有一步：`outline --type ai-news --topic "主题"`（跳过选题模型）。
 
