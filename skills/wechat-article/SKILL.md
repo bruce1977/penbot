@@ -239,7 +239,10 @@ node skills/wechat-article/scripts/wechat-article.mjs draft --article <slug> --i
 
 ### 通用参数
 
-- `--config <path>` 配置文件，默认 `skills/wechat-article/config/article-types.yaml`
+- `--config <path>` 类型注册表，默认 `skills/wechat-article/config/article-types.yaml`
+- `--defaults <path>` 全局默认配置，默认 `skills/wechat-article/config/defaults.yaml`
+- `--models <path>` 模型总表，默认 `skills/wechat-article/config/models.yaml`
+- `--steps <path>` 步骤配置，默认 `skills/wechat-article/config/steps.yaml`
 - `--type <id>` 文章类型 id；省略时依次取 `PB_ARTICLE_TYPE` → 判断模型自动分类 → `classifier.default_type`
 - `--topic <text>` 手动主题（省略则自动选题；手动时**跳过选题模型**）
 - `--requirements <text>` 手动补充写作要求
@@ -251,8 +254,8 @@ node skills/wechat-article/scripts/wechat-article.mjs draft --article <slug> --i
 - `--article <slug>` 选择/续跑 `draft/<slug>/` 这篇文章；`latest` = 最近一篇；分步命令省略时自动选中唯一一篇
 - `--file <path>` `review`/`illustrate`/`publish` 直接指定稿件文件（`--article <path>` 仍兼容）
 - `--slug <name>` 新建文章时覆盖目录名（默认取标题 slug）
-- `--model <profile>` 覆盖写作模型 profile
-- `--review-model <profile>` 覆盖评稿模型 profile
+- `--model <id>` 覆盖写作模型 id（如 `llm.local`、`llm.large`）
+- `--review-model <id>` 覆盖评稿模型 id
 - `--rounds <n>` 审稿循环最大轮次（1-5，默认取配置 `review.max_rounds`）
 - `--length-attempts <n>` 初稿篇幅自动扩写/压缩的最大次数（默认 2，0 表示关闭）
 - `--images <n>` 配图数量（1-5）
@@ -284,6 +287,7 @@ node skills/wechat-article/scripts/wechat-article.mjs draft --article <slug> --i
 05-draft.md                              初稿
 06-review/round-N/{before,after-correct,after-revise}.md + correct.json + score.json
 06-reviewed.md                           审稿后的稿件
+06-polished.md                           去 AI 化后的稿件（de_ai 接入后）
 07-images.json / 07-illustrated.md       配图元数据与替换后的稿件
 08-final.md                              终稿（发布用）
 08-final.html                            邮件用 HTML（启用邮件时生成）
@@ -303,25 +307,39 @@ pipeline.log                             运行日志
 
 `skipped`（未启用发布 / `auto_publish=false`）、`dry_run`、`partial`、`failed` 都留在 `draft/`，修好后可重跑。归档是幂等的：zip 路径先写进 `09-publish.json`，重跑时已存在的 zip 直接复用。
 
-## 流程节点（`config/steps.yaml`）
+## 流程节点（`config/steps/`）
+
+`config/steps.yaml` 只保留全局默认值（模型 id、重试、超时）和阶段文件顺序；节点按大步骤拆到 `config/steps/`：
+
+| 阶段文件 | 节点 |
+| --- | --- |
+| `10-topic.yaml` | `classify_type` → `select_topic` → `gather_materials` |
+| `20-outline.yaml` | `outline` → `bundle_draft_input` |
+| `30-draft.yaml` | `draft_writing` → `length_adjust` |
+| `40-review.yaml` | `review` → `scoring` |
+| `50-revision.yaml` | `revision` → `de_ai` → `image_generation` |
+| `60-publish.yaml` | `publish` → `archive` |
 
 每个节点声明处理方式、模型、输入输出、重试、超时和默认提示词。节点顺序就是正常执行顺序：
 
 | step_name | 作用 | 处理方式 | 默认模型 |
 | --- | --- | --- | --- |
-| `classify_type` | 判断文章类型 | `builtin:classify_type` | System One `jev-latest` |
-| `select_topic` | 选题 | `builtin:select_topic` | 本地模型 |
-| `gather_materials` | 收集素材 | `builtin:gather_materials` | 无（本地检索） |
-| `outline` | 生成纲要 | `builtin:generate_outline` | 本地模型 |
-| `bundle_draft_input` | 组装初稿输入 | `builtin:build_draft_input` | 无（本地脚本） |
-| `draft_writing` | 写初稿 | `builtin:write_draft` | 本地模型 |
-| `length_adjust` | 篇幅调整（条件） | `builtin:adjust_length` | 本地模型 |
-| `review` | 核稿（错别字/敏感词） | `builtin:review_article` | 校对接口 + 本地模型兜底 |
-| `scoring` | 评稿 | `builtin:score_article` | 本地模型 |
-| `revision` | 修正 | `builtin:revise_article` | 本地模型 |
-| `image_generation` | 配图 | `builtin:generate_images` | 图片 API |
-| `publish` | 发布 | `builtin:publish_article` | 无（渠道 API） |
-| `archive` | 归档 | `builtin:archive_article` | 无（本地脚本） |
+| `classify_type` | 判断文章类型 | `builtin:classify_type` | `systemone.classifier` |
+| `select_topic` | 选题 | `builtin:select_topic` | `llm.local` |
+| `gather_materials` | 收集素材 | `builtin:gather_materials` | `none`（本地检索） |
+| `outline` | 生成纲要 | `builtin:generate_outline` | `llm.local` |
+| `bundle_draft_input` | 组装初稿输入 | `builtin:build_draft_input` | `none`（本地脚本） |
+| `draft_writing` | 写初稿 | `builtin:write_draft` | `llm.local` |
+| `length_adjust` | 篇幅调整（条件） | `builtin:adjust_length` | `llm.local` |
+| `review` | 核稿（错别字/敏感词） | `builtin:review_article` | `llm.local`（校对接口优先） |
+| `scoring` | 评稿 | `builtin:score_article` | `llm.local` |
+| `revision` | 修正 | `builtin:revise_article` | `llm.local` |
+| `de_ai` | 去 AI 化 | `builtin:de_ai` | `llm.local` |
+| `image_generation` | 配图 | `builtin:generate_images` | `none`（通道见 `defaults.illustrations`） |
+| `publish` | 发布 | `builtin:publish_article` | `none`（渠道 API） |
+| `archive` | 归档 | `builtin:archive_article` | `none`（本地脚本） |
+
+> `de_ai` 先固定契约（读 `06-reviewed.md`，写 `06-polished.md`），执行层接入前不会改变现有产物链。
 
 ### handler
 
@@ -333,37 +351,46 @@ handler: https://example.com/api/step      # HTTP 接口
 
 ### model
 
-模型配置统一为 `BASE_URL` / `MODEL_NAME` / `API_KEY`（也接受小写），默认继承 `defaults.model`，节点只写要覆盖的字段：
+所有模型统一在 `config/models.yaml` 定义，节点、类型和 `defaults` 只写模型 id：
 
 ```yaml
+# config/steps.yaml
 defaults:
-  model:
-    PROVIDER: ollama
-    BASE_URL: "${LOCAL_LLM_BASE_URL:-http://localhost:11434}"
-    MODEL_NAME: "${LOCAL_LLM_BASE_MODEL:-qwen3.5:9b}"
-    API_KEY: "${LOCAL_LLM_API_KEY}"
+  model: llm.local
 
+# config/steps/10-topic.yaml
 steps:
   - step_name: select_topic
-    model:
-      MODEL_NAME: "${LOCAL_LLM_LARGE_MODEL:-qwen3.6:35b}"
+    model: llm.large
 ```
 
-支持的 `PROVIDER`：
+`config/models.yaml` 按三类组织，每类下可以有多个子类型：
 
-- `ollama` / `openai`：任意 OpenAI 兼容端点。
-- `opencode`：通过 opencode CLI 调模型，适合免费模型轮换：
-  ```yaml
-  model:
-    PROVIDER: opencode
-    COMMAND: opencode
-    AGENT: wechat-article-writer
-    MODEL_NAME: ""      # 留空 = 用 opencode 当前默认模型
-  ```
-- `systemone`：System One 决策模型（`/v1/systemone`）。
-- `image`：图片生成接口。
-- `none`：纯本地脚本，不调模型。
-- `mock`：测试用。
+```yaml
+llm:                 # 文本模型：Ollama / OpenAI 兼容端点
+  local: { ... }
+  small: { ... }
+  large: { ... }
+  remote: { ... }
+
+opencode:            # OpenCode CLI agent
+  writer:
+    command: opencode
+    agent: wechat-article-writer
+
+systemone:           # System One 决策模型
+  classifier:
+    base_url: "${SYSTEMONE_BASE_URL}"
+    model: "${SYSTEMONE_MODEL:-jev-latest}"
+```
+
+- `llm.*`：`provider` 写 `ollama` 或 `openai`；`remote` 可以指向 DeepSeek 等兼容端点。
+- `opencode.*`：通过 `opencode run --agent` 调用。
+- `systemone.*`：走 `/v1/systemone`，用于自动分类。
+- `none`：保留值，表示纯本地脚本，不调模型。
+- 配图通道不在 `models.yaml` 里，配置在 `defaults.illustrations.modelscope` / `pollinations`。
+
+`--model` 也用同样的 id，例如 `--model llm.large`。
 
 ### 类型覆盖
 
@@ -377,8 +404,7 @@ steps:
       system: |
         你是「AI 资讯快评」栏目的作者，先事实后观点。
       extra: "第一段不超过 80 字，直接说清事件。"
-    model:
-      MODEL_NAME: "${LOCAL_LLM_LARGE_MODEL:-qwen3.6:35b}"
+    model: llm.large
     timeout: 900000
     retry_limit: 1
 ```
@@ -403,8 +429,11 @@ node skills/wechat-article/scripts/wechat-article.mjs steps --json
 
 `validate` 和 `doctor` 也会校验 `steps.yaml`。当前版本已经完成节点清单、加载、模型继承、类型覆盖、校验和展示；执行层会按这些节点逐步接入（先把契约固定下来）。
 
+## 文章类型与配置
 
-- 总配置：`config/article-types.yaml`（输出目录、模型 profile、各类默认值、判断模型、类型清单）。
+- 全局默认：`config/defaults.yaml`（输出目录、判断模型行为、文章级默认值）。
+- 模型总表：`config/models.yaml`（`llm` / `opencode` / `systemone` 三类）。
+- 类型注册表：`config/article-types.yaml`，只保留 `types:` 列表和加载顺序。
 - 类型明细：`config/types/<id>.yaml`，一个类型一个文件；`types:` 决定加载顺序，省略时自动扫描目录。
 - 字段说明：`config/types/README.md`。
 
@@ -435,7 +464,7 @@ node skills/wechat-article/scripts/wechat-article.mjs steps --json
 
 ### 判断模型（System One）
 
-`article-types.yaml` 的 `classifier` 段配置 System One 决策模型端点（TypeSafe Jev / 基石智算 Laya / vLLM 同一协议）：
+`defaults.yaml` 的 `classifier` 段配置 System One 决策模型端点（TypeSafe Jev / 基石智算 Laya / vLLM 同一协议）：
 
 ```yaml
 classifier:
@@ -480,22 +509,22 @@ classifier:
 - 发布成功后的终稿统一落到 `KNOWLEDGE_PIPELINE_DIR`（默认 `D:/knowledge/pipeline`），由后续入库脚本处理。
 - `kbs` 仍可只读查看远端知识库；`--knowledge-source` 仅在显式启用 WeKnora 时有意义。
 
-## 模型 profile
+## 模型
 
-> 流程节点的默认模型在 `config/steps.yaml` 的 `defaults.model`，每个节点可以单独覆盖；下面这些 profile 写在 `article-types.yaml` 的 `models` 段，仍可用于 `--model`、类型的 `model` 字段，以及节点的 `model: <profile>`。
+所有模型在 `config/models.yaml`，按 `llm` / `opencode` / `systemone` 三类组织。节点、类型和 `defaults` 只写模型 id：
 
-写在配置的 `models` 段，按需切换；每个 profile 都能用 `base_url`（BASE_URL）、`model`（MODEL_NAME）/`model_name`、`api_key`（API_KEY）三项显式配置：
-
-| profile | provider | 说明 |
+| id | provider | 说明 |
 | --- | --- | --- |
-| `local` | ollama | 默认写作模型，`LOCAL_LLM_BASE_MODEL`（默认 `qwen3.5:9b`），走 `LOCAL_LLM_BASE_URL` |
-| `local-small` | ollama | 更小更快的本地模型，默认 `qwen3.5:4b`，适合快速试跑 |
-| `local-large` | ollama | 更大的本地模型，默认 `qwen3.6:35b`，质量更好、更慢 |
-| `opencode` | opencode | 以 `opencode run --format json --file <prompt>` 调用代理，仅返回文本（不需要 BASE_URL/API_KEY） |
-| `remote` | openai | 任意 OpenAI 兼容端点（`PB_LLM_BASE_URL`/`PB_LLM_API_KEY`） |
-| `mock` | mock | 不发请求，返回固定内容，用于验证流程 |
+| `llm.local` | ollama | 默认写作模型，`LOCAL_LLM_BASE_MODEL`（默认 `qwen3.5:9b`） |
+| `llm.small` | ollama | 更小更快的本地模型，默认 `qwen3.5:4b`，适合快速试跑 |
+| `llm.large` | ollama | 更大的本地模型，默认 `qwen3.6:35b`，质量更好、更慢 |
+| `llm.remote` | openai | 任意 OpenAI 兼容端点（`PB_LLM_BASE_URL` / `PB_LLM_API_KEY`） |
+| `opencode.writer` | opencode | 以 `opencode run --format json --file <prompt>` 调用写作代理 |
+| `systemone.classifier` | systemone | 自动分类，走 `/v1/systemone` |
 
-覆盖用法：`--model local-large --review-model local`。若某次模型调用失败，脚本会按阶段降级（规则纲要 / 分节生成 / 规则评分），不会中断整条管线。
+- `none` 是保留值，表示纯本地脚本，不调模型。
+- `--mock` 会跳过真实模型调用，不需要配置 mock 模型。
+- 覆盖用法：`--model llm.large --review-model llm.local`。若某次模型调用失败，脚本会按阶段降级（规则纲要 / 分节生成 / 规则评分），不会中断整条管线。
 
 ## 配图
 
@@ -526,7 +555,7 @@ classifier:
 | 变量 | 用途 |
 | --- | --- |
 | `LOCAL_LLM_BASE_URL` / `LOCAL_LLM_BASE_MODEL` / `LOCAL_LLM_API_KEY` | 本地大模型（BASE_URL / MODEL_NAME / API_KEY） |
-| `LOCAL_LLM_SMALL_MODEL` / `LOCAL_LLM_LARGE_MODEL` | 可选：`local-small` / `local-large` 使用的模型名 |
+| `LOCAL_LLM_SMALL_MODEL` / `LOCAL_LLM_LARGE_MODEL` | 可选：`llm.small` / `llm.large` 使用的模型名 |
 | `WEKNORA_BASE_URL` / `WEKNORA_API_KEY` | WeKnora 远程知识库 |
 | `PB_MODEL_IMAGE_API_KEY` | ModelScope 配图（兼容旧名 `PB_MODEL_API_KEY`） |
 | `PB_IMAGE_BASE_URL` / `PB_IMAGE_MODEL` | 配图主通道的 BASE_URL / MODEL_NAME（默认 ModelScope + Z-Image-Turbo） |
@@ -548,7 +577,7 @@ classifier:
 ## 作为 OpenCode agent 运行
 
 - 斜杠命令：`/wechat-article <参数>`（见根目录 `opencode.json` 的 `commands`）。
-- 写作代理：`wechat-article-writer`（hidden、subagent），只读附件、禁写禁命令，供 `opencode` 模型 profile 调用，只返回文本/JSON。
+- 写作代理：`wechat-article-writer`（hidden、subagent），只读附件、禁写禁命令，供 `opencode.writer` 模型调用，只返回文本/JSON。
 - 直接调用：`opencode run --format json --file <prompt.md> --agent wechat-article-writer --auto "完成附件任务"`（NDJSON 中取 `type=="text"` 的 `part.text` 拼接）。
 - 注意：写作代理**必须保留 `read` 工具**（脚本通过 `--file` 附带提示词），但禁用 shell/edit/subagent 等；若把 `read` 也 deny，OpenCode 免费层会返回 403（FreeTierError）。
 - `opencode` 通道比本地模型慢（单次 1-4 分钟），适合作为质量更高的备选，不建议作为默认。
@@ -567,7 +596,11 @@ classifier:
 skills/wechat-article/
 ├── SKILL.md                     本文件
 ├── config/
-│   ├── article-types.yaml       总配置：输出目录 / 模型 / 默认值 / 判断模型 / 类型清单
+│   ├── defaults.yaml            全局默认：输出目录 / 判断模型行为 / 文章级默认值
+│   ├── models.yaml              模型总表：llm / opencode / systemone
+│   ├── article-types.yaml       类型注册表：只保留 types: 列表
+│   ├── steps.yaml               流程入口：默认值 + 阶段文件顺序
+│   ├── steps/                   按大步骤拆分的节点（10-topic … 60-publish）
 │   ├── types/                   各类型明细（<id>.yaml）+ 字段说明 README.md
 │   └── prompts/                 提示词与初稿 schema（draft.json 等）
 └── scripts/

@@ -2,7 +2,7 @@
 
 > 目标：每篇文章一个独立目录，每个阶段一个固定产物；中断后看「最后一个产物」就能知道从哪继续。
 >
-> 流程节点（处理方法 / 模型 / I/O / 重试 / 超时 / 提示词）定义在 [`config/steps.yaml`](../config/steps.yaml)；节点的 `stage` 字段对应下表的阶段。
+> 流程节点（处理方法 / 模型 / I/O / 重试 / 超时 / 提示词）定义在 [`config/steps/`](../config/steps/)（入口 [`steps.yaml`](../config/steps.yaml)）；节点的 `stage` 字段对应下表的阶段。
 
 ## 1. 目录布局
 
@@ -41,6 +41,7 @@ $BASE_OUTPUT_FOLDER/                 # 环境变量，默认 output/wechat-artic
 │       ├── score.json
 │       └── after-revise.md
 ├── 06-reviewed.md          # 审稿后的定稿
+├── 06-polished.md          # 去 AI 化后的稿件（de_ai 接入后）
 ├── 07-images.json          # 配图清单（成功/失败、通道、文件）
 ├── 07-illustrated.md       # 配图后的稿件
 ├── images/                 # 实际图片文件
@@ -72,6 +73,7 @@ $BASE_OUTPUT_FOLDER/                 # 环境变量，默认 output/wechat-artic
 | `bundle`（准备） | `04-draft-input.json` | 文件存在且通过 schema 校验 | `04-draft-input.json` |
 | `draft` | `05-draft.md` | 文件存在且字数 > 0 | `05-draft.md` |
 | `review` | `06-reviewed.md` + `06-review/` | `06-reviewed.md` 存在 | `06-reviewed.md` |
+| `polish`（规划） | `06-polished.md` | `06-polished.md` 存在 | `06-polished.md` |
 | `illustrate` | `07-illustrated.md` + `07-images.json` + `images/` | `07-illustrated.md` 存在 | `07-illustrated.md` |
 | `publish` | `08-final.md`、`09-publish.json` | `09-publish.json` 存在 | `09-publish.json` |
 | `archive` | `published/<date>-<slug>.zip` | zip 存在，`draft/<slug>/` 已删除 | `09-publish.json` |
@@ -81,6 +83,7 @@ $BASE_OUTPUT_FOLDER/                 # 环境变量，默认 output/wechat-artic
 - **文件即状态**：续跑只看上表产物是否存在，不依赖 `state.json`；`state.json` 只用于展示和排错。
 - **写入要原子**：zip 先写 `<file>.tmp` 再 rename，避免中断后留下半截包。
 - **阶段名保持不变**（`--stage topic|sources|outline|bundle|draft|review|illustrate|publish`），编号只是给人和续跑逻辑看的。
+- `de_ai` 节点已定义，但执行层接入前 `polish` 阶段不参与续跑；产物链仍是 `06-reviewed.md` → `07-illustrated.md`。
 
 ## 3. 续跑规则
 
@@ -138,7 +141,7 @@ $BASE_OUTPUT_FOLDER/                 # 环境变量，默认 output/wechat-artic
 ### 4.3 知识库归档（统一落到 pipeline 待入库目录）
 
 ```yaml
-# article-types.yaml → defaults.publish.archive
+# defaults.yaml → defaults.publish.archive
 publish:
   archive:
     enabled: true

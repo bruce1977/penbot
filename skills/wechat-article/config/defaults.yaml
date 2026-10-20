@@ -1,0 +1,123 @@
+# 全局默认配置
+#
+# 这里放与“具体类型”和“具体步骤”都无关的运行时默认值：
+#   - project：文章根目录、语言
+#   - classifier：判断模型的行为参数（模型本身在 config/models.yaml）
+#   - defaults：所有文章类型共享的默认值（review / knowledge / illustrations / publish）
+#
+# 模型定义在 config/models.yaml；类型清单在 config/article-types.yaml；
+# 流程节点在 config/steps.yaml。
+# 加载顺序：defaults.yaml → models.yaml → article-types.yaml（可覆盖）→ config/types/*.yaml。
+
+version: 2
+
+project:
+  # 文章根目录：只认环境变量/配置，命令行不能覆盖
+  base_output_folder: "${BASE_OUTPUT_FOLDER:-output/wechat-article}"
+  language: zh-CN
+
+# ---------------------------------------------------------------------------
+# 判断模型（System One 决策模型）：根据「标题 + 提纲」自动选择文章类型
+#
+# 走 System One 协议：POST {base_url}/v1/systemone
+#   body:     { model, state, questions: { article_type: { type: choice, ... } } }
+#   response: { answers: { article_type: { choice, probabilities, confidence } } }
+# 兼容 TypeSafe Jev、基石智算 Laya、vLLM /v1/systemone。
+# base_url 可带 /v1（https://routellm.abacus.ai/v1），也可只写域名。
+# 未配置 base_url / api_key 时自动跳过，回退到 default_type。
+# ---------------------------------------------------------------------------
+classifier:
+  enabled: true
+  # 模型 id，定义在 config/models.yaml 的 systemone 分类下
+  model: systemone.classifier
+  # questions 里的问题名，答案会从 answers.<question> 读取
+  question: article_type
+  min_confidence: 0.5
+  # 判断失败/置信度不足时用哪个类型
+  default_type: ai-news
+
+# ---------------------------------------------------------------------------
+# 文章类型默认值：所有类型先吃这里，再被 config/types/<id>.yaml 覆盖
+# ---------------------------------------------------------------------------
+defaults:
+  model: llm.local
+
+  review:
+    model: llm.local
+    max_rounds: 3
+    pass_score: 80
+    llm_scoring: true
+    correct_cn:
+      enabled: true
+      base_url: "${PB_PYCORRECTOR_API_URL:-https://corrector.myehome.cn}"
+      endpoint: "/api/pipeline"
+      api_key: "${PB_PYCORRECTOR_AUTH_KEY}"
+      auth_header: X-Auth-Key
+      enable_audit: false
+      enable_final_suggestion: false
+      apply: issues
+      timeout_ms: 180000
+      fallback_llm: true
+
+  knowledge:
+    source: local
+    use_weknora: "${PB_USE_WEKNORA:-false}"
+    max_sources: 8
+    excerpt_chars: 1800
+    lookback_days: 365
+    max_file_bytes: 400000
+    weknora:
+      base_url: "${WEKNORA_BASE_URL}"
+      api_key: "${WEKNORA_API_KEY}"
+      auth_header: X-API-Key
+      match_count: 8
+      timeout_ms: 30000
+
+  illustrations:
+    min: 1
+    max: 5
+    cover: true
+    concurrency: 2
+    on_failure: comment
+    # 配图标记模板：{index} 会被替换成 1..N
+    position_format: "[[img:{index}]]"
+    style: "扁平化科技插画，干净留白，克制的蓝紫与暖橙配色，适合微信公众号阅读，不要出现文字"
+    negative_prompt: "photorealistic, 3d render, oil painting, western fantasy, anime style, manga, chibi, too many details, cluttered composition, bright neon colors, over-saturated, soft focus, blurry, deformed hands, extra limbs, signature, watermark, text, words, logo"
+    scenes:
+      wechat-cover: { width: 900, height: 383 }
+      wechat-cover-thumb: { width: 500, height: 500 }
+      article-inline: { width: 1080, height: 810 }
+    modelscope:
+      enabled: true
+      base_url: https://api-inference.modelscope.cn
+      api_key: "${PB_MODEL_IMAGE_API_KEY}"
+      model: Tongyi-MAI/Z-Image-Turbo
+      timeout_ms: 90000
+      poll_interval_ms: 5000
+      max_polls: 18
+    pollinations:
+      enabled: true
+      base_url: https://image.pollinations.ai
+      model: turbo
+      timeout_ms: 90000
+
+  publish:
+    auto_publish: false
+    archive:
+      enabled: true
+      # 终稿统一落到本地知识库的 pipeline 目录，由后续入库脚本扫描处理；空 = 跳过复制
+      knowledge_dir: "${KNOWLEDGE_PIPELINE_DIR:-D:/knowledge/pipeline}"
+      filename: "{date}-{slug}.md"
+    email:
+      enabled: false
+      to: ["jiangyifeng@myehome.cn"]
+      from: "${PB_RESEND_FROM:-penbot@myehome.cn}"
+      api_key: "${PB_RESEND_API_KEY}"
+      subject: "{title}"
+    wechat:
+      enabled: false
+      theme: default
+      highlight: solarized-light
+      env_file: .env
+      command: npx --yes @wenyan-md/cli
+      dry_run: false

@@ -54,9 +54,9 @@ topic:
   lookback_days: 30
   candidates: 15
 
-model: local
+model: llm.local
 review:
-  model: local
+  model: llm.local
   max_rounds: 3
   pass_score: 78
 

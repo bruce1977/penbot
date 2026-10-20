@@ -61,9 +61,9 @@ topic:
   keywords: [原理, 架构, 教程, 实践, 部署, 论文, 实现, 源码]
   candidates: 12
 
-model: local
+model: llm.local
 review:
-  model: local
+  model: llm.local
   max_rounds: 3
   pass_score: 82
 

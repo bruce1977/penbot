@@ -65,8 +65,10 @@ npm run wechat-article -- draft   --article <slug>                  # 4  初稿
 ## 文档
 
 - 技能说明与完整命令参考：[`skills/wechat-article/SKILL.md`](skills/wechat-article/SKILL.md)
-- 总配置（模型 / 默认值 / 判断模型 / 类型清单）：[`skills/wechat-article/config/article-types.yaml`](skills/wechat-article/config/article-types.yaml)
-- 流程节点（处理方法 / 模型 / I/O / 重试 / 超时 / 默认提示词）：[`skills/wechat-article/config/steps.yaml`](skills/wechat-article/config/steps.yaml)
+- 全局默认（输出目录 / 判断模型行为 / 文章级默认值）：[`skills/wechat-article/config/defaults.yaml`](skills/wechat-article/config/defaults.yaml)
+- 模型总表（llm / opencode / systemone）：[`skills/wechat-article/config/models.yaml`](skills/wechat-article/config/models.yaml)
+- 类型注册表：[`skills/wechat-article/config/article-types.yaml`](skills/wechat-article/config/article-types.yaml)
+- 流程节点（按大步骤拆分）：[`skills/wechat-article/config/steps/`](skills/wechat-article/config/steps/)；入口 [`steps.yaml`](skills/wechat-article/config/steps.yaml)
 - 类型明细与字段说明：[`skills/wechat-article/config/types/`](skills/wechat-article/config/types/)
 
 ## 内置文章类型
@@ -80,7 +82,7 @@ npm run wechat-article -- draft   --article <slug>                  # 4  初稿
 
 类型明细在 `config/types/<id>.yaml`；不配置 `weknora`，默认只读本地目录。判断模型（systemone）会根据标题 + 提纲自动选类型。
 
-流程节点在 `config/steps.yaml`：`select_topic` → `gather_materials` → `outline` → `bundle_draft_input` → `draft_writing` → `length_adjust` → `review` → `scoring` → `revision` → `image_generation` → `publish` → `archive`。每个节点可以单独指定 handler、模型、输入输出、重试、超时和默认提示词；类型文件可以按节点覆盖。用 `wechat-article.mjs steps` 查看。
+流程节点按大步骤放在 `config/steps/`：`classify_type` → `select_topic` → `gather_materials` → `outline` → `bundle_draft_input` → `draft_writing` → `length_adjust` → `review` → `scoring` → `revision` → `de_ai` → `image_generation` → `publish` → `archive`。模型统一在 `config/models.yaml` 定义，节点只写模型 id（如 `llm.local`、`llm.large`）。用 `wechat-article.mjs steps` 查看。
 
 ## 目录结构
 

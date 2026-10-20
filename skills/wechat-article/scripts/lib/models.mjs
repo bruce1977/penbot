@@ -16,11 +16,17 @@ export function createModelClient(config, logger) {
   const cache = new Map();
 
   function getProfile(name) {
-    const id = name || config.defaults?.model || "local";
+    const id = name || config.defaults?.model || "llm.local";
     if (cache.has(id)) return cache.get(id);
-    const raw = config.models?.[id];
-    if (!raw) throw new Error(`Unknown model profile "${id}"`);
-    const profile = { id, timeout_ms: 300000, temperature: 0.7, ...raw };
+    let key = id;
+    let raw = config.models?.[key];
+    // 兼容旧写法：model: local → llm.local
+    if (!raw && !String(id).includes(".")) {
+      key = `llm.${id}`;
+      raw = config.models?.[key];
+    }
+    if (!raw) throw new Error(`Unknown model id "${id}"`);
+    const profile = { id: key, timeout_ms: 300000, temperature: 0.7, ...raw };
     // BASE_URL / MODEL_NAME / API_KEY may arrive under either spelling.
     profile.base_url = profile.base_url || profile.baseUrl || "";
     profile.model = profile.model || profile.model_name || profile.modelName || "";

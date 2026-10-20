@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, asNumber, asBool, asList } from "./lib/args.mjs";
 import { findProjectRoot, loadDotEnv, env } from "./lib/env.mjs";
-import { loadConfig, findType, listTypes, getModelProfile, validateConfig, validateWarnings, DEFAULT_CONFIG_PATH } from "./lib/config.mjs";
+import { loadConfig, findType, listTypes, getModelProfile, validateConfig, validateWarnings, DEFAULT_CONFIG_PATH, DEFAULT_DEFAULTS_PATH, DEFAULT_MODELS_PATH } from "./lib/config.mjs";
 import { ensureDir, writeText, writeJson, readJson, readText, exists, uniqueDir, relativeTo, timestamp, slugify } from "./lib/fsx.mjs";
 import { createLogger } from "./lib/log.mjs";
 import { createModelClient } from "./lib/models.mjs";
@@ -109,7 +109,9 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   node skills/wechat-article/scripts/wechat-article.mjs draft   --article <slug>
 
 通用参数:
-  --config <path>        配置文件，默认 ${DEFAULT_CONFIG_PATH}
+  --config <path>        类型注册表，默认 ${DEFAULT_CONFIG_PATH}
+  --defaults <path>      全局默认配置，默认 config/defaults.yaml
+  --models <path>        模型总表，默认 config/models.yaml
   --steps <path>         步骤配置，默认 config/steps.yaml
   --type <id>            文章类型 id（也可在 .env 设置 PB_ARTICLE_TYPE；都缺省时由判断模型自动分类）
   --article <slug>       选择/续跑 draft 下的文章；latest = 最近一篇；分步命令省略时自动选中唯一一篇
@@ -158,7 +160,7 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   node skills/wechat-article/scripts/wechat-article.mjs publish --article my-article-slug --to me@example.com
   node skills/wechat-article/scripts/wechat-article.mjs classify --title "某模型开源" --outline-file outline.md
 
-配置：config/article-types.yaml（总配置）+ config/types/<id>.yaml（各类型明细）
+配置：config/defaults.yaml（全局默认）+ config/models.yaml（模型）+ config/article-types.yaml（类型注册表）+ config/types/<id>.yaml（类型明细）
 流程节点：config/steps.yaml（处理方法、模型、I/O、重试、超时、默认提示词）
 判断模型：SYSTEMONE_BASE_URL / SYSTEMONE_API_KEY / SYSTEMONE_MODEL（未配置时回退 classifier.default_type）
 提示词与初稿校验规则：skills/wechat-article/config/prompts/draft.json（prompt + schema）
@@ -173,7 +175,11 @@ async function main() {
 
   loadDotEnv(PROJECT_ROOT);
   const configPath = path.resolve(PROJECT_ROOT, options.config || DEFAULT_CONFIG_PATH);
-  const config = loadConfig(configPath, { root: PROJECT_ROOT });
+  const config = loadConfig(configPath, {
+    root: PROJECT_ROOT,
+    defaultsPath: options.defaults ? String(options.defaults) : undefined,
+    modelsPath: options.models ? String(options.models) : undefined,
+  });
   config.stepsPath = path.resolve(PROJECT_ROOT, options.steps || path.join(config.__dir, "steps.yaml"));
   if (fs.existsSync(config.stepsPath)) {
     try {
@@ -242,6 +248,16 @@ function cmdValidate(config, options = {}) {
     image_format: type.illustrations.position_format,
   }));
   console.log(`配置文件：${config.__path}`);
+  if (config.__defaults_path) {
+    console.log(`全局默认：${config.__defaults_path}`);
+  } else {
+    warnings.push(`未找到全局默认配置：${DEFAULT_DEFAULTS_PATH}（可用 --defaults 指定）`);
+  }
+  if (config.__models_path) {
+    console.log(`模型总表：${config.__models_path}（${Object.keys(config.models || {}).length} 个模型）`);
+  } else {
+    warnings.push(`未找到模型总表：${DEFAULT_MODELS_PATH}（可用 --models 指定）`);
+  }
   console.table(rows);
   const classifier = config.classifier || {};
   console.log(
@@ -325,6 +341,7 @@ function cmdSteps(config, options = {}) {
       return;
     }
     console.log(`步骤：${step.step_name}（${step.label}）`);
+    console.log(`来源：${relativeTo(PROJECT_ROOT, step.source) || step.source}`);
     console.log(`阶段：${step.stage}`);
     console.log(`处理：${handlerLabel(step.handler)}`);
     console.log(`模型：${formatModelLabel(step.model)}${step.model.base_url ? ` @ ${step.model.base_url}` : ""}`);
@@ -410,6 +427,8 @@ async function cmdDoctor(config, options) {
 
   add("Node.js", Number(process.versions.node.split(".")[0]) >= 20, process.version);
   add("配置文件", fs.existsSync(config.__path), config.__path);
+  add("全局默认", Boolean(config.__defaults_path), config.__defaults_path || `未找到 ${DEFAULT_DEFAULTS_PATH}`);
+  add("模型总表", Boolean(config.__models_path), config.__models_path || `未找到 ${DEFAULT_MODELS_PATH}`);
   if (config.steps) {
     const report = validateSteps(config.steps, { types: config.types });
     add(

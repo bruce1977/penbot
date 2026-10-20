@@ -1,0 +1,77 @@
+# 初稿阶段：写初稿 → 篇幅调整
+#
+# 节点默认值在 config/steps.yaml 的 defaults；这里只写节点差异。
+
+steps:
+  # -------------------------------------------------------------------------
+  # 5. 写初稿
+  # -------------------------------------------------------------------------
+  - step_name: draft_writing
+    label: 写初稿
+    description: 按 04-draft-input.json 的 prompt + schema 写出完整 Markdown 初稿。
+    stage: draft
+    enabled: true
+    modes: [auto, manual, run]
+    handler: builtin:write_draft
+    model: llm.local
+    input_format:
+      draft_input: "DraftInput（见 04-draft-input.json）"
+    output_format:
+      article: "string（Markdown，含 frontmatter 和配图标记）"
+    retry_limit: 2
+    timeout: 1200000
+    artifacts:
+      reads: ["04-draft-input.json"]
+      writes: ["05-draft.md"]
+    depends_on: [bundle_draft_input]
+    prompt:
+      # 长模板和 schema 仍放在 config/prompts/draft.json；这里只声明默认来源，
+      # 类型可用 steps.draft_writing.prompt 覆盖 system/user/retry/extra。
+      template: "prompts/draft.json"
+      system: ""
+      user: ""
+      retry: ""
+      extra: ""
+
+  # -------------------------------------------------------------------------
+  # 6. 篇幅调整（条件步骤）
+  # -------------------------------------------------------------------------
+  - step_name: length_adjust
+    label: 篇幅调整
+    description: 初稿字数不在区间内时，按需扩写或压缩；合格则跳过。
+    stage: draft
+    enabled: true
+    modes: [auto, manual, run]
+    handler: builtin:adjust_length
+    model: llm.local
+    input_format:
+      article: "string"
+      word_count: "number"
+      direction: "expand|condense"
+      target: "number"
+    output_format:
+      article: "string"
+    retry_limit: 1
+    timeout: 900000
+    loop:
+      max_attempts: 2
+      until: "word_count in [length.min, length.max]"
+    artifacts:
+      reads: ["05-draft.md"]
+      writes: ["05-draft.md"]
+    depends_on: [draft_writing]
+    prompt:
+      system: |
+        你是「{{type_name}}」栏目的改稿编辑。只输出完整的 Markdown 文章，
+        不要输出任何说明、对比或解释。
+      retry: |
+        上一稿不合格（第 {{retry_tag}} 次尝试）：
+        {{errors}}
+
+        修改要求：
+        {{length_fix}}
+
+        保留第一行 frontmatter、所有小节标题和配图标记；只输出完整 Markdown 正文。
+
+        ## 原稿
+        {{article}}

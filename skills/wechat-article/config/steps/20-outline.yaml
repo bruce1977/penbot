@@ -1,0 +1,98 @@
+# 纲要阶段：生成纲要 → 组装初稿输入
+#
+# 节点默认值在 config/steps.yaml 的 defaults；这里只写节点差异。
+
+steps:
+  # -------------------------------------------------------------------------
+  # 3. 纲要
+  # -------------------------------------------------------------------------
+  - step_name: outline
+    label: 生成纲要
+    description: 把主题、素材和类型要求整理成可逐节写作的纲要。
+    stage: outline
+    enabled: true
+    modes: [auto, run]
+    handler: builtin:generate_outline
+    model: llm.local
+    input_format:
+      type: "ArticleType"
+      topic: "Topic"
+      sources: "Array<Source>"
+      requirements: "string?"
+      max_chars: "number?"
+    output_format:
+      title: "string"
+      alternatives: "string[]"
+      thesis: "string"
+      audience: "string"
+      hook: "string"
+      outline: "Array<{heading: string, points: string[], source_indexes: number[], target_words?: number}>"
+      counterpoint: "string"
+      takeaway: "string"
+      image_plan: "Array<{position: string, description: string, prompt: string}>"
+    retry_limit: 2
+    timeout: 1200000
+    artifacts:
+      reads: ["01-topic.json", "02-sources.json"]
+      writes: ["03-outline.json", "03-outline.md"]
+    depends_on: [gather_materials]
+    prompt:
+      system: |
+        你是「{{type_name}}」栏目的资深作者。{{persona}}
+        文风：{{tone}}。目标读者：{{audience}}。
+        你只负责写纲要，不写正文。纲要必须能被另一位作者直接据此成文。
+        只输出一个合法 JSON 对象，不要输出 Markdown 代码块、解释或前后缀。
+        所有字符串使用中文，除专有名词外不要夹杂英文。
+        不要编造素材中不存在的事实、数字、机构或引用。
+      user: |
+        主题：{{topic}}
+        核心判断：{{thesis}}
+        切入角度：{{angle}}
+        {{requirements_block}}
+
+        可用素材（来自本地知识库，引用时使用编号）：
+        {{materials}}
+
+        写作要求：
+        1. 篇幅 {{length.min}}-{{length.max}} 字，目标 {{length.target}} 字。
+        2. 结构参考：{{structure}}
+        3. 必须满足的要点：{{dos}}
+        4. 必须避免：{{donts}}
+        {{extra}}
+
+        评分维度（成文后会按此打分，纲要需为每个维度预留内容）：
+        {{scoring_dimensions}}
+
+        配图规划：
+        - 全文配图 {{image.min}}-{{image.max}} 张，建议 {{image.count}} 张。
+        - 配图风格：{{image.style}}。
+        - 每张图给出插入位置、画面说明（30-80 字）和英文 Prompt（描述画面主体、构图、配色，不要文字）。
+
+        输出 JSON 结构：
+        {{output_schema}}
+
+  # -------------------------------------------------------------------------
+  # 4. 组装初稿输入
+  # -------------------------------------------------------------------------
+  - step_name: bundle_draft_input
+    label: 组装初稿输入
+    description: 把标题、大纲、素材和类型要求组装成 04-draft-input.json，并校验 schema。
+    stage: bundle
+    enabled: true
+    modes: [auto, manual, run]
+    handler: builtin:build_draft_input
+    model: none
+    input_format:
+      type: "ArticleType"
+      outline: "Outline"
+      sources: "Array<Source>"
+      requirements: "string?"
+    output_format:
+      prompt: "{ system: string, user: string, retry: string }"
+      schema: "Record<string, unknown>"
+    retry_limit: 0
+    timeout: 30000
+    artifacts:
+      reads: ["03-outline.json", "02-sources.json"]
+      writes: ["04-draft-input.json"]
+    depends_on: [outline, gather_materials]

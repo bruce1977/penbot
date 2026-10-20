@@ -59,9 +59,9 @@ topic:
   keywords: [NAS, Docker, 自托管, 软路由, Home Assistant, PVE, 备份, 功耗]
   candidates: 12
 
-model: local
+model: llm.local
 review:
-  model: local
+  model: llm.local
   max_rounds: 3
   pass_score: 78
 

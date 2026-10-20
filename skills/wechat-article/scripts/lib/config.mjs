@@ -4,22 +4,54 @@ import { parse as parseYaml } from "yaml";
 import { expandEnv } from "./env.mjs";
 
 export const DEFAULT_CONFIG_PATH = "skills/wechat-article/config/article-types.yaml";
+export const DEFAULT_DEFAULTS_PATH = "skills/wechat-article/config/defaults.yaml";
+export const DEFAULT_MODELS_PATH = "skills/wechat-article/config/models.yaml";
 
 /**
- * 加载总配置（YAML），再把 config/types/ 下的类型明细合并进来。
- * 顺序：总配置 → 类型文件 → defaults 兜底 → normalize。
+ * 加载配置：
+ *   defaults.yaml（全局默认）→ models.yaml（模型总表）
+ *   → article-types.yaml（类型注册表，可覆盖默认）→ config/types/*.yaml → normalize。
  */
-export function loadConfig(configPath, { root = process.cwd() } = {}) {
+export function loadConfig(configPath, { root = process.cwd(), defaultsPath, modelsPath } = {}) {
   const resolved = path.resolve(root, configPath || DEFAULT_CONFIG_PATH);
   if (!fs.existsSync(resolved)) {
     throw new Error(`Config file not found: ${resolved}`);
   }
-  const base = readYaml(resolved);
+  const registry = readYaml(resolved);
+  const configDir = path.dirname(resolved);
+  const defaultsFile = defaultsPath
+    ? path.resolve(root, defaultsPath)
+    : path.join(configDir, "defaults.yaml");
+  const modelsFile = modelsPath
+    ? path.resolve(root, modelsPath)
+    : path.join(configDir, "models.yaml");
+  const defaults = fs.existsSync(defaultsFile) ? readYaml(defaultsFile) : {};
+  const models = fs.existsSync(modelsFile) ? readYaml(modelsFile) : {};
+  const base = mergeConfig(defaults, registry);
+  // models.yaml 支持两种写法：顶层 llm/opencode/systemone，或包一层 models:。
+  // 也兼容旧的扁平 models（defaults.yaml 里直接列 local/local-large）。
+  base.model_groups = models.models && isPlainObject(models.models) ? models.models : models;
   base.__path = resolved;
+  base.__defaults_path = fs.existsSync(defaultsFile) ? defaultsFile : "";
+  base.__models_path = fs.existsSync(modelsFile) ? modelsFile : "";
   base.__root = root;
-  base.__dir = path.dirname(resolved);
-  base.types = loadTypeFiles(base, base.__dir);
+  base.__dir = configDir;
+  base.types = loadTypeFiles(base, configDir);
   return normalizeConfig(expandEnv(base), root);
+}
+
+/** 深合并：对象递归，数组/标量直接覆盖。 */
+function mergeConfig(base, override) {
+  const out = { ...(base || {}) };
+  for (const [key, value] of Object.entries(override || {})) {
+    if (isPlainObject(value) && isPlainObject(out[key])) out[key] = mergeConfig(out[key], value);
+    else out[key] = value;
+  }
+  return out;
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function readYaml(file) {
@@ -98,29 +130,100 @@ export function normalizeConfig(config, root = process.cwd()) {
   // The article root comes from BASE_OUTPUT_FOLDER only (env/config), never from a CLI flag.
   project.base_output_folder = path.resolve(root, project.base_output_folder);
 
-  const classifier = normalizeClassifier(config.classifier);
+  const models = normalizeModelMap(config);
+  const classifier = normalizeClassifier(config.classifier, models);
 
   return {
     ...config,
     project,
     classifier,
-    models: config.models || {},
+    models,
+    model_groups: config.model_groups || {},
     defaults,
     types,
   };
 }
 
-function normalizeClassifier(classifier = {}) {
+/**
+ * 把 models.yaml 的分类结构压平成 id → profile：
+ *   llm.local → { provider: ollama, ... }
+ *   opencode.writer → { provider: opencode, ... }
+ *   systemone.classifier → { provider: systemone, ... }
+ * 旧的扁平 config.models（local/local-large）继续兼容。
+ */
+export function normalizeModelMap(config = {}) {
+  const groups = config.model_groups || {};
+  const flat = {};
+  const providers = { llm: "ollama", opencode: "opencode", systemone: "systemone" };
+
+  for (const [name, profile] of Object.entries(config.models || {})) {
+    if (isPlainObject(profile)) flat[name] = normalizeModelProfile(profile);
+  }
+
+  for (const [group, entries] of Object.entries(groups)) {
+    if (!isPlainObject(entries)) continue;
+    // 兼容 models: { local: { provider: ... } } 这种扁平写法
+    if (isModelProfile(entries)) {
+      flat[group] = normalizeModelProfile(entries);
+      continue;
+    }
+    for (const [name, profile] of Object.entries(entries)) {
+      if (!isPlainObject(profile)) continue;
+      flat[`${group}.${name}`] = normalizeModelProfile({
+        provider: providers[group] || group,
+        ...profile,
+      });
+    }
+  }
+  return flat;
+}
+
+const MODEL_FIELD_ALIASES = {
+  PROVIDER: "provider",
+  BASE_URL: "base_url",
+  MODEL_NAME: "model",
+  MODEL: "model",
+  API_KEY: "api_key",
+  ENDPOINT: "endpoint",
+  COMMAND: "command",
+  AGENT: "agent",
+  TIMEOUT_MS: "timeout_ms",
+  TEMPERATURE: "temperature",
+  MAX_TOKENS: "max_tokens",
+  NUM_CTX: "num_ctx",
+};
+
+/** models.yaml 里大写字段（BASE_URL / MODEL_NAME / API_KEY）统一转小写。 */
+function normalizeModelProfile(profile) {
+  const out = { ...profile };
+  for (const [alias, key] of Object.entries(MODEL_FIELD_ALIASES)) {
+    if (out[alias] !== undefined) {
+      if (out[key] === undefined) out[key] = out[alias];
+      delete out[alias];
+    }
+  }
+  return out;
+}
+
+function isModelProfile(value) {
+  return isPlainObject(value) && ["provider", "base_url", "model", "command", "PROVIDER", "BASE_URL", "MODEL_NAME"].some((key) => value[key] !== undefined);
+}
+
+function normalizeClassifier(classifier = {}, models = {}) {
+  const modelId = String(classifier.model || "systemone.classifier");
+  const profile = models[modelId] || {};
+  const modelName = profile.model || profile.model_name || (modelId.includes(".") ? "" : modelId) || "jev-latest";
   return {
     enabled: toBool(classifier.enabled, true),
-    provider: classifier.provider || "systemone",
-    base_url: classifier.base_url || "",
-    endpoint: classifier.endpoint || "/v1/systemone",
-    api_key: classifier.api_key || "",
-    model: classifier.model || "jev-latest",
+    provider: profile.provider || classifier.provider || "systemone",
+    base_url: profile.base_url || classifier.base_url || "",
+    endpoint: profile.endpoint || classifier.endpoint || "/v1/systemone",
+    api_key: profile.api_key || classifier.api_key || "",
+    model: modelName,
+    model_id: modelId,
     question: classifier.question || "article_type",
-    timeout_ms: Number(classifier.timeout_ms || 15000),
-    max_retries: Number(classifier.max_retries ?? 2),
+    timeout_ms: Number(profile.timeout_ms || classifier.timeout_ms || 15000),
+    max_retries: Number(profile.max_retries ?? classifier.max_retries ?? 2),
     min_confidence: Number(classifier.min_confidence ?? 0.5),
     default_type: classifier.default_type || "",
   };
@@ -246,7 +349,7 @@ function normalizeType(type, defaults, root, config) {
     publish,
     topic: { keywords: [], exclude_keywords: [], candidates: 12, ...(type.topic || {}) },
     prompts: type.prompts || {},
-    model: type.model || defaults.model || "local",
+    model: type.model || defaults.model || "llm.local",
     config,
   };
 }
@@ -319,12 +422,27 @@ export function listTypes(config) {
 }
 
 export function getModelProfile(config, name) {
-  const id = name || config.defaults?.model || "local";
-  const profile = config.models?.[id];
-  if (!profile) {
-    throw new Error(`Unknown model profile "${id}". Available: ${Object.keys(config.models || {}).join(", ")}`);
+  const id = name || config.defaults?.model || "llm.local";
+  if (id === "none") return { id: "none", provider: "none" };
+  const models = config.models || {};
+  let key = id;
+  let profile = models[key];
+  // 兼容旧写法：model: local → llm.local
+  if (!profile && !String(id).includes(".")) {
+    key = `llm.${id}`;
+    profile = models[key];
   }
-  return { id, ...profile };
+  if (!profile) {
+    throw new Error(`Unknown model id "${id}". Available: ${Object.keys(models).join(", ")}`);
+  }
+  return { id: key, ...profile };
+}
+
+/** 判断模型 id 是否存在；none 是保留值（纯本地脚本）。 */
+export function hasModel(config, id) {
+  if (!id || id === "none") return true;
+  if (config.models?.[id]) return true;
+  return !String(id).includes(".") && Boolean(config.models?.[`llm.${id}`]);
 }
 
 export function deepMerge(base, override) {
@@ -359,9 +477,9 @@ export function validateConfig(config) {
     }
     if (type.length.min > type.length.max) issues.push(`${type.id}: word_limit.min 应小于等于 word_limit.max`);
     if (type.illustrations.min > type.illustrations.max) issues.push(`${type.id}: image_count.min 应小于等于 image_count.max`);
-    if (!config.models?.[type.model]) issues.push(`${type.id}: model "${type.model}" 未在 models 中定义`);
-    if (!config.models?.[type.review?.model || type.model]) {
-      issues.push(`${type.id}: review.model "${type.review?.model}" 未在 models 中定义`);
+    if (!hasModel(config, type.model)) issues.push(`${type.id}: model "${type.model}" 未在 models.yaml 中定义`);
+    if (!hasModel(config, type.review?.model || type.model)) {
+      issues.push(`${type.id}: review.model "${type.review?.model}" 未在 models.yaml 中定义`);
     }
     if (type.knowledge.source !== "local") {
       const w = type.knowledge.weknora || {};

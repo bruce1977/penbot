@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { stringify as stringifyYaml } from "yaml";
 
 import { parseArgs, asBool, asNumber, asList } from "../scripts/lib/args.mjs";
 import { expandEnv } from "../scripts/lib/env.mjs";
@@ -34,6 +35,8 @@ import {
   validateConfig,
   validateWarnings,
   deepMerge,
+  getModelProfile,
+  normalizeModelMap,
 } from "../scripts/lib/config.mjs";
 import {
   buildSystemOneBody,
@@ -664,6 +667,100 @@ test("loadConfig reads the YAML base config and config/types/*.yaml", () => {
   assert.equal(config.classifier.provider, "systemone");
   assert.equal(config.classifier.default_type, "ai-news");
   assert.equal(path.isAbsolute(config.project.base_output_folder), true);
+});
+
+test("models.yaml groups llm / opencode / systemone and resolves model ids", () => {
+  const config = loadConfig(DEFAULT_CONFIG_REL, { root: PROJECT_ROOT });
+  assert.equal(config.models["llm.local"].provider, "ollama");
+  assert.equal(config.models["llm.remote"].provider, "openai");
+  assert.equal(config.models["opencode.writer"].provider, "opencode");
+  assert.equal(config.models["systemone.classifier"].provider, "systemone");
+  assert.equal(config.classifier.model_id, "systemone.classifier");
+  assert.equal(getModelProfile(config, "llm.local").provider, "ollama");
+  // 旧写法仍然兼容：local → llm.local
+  assert.equal(getModelProfile(config, "local").id, "llm.local");
+});
+
+test("normalizeModelMap flattens groups and keeps legacy flat models", () => {
+  const models = normalizeModelMap({
+    models: { legacy: { provider: "mock" } },
+    model_groups: {
+      llm: { local: { BASE_URL: "http://x", MODEL_NAME: "9b" } },
+      opencode: { writer: { command: "opencode" } },
+      systemone: { classifier: { base_url: "http://s", model: "jev" } },
+    },
+  });
+  assert.equal(models.legacy.provider, "mock");
+  assert.equal(models["llm.local"].provider, "ollama");
+  assert.equal(models["llm.local"].base_url, "http://x");
+  assert.equal(models["llm.local"].model, "9b");
+  assert.equal(models["opencode.writer"].provider, "opencode");
+  assert.equal(models["systemone.classifier"].provider, "systemone");
+});
+
+test("loadConfig reads defaults.yaml before the article-types registry", () => {
+  const dir = tempDir("wa-split-");
+  const typesDir = path.join(dir, "types");
+  fs.mkdirSync(typesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(typesDir, "t1.yaml"),
+    stringifyYaml({
+      id: "t1",
+      type: "T1",
+      knowledge_base_path: dir,
+      style: { persona: "p", tone: "t", audience: "a" },
+      word_limit: "100-200",
+      pass_score: 80,
+      scoring_criteria: [{ id: "a", name: "A", weight: 1 }],
+      image_count: 1,
+      topic: {},
+    }),
+  );
+  fs.writeFileSync(
+    path.join(dir, "defaults.yaml"),
+    stringifyYaml({
+      version: 2,
+      project: { base_output_folder: "out" },
+      models: { local: { provider: "mock" } },
+      classifier: { enabled: false, default_type: "t1" },
+      defaults: { model: "local", review: {}, knowledge: {}, illustrations: {}, publish: {} },
+    }),
+  );
+  fs.writeFileSync(path.join(dir, "article-types.yaml"), stringifyYaml({ types: ["t1"] }));
+
+  const config = loadConfig(path.join(dir, "article-types.yaml"), { root: dir });
+  assert.equal(config.types.length, 1);
+  assert.equal(config.types[0].id, "t1");
+  assert.equal(config.classifier.default_type, "t1");
+  assert.equal(config.__defaults_path, path.join(dir, "defaults.yaml"));
+  assert.equal(config.__path, path.join(dir, "article-types.yaml"));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("loadConfig still works when defaults.yaml is absent", () => {
+  const dir = tempDir("wa-nodefaults-");
+  const typesDir = path.join(dir, "types");
+  fs.mkdirSync(typesDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(typesDir, "t1.yaml"),
+    stringifyYaml({
+      id: "t1",
+      type: "T1",
+      knowledge_base_path: dir,
+      style: { persona: "p", tone: "t", audience: "a" },
+      word_limit: "100-200",
+      pass_score: 80,
+      scoring_criteria: [{ id: "a", name: "A", weight: 1 }],
+      image_count: 1,
+      topic: {},
+    }),
+  );
+  fs.writeFileSync(path.join(dir, "article-types.yaml"), stringifyYaml({ types: ["t1"] }));
+
+  const config = loadConfig(path.join(dir, "article-types.yaml"), { root: dir });
+  assert.equal(config.types.length, 1);
+  assert.equal(config.__defaults_path, "");
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test("word_limit and image_count accept YAML shorthands", () => {

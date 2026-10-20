@@ -87,9 +87,9 @@ topic:
   keywords: [AI, 大模型, Agent, 智能体, OpenAI, Anthropic, 开源模型]
   candidates: 12
 
-model: local
+model: llm.local
 review:
-  model: local
+  model: llm.local
   max_rounds: 3
   pass_score: 82
 

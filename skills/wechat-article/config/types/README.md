@@ -1,7 +1,7 @@
 # 文章类型配置（`config/types/*.yaml`）
 
-总配置在 `config/article-types.yaml`，这里只放**单个类型**的写作要求。
-文件名建议与 `id` 一致（`ai-news.yaml` → `id: ai-news`），加载顺序由总配置的 `types:` 决定。
+全局默认在 `config/defaults.yaml`，模型在 `config/models.yaml`，类型注册表在 `config/article-types.yaml`；这里只放**单个类型**的写作要求。
+文件名建议与 `id` 一致（`ai-news.yaml` → `id: ai-news`），加载顺序由 `article-types.yaml` 的 `types:` 决定。
 
 ## 字段
 
@@ -19,11 +19,11 @@
 | `image_count` | 否 | `1-5`、`3`，或 `{ min, max, default, cover }` |
 | `image_position_format` | 否 | 配图标记模板，`{index}` 会替换成序号，默认 `[[img:{index}]]` |
 | `topic` | 否 | `keywords` / `exclude_keywords` / `lookback_days` / `candidates` |
-| `model` | 否 | 写作模型 profile，默认 `defaults.model` |
+| `model` | 否 | 写作模型 id（如 `llm.local`、`llm.large`），默认 `defaults.model` |
 | `review` | 否 | 覆盖 `model` / `max_rounds` / `pass_score` / `correct_cn` |
-| `steps` | 否 | 按节点覆盖 `model` / `timeout` / `retry_limit` / `prompt`；优先级高于 `config/steps.yaml` |
+| `steps` | 否 | 按节点覆盖 `model` / `timeout` / `retry_limit` / `prompt`；优先级高于 `config/steps/` |
 | `prompts` | 否 | 旧字段：`outline_extra` / `draft_extra` / `revise_extra`，会追加到对应节点的 `prompt.extra` |
-| `publish` | 否 | 一般不用配；终稿归档目录统一在总配置 `defaults.publish.archive.knowledge_dir` |
+| `publish` | 否 | 一般不用配；终稿归档目录统一在 `config/defaults.yaml` 的 `defaults.publish.archive.knowledge_dir` |
 
 ## 例子
 
@@ -44,11 +44,12 @@ scoring_criteria:
     description: 事件是否足够新、足够重要。
 image_count: 1-2
 image_position_format: "[[img:{index}]]"
+model: llm.local
 ```
 
 ## 覆盖步骤（可选）
 
-`config/steps.yaml` 定义每个节点的默认处理方法、模型和提示词。类型只需要写有差异的部分，优先级高于 `steps.yaml`：
+`config/steps/` 定义每个节点的默认处理方法、模型和提示词。类型只需要写有差异的部分，优先级高于阶段文件：
 
 ```yaml
 steps:
@@ -57,16 +58,15 @@ steps:
       system: |
         你是「AI 资讯快评」栏目的作者，先事实后观点。
       extra: "第一段不超过 80 字，直接说清事件。"
-    model:
-      MODEL_NAME: "${LOCAL_LLM_LARGE_MODEL:-qwen3.6:35b}"
+    model: llm.large
     timeout: 900000
     retry_limit: 1
   scoring:
     timeout: 900000
 ```
 
-- `step_name` 必须与 `config/steps.yaml` 一致。
-- 只写要覆盖的字段；`model` 会与节点默认模型合并。
+- `step_name` 必须与 `config/steps/` 里的节点一致。
+- 只写要覆盖的字段；`model` 只写 `config/models.yaml` 里的 id。
 - 查看合并后的结果：`wechat-article.mjs steps --type <id>`。
 
 ## 配图标记
@@ -82,6 +82,6 @@ steps:
 
 ## 终稿归档
 
-类型文件不需要配置归档目录。发布成功后，终稿会按总配置
+类型文件不需要配置归档目录。发布成功后，终稿会按 `config/defaults.yaml` 里的
 `defaults.publish.archive.knowledge_dir`（环境变量 `KNOWLEDGE_PIPELINE_DIR`）
 复制到本地知识库的 `pipeline/` 待入库目录，后续由入库脚本统一处理。

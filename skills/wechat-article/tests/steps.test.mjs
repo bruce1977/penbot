@@ -34,7 +34,7 @@ function inlineSteps(steps, defaults = {}) {
 
 test("steps.yaml lists the full pipeline in execution order", () => {
   const steps = loadSteps(STEPS_FILE);
-  assert.equal(steps.steps.length, 13);
+  assert.equal(steps.steps.length, 14);
   assert.deepEqual(stepNames(steps), [
     "classify_type",
     "select_topic",
@@ -46,6 +46,7 @@ test("steps.yaml lists the full pipeline in execution order", () => {
     "review",
     "scoring",
     "revision",
+    "de_ai",
     "image_generation",
     "publish",
     "archive",
@@ -53,13 +54,75 @@ test("steps.yaml lists the full pipeline in execution order", () => {
   assert.equal(getStep(steps, "classify_type").model.provider, "systemone");
   assert.equal(getStep(steps, "classify_type").model.endpoint, "/v1/systemone");
   assert.equal(getStep(steps, "gather_materials").model.provider, "none");
-  assert.equal(getStep(steps, "image_generation").model.provider, "image");
+  assert.equal(getStep(steps, "de_ai").stage, "polish");
+  assert.equal(getStep(steps, "de_ai").artifacts.writes[0], "06-polished.md");
+  assert.equal(getStep(steps, "image_generation").model.provider, "none");
+  assert.match(getStep(steps, "classify_type").source, /10-topic\.yaml$/);
+  assert.match(getStep(steps, "de_ai").source, /50-revision\.yaml$/);
+  assert.match(getStep(steps, "publish").source, /60-publish\.yaml$/);
 });
 
 test("real steps.yaml passes validation", () => {
   const steps = loadSteps(STEPS_FILE);
   const report = validateSteps(steps);
   assert.deepEqual(report.errors, []);
+});
+
+test("steps.yaml expands phase files, file overrides and inline steps", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wa-phases-"));
+  try {
+    fs.writeFileSync(
+      path.join(dir, "phase-a.yaml"),
+      [
+        "steps:",
+        "  - step_name: a",
+        "    handler: builtin:a",
+        "  - step_name: b",
+        "    handler: builtin:b",
+        "",
+      ].join("\n"),
+    );
+    fs.writeFileSync(
+      path.join(dir, "phase-b.yaml"),
+      ["step_name: c", "handler: builtin:c", ""].join("\n"),
+    );
+    fs.writeFileSync(
+      path.join(dir, "steps.yaml"),
+      [
+        "defaults:",
+        "  model:",
+        "    PROVIDER: ollama",
+        "    MODEL_NAME: base-model",
+        "steps:",
+        "  - phase-a.yaml",
+        "  - file: phase-b.yaml",
+        "    timeout: 1234",
+        "  - step_name: d",
+        "    handler: builtin:d",
+        "",
+      ].join("\n"),
+    );
+
+    const steps = loadSteps(path.join(dir, "steps.yaml"));
+    assert.deepEqual(stepNames(steps), ["a", "b", "c", "d"]);
+    assert.equal(getStep(steps, "c").timeout, 1234);
+    assert.match(getStep(steps, "a").source, /phase-a\.yaml$/);
+    assert.match(getStep(steps, "c").source, /phase-b\.yaml$/);
+    assert.match(getStep(steps, "d").source, /steps\.yaml$/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("steps.yaml reports a missing phase file", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wa-missing-phase-"));
+  try {
+    const file = path.join(dir, "steps.yaml");
+    fs.writeFileSync(file, ["steps:", "  - missing.yaml", ""].join("\n"));
+    assert.throws(() => loadSteps(file), /找不到步骤文件/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("model fields inherit defaults and per-step overrides win", () => {
@@ -158,6 +221,30 @@ test("normalizeModel resolves named profiles", () => {
   });
   assert.equal(profile.model_name, "35b");
   assert.equal(profile.base_url, "http://x");
+});
+
+test("step model ids resolve from config.models", () => {
+  const steps = normalizeSteps(
+    {
+      defaults: { model: "llm.local" },
+      steps: [
+        { step_name: "a", handler: "builtin:a" },
+        { step_name: "b", handler: "builtin:b", model: "llm.large" },
+        { step_name: "c", handler: "builtin:c", model: "none" },
+      ],
+    },
+    {
+      config: {
+        models: {
+          "llm.local": { provider: "ollama", base_url: "http://local", model: "9b" },
+          "llm.large": { provider: "ollama", base_url: "http://local", model: "35b" },
+        },
+      },
+    },
+  );
+  assert.equal(getStep(steps, "a").model.model_name, "9b");
+  assert.equal(getStep(steps, "b").model.model_name, "35b");
+  assert.equal(getStep(steps, "c").model.provider, "none");
 });
 
 test("validateSteps catches duplicates, bad handlers and unknown deps", () => {

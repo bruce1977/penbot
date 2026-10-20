@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { expandEnv } from "./env.mjs";
+import { normalizeModelMap } from "./config.mjs";
 
 export const DEFAULT_STEPS_PATH = "skills/wechat-article/config/steps.yaml";
 
@@ -9,6 +10,8 @@ export const DEFAULT_STEPS_PATH = "skills/wechat-article/config/steps.yaml";
 const MODEL_ALIASES = {
   PROVIDER: "provider",
   BASE_URL: "base_url",
+  MODEL: "model_name",
+  model: "model_name",
   MODEL_NAME: "model_name",
   API_KEY: "api_key",
   ENDPOINT: "endpoint",
@@ -17,6 +20,8 @@ const MODEL_ALIASES = {
   TEMPERATURE: "temperature",
   MAX_TOKENS: "max_tokens",
   NUM_CTX: "num_ctx",
+  TIMEOUT_MS: "timeout",
+  timeout_ms: "timeout",
 };
 
 const MODEL_PROVIDERS = new Set(["ollama", "openai", "opencode", "systemone", "image", "none", "mock"]);
@@ -30,19 +35,28 @@ export function loadSteps(stepsPath = DEFAULT_STEPS_PATH, { root = process.cwd()
   if (!fs.existsSync(resolved)) {
     throw new Error(`步骤配置不存在：${resolved}`);
   }
-  const raw = parseYaml(fs.readFileSync(resolved, "utf8"));
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error(`步骤配置根节点必须是对象：${resolved}`);
-  }
-  return normalizeSteps(expandEnv(raw), { root, config, file: resolved });
+  const raw = readYamlFile(resolved, "步骤配置");
+  // 独立使用 loadSteps 时，自动读取同目录的 models.yaml；
+  // CLI 会传入完整 config，直接用 config.models。
+  const models = config?.models || loadModelsFallback(path.dirname(resolved));
+  return normalizeSteps(expandEnv(raw), { root, config: { ...(config || {}), models }, file: resolved });
+}
+
+function loadModelsFallback(dir) {
+  const file = path.join(dir, "models.yaml");
+  if (!fs.existsSync(file)) return {};
+  const raw = readYamlFile(file, "模型配置");
+  return normalizeModelMap({ model_groups: raw.models && typeof raw.models === "object" ? raw.models : raw });
 }
 
 export function normalizeSteps(raw = {}, { root = process.cwd(), config, file = "" } = {}) {
   const defaults = raw.defaults || {};
-  const models = raw.models || {};
+  const models = config?.models || raw.models || {};
   const defaultModel = normalizeModel(defaults.model || {}, {}, models);
-  const steps = (Array.isArray(raw.steps) ? raw.steps : []).map((step, index) =>
-    normalizeStep(step, { defaults, defaultModel, models, root, index, file }),
+  const dir = file ? path.dirname(file) : root;
+  const entries = resolveStepEntries(raw.steps, { dir, root, file });
+  const steps = entries.map((step, index) =>
+    normalizeStep(step, { defaults, defaultModel, models, root, index, file: step.__file || file }),
   );
   const byName = new Map();
   for (const step of steps) byName.set(step.step_name, step);
@@ -60,6 +74,67 @@ export function normalizeSteps(raw = {}, { root = process.cwd(), config, file = 
     byName,
     config,
   };
+}
+
+/**
+ * steps: 支持混合写法：
+ *   - steps/10-topic.yaml                 文件（相对 steps.yaml 所在目录）
+ *   - { file: steps/10-topic.yaml, ... }  文件 + 内联覆盖
+ *   - { step_name: xxx, ... }             直接内联
+ * 阶段文件本身是一个 { steps: [...] } 对象，也允许单个 step 对象。
+ */
+function resolveStepEntries(entries, { dir, root, file }) {
+  if (!Array.isArray(entries)) return [];
+  const out = [];
+  for (const entry of entries) {
+    if (typeof entry === "string") {
+      out.push(...readPhaseSteps(resolveStepFile(dir, entry)));
+      continue;
+    }
+    if (!entry || typeof entry !== "object") continue;
+    if (entry.file) {
+      const phaseFile = resolveStepFile(dir, entry.file);
+      const { file: _file, ...inline } = entry;
+      for (const step of readPhaseSteps(phaseFile)) out.push({ ...step, ...inline });
+      continue;
+    }
+    if (entry.step_name || entry.name) out.push({ ...entry, __file: file });
+  }
+  return out;
+}
+
+function readPhaseSteps(file) {
+  const data = expandEnv(readYamlFile(file, "步骤文件"));
+  const steps = Array.isArray(data.steps)
+    ? data.steps
+    : data.step_name
+      ? [data]
+      : null;
+  if (!steps) throw new Error(`步骤文件缺少 steps: 数组或 step_name：${file}`);
+  return steps.map((step) => ({ ...step, __file: file }));
+}
+
+function resolveStepFile(dir, ref) {
+  const value = String(ref || "").trim();
+  if (!value) throw new Error("步骤文件引用为空");
+  const base = path.isAbsolute(value) ? value : path.resolve(dir, value);
+  const candidates = /\.(ya?ml)$/i.test(base) ? [base] : [`${base}.yaml`, `${base}.yml`];
+  const found = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!found) throw new Error(`找不到步骤文件：${value}（基准目录 ${dir}）`);
+  return found;
+}
+
+function readYamlFile(file, label) {
+  let data;
+  try {
+    data = parseYaml(fs.readFileSync(file, "utf8"));
+  } catch (error) {
+    throw new Error(`${label}解析失败：${file}（${error.message}）`);
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error(`${label}根节点必须是对象：${file}`);
+  }
+  return data;
 }
 
 function normalizeStep(step = {}, { defaults, defaultModel, models, root, index, file }) {
@@ -88,6 +163,7 @@ function normalizeStep(step = {}, { defaults, defaultModel, models, root, index,
     depends_on: toStringArray(step.depends_on, []),
     prompt: normalizePrompt(step.prompt, defaults.prompt),
     when: step.when || "",
+    source: file || "",
   };
 }
 
@@ -132,16 +208,17 @@ export function normalizeModel(input, base = {}, profiles = {}) {
   if (input === "none") return { provider: "none" };
   if (typeof input === "string") {
     if (!input || input === "default") return normalizeModel(base, {}, profiles);
-    const profile = profiles[input];
-    if (!profile) throw new Error(`未知模型 profile：${input}（steps.yaml 的 models 里没有）`);
-    return normalizeModel(profile, base, profiles);
+    const profile = profiles[input] || (!input.includes(".") ? profiles[`llm.${input}`] : undefined);
+    if (!profile) throw new Error(`未知模型 id：${input}（config/models.yaml 里没有）`);
+    // 命中的是完整模型定义，不再叠加 defaults，避免把 llm 的 model 带进 systemone。
+    return normalizeModel(profile, {}, profiles);
   }
 
   const incoming = { ...(input && typeof input === "object" ? input : {}) };
   // 先把大写别名转成小写，再做合并；否则 base 里的 provider/base_url 会盖掉步骤自己的值。
   for (const [alias, key] of Object.entries(MODEL_ALIASES)) {
     if (incoming[alias] !== undefined) {
-      incoming[key] = incoming[alias];
+      if (incoming[key] === undefined) incoming[key] = incoming[alias];
       delete incoming[alias];
     }
   }
@@ -169,7 +246,7 @@ export function normalizeModel(input, base = {}, profiles = {}) {
     temperature: optionalNumber(merged.temperature),
     max_tokens: optionalNumber(merged.max_tokens),
     num_ctx: optionalNumber(merged.num_ctx),
-    timeout: optionalNumber(merged.timeout),
+    timeout: optionalNumber(merged.timeout ?? merged.timeout_ms),
   };
 }
 
