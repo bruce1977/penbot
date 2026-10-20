@@ -66,6 +66,7 @@ npm run wechat-article -- draft   --article <slug>                  # 4  初稿
 
 - 技能说明与完整命令参考：[`skills/wechat-article/SKILL.md`](skills/wechat-article/SKILL.md)
 - 总配置（模型 / 默认值 / 判断模型 / 类型清单）：[`skills/wechat-article/config/article-types.yaml`](skills/wechat-article/config/article-types.yaml)
+- 流程节点（处理方法 / 模型 / I/O / 重试 / 超时 / 默认提示词）：[`skills/wechat-article/config/steps.yaml`](skills/wechat-article/config/steps.yaml)
 - 类型明细与字段说明：[`skills/wechat-article/config/types/`](skills/wechat-article/config/types/)
 
 ## 内置文章类型
@@ -78,6 +79,8 @@ npm run wechat-article -- draft   --article <slug>                  # 4  初稿
 | `homelab-practice` | Homelab 实践笔记 | `D:/knowledge/obsidian/homelab` | 1200-2000 | 78 |
 
 类型明细在 `config/types/<id>.yaml`；不配置 `weknora`，默认只读本地目录。判断模型（systemone）会根据标题 + 提纲自动选类型。
+
+流程节点在 `config/steps.yaml`：`select_topic` → `gather_materials` → `outline` → `bundle_draft_input` → `draft_writing` → `length_adjust` → `review` → `scoring` → `revision` → `image_generation` → `publish` → `archive`。每个节点可以单独指定 handler、模型、输入输出、重试、超时和默认提示词；类型文件可以按节点覆盖。用 `wechat-article.mjs steps` 查看。
 
 ## 目录结构
 
@@ -102,7 +105,7 @@ npm run wechat-article -- draft   --article <slug>                  # 4  初稿
 | 邮件 | Resend | `PB_RESEND_API_KEY` / `PB_RESEND_FROM` |
 | 公众号草稿 | @wenyan-md/cli | `WECHAT_MP_APP_ID` / `WECHAT_MP_APP_SECRET` |
 
-每个模型 profile 都用 **BASE_URL / MODEL_NAME / API_KEY** 三项配置（`base_url` / `model` / `api_key`，`model_name` 亦可）。所有服务都可在配置里单独开关；缺哪个就自动降级或跳过，不会中断整条管线。
+每个模型 profile 都用 **BASE_URL / MODEL_NAME / API_KEY** 三项配置（`base_url` / `model` / `api_key`，`model_name` 亦可）。流程节点默认继承 `config/steps.yaml` 的 `defaults.model`，需要特殊模型时只覆盖对应节点；也可以在节点里切换成 `opencode`。所有服务都可在配置里单独开关；缺哪个就自动降级或跳过，不会中断整条管线。
 
 文章类型可以用 `--type` 指定，也可以在 `.env` 里设 `PB_ARTICLE_TYPE=ai-news` 作为默认值。
 

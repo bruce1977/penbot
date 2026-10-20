@@ -21,7 +21,8 @@
 | `topic` | 否 | `keywords` / `exclude_keywords` / `lookback_days` / `candidates` |
 | `model` | 否 | 写作模型 profile，默认 `defaults.model` |
 | `review` | 否 | 覆盖 `model` / `max_rounds` / `pass_score` / `correct_cn` |
-| `prompts` | 否 | `outline_extra` / `draft_extra` / `revise_extra` 追加要求 |
+| `steps` | 否 | 按节点覆盖 `model` / `timeout` / `retry_limit` / `prompt`；优先级高于 `config/steps.yaml` |
+| `prompts` | 否 | 旧字段：`outline_extra` / `draft_extra` / `revise_extra`，会追加到对应节点的 `prompt.extra` |
 | `publish` | 否 | 一般不用配；终稿归档目录统一在总配置 `defaults.publish.archive.knowledge_dir` |
 
 ## 例子
@@ -44,6 +45,29 @@ scoring_criteria:
 image_count: 1-2
 image_position_format: "[[img:{index}]]"
 ```
+
+## 覆盖步骤（可选）
+
+`config/steps.yaml` 定义每个节点的默认处理方法、模型和提示词。类型只需要写有差异的部分，优先级高于 `steps.yaml`：
+
+```yaml
+steps:
+  draft_writing:
+    prompt:
+      system: |
+        你是「AI 资讯快评」栏目的作者，先事实后观点。
+      extra: "第一段不超过 80 字，直接说清事件。"
+    model:
+      MODEL_NAME: "${LOCAL_LLM_LARGE_MODEL:-qwen3.6:35b}"
+    timeout: 900000
+    retry_limit: 1
+  scoring:
+    timeout: 900000
+```
+
+- `step_name` 必须与 `config/steps.yaml` 一致。
+- 只写要覆盖的字段；`model` 会与节点默认模型合并。
+- 查看合并后的结果：`wechat-article.mjs steps --type <id>`。
 
 ## 配图标记
 

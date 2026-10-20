@@ -303,7 +303,106 @@ pipeline.log                             运行日志
 
 `skipped`（未启用发布 / `auto_publish=false`）、`dry_run`、`partial`、`failed` 都留在 `draft/`，修好后可重跑。归档是幂等的：zip 路径先写进 `09-publish.json`，重跑时已存在的 zip 直接复用。
 
-## 文章类型与配置
+## 流程节点（`config/steps.yaml`）
+
+每个节点声明处理方式、模型、输入输出、重试、超时和默认提示词。节点顺序就是正常执行顺序：
+
+| step_name | 作用 | 处理方式 | 默认模型 |
+| --- | --- | --- | --- |
+| `classify_type` | 判断文章类型 | `builtin:classify_type` | System One `jev-latest` |
+| `select_topic` | 选题 | `builtin:select_topic` | 本地模型 |
+| `gather_materials` | 收集素材 | `builtin:gather_materials` | 无（本地检索） |
+| `outline` | 生成纲要 | `builtin:generate_outline` | 本地模型 |
+| `bundle_draft_input` | 组装初稿输入 | `builtin:build_draft_input` | 无（本地脚本） |
+| `draft_writing` | 写初稿 | `builtin:write_draft` | 本地模型 |
+| `length_adjust` | 篇幅调整（条件） | `builtin:adjust_length` | 本地模型 |
+| `review` | 核稿（错别字/敏感词） | `builtin:review_article` | 校对接口 + 本地模型兜底 |
+| `scoring` | 评稿 | `builtin:score_article` | 本地模型 |
+| `revision` | 修正 | `builtin:revise_article` | 本地模型 |
+| `image_generation` | 配图 | `builtin:generate_images` | 图片 API |
+| `publish` | 发布 | `builtin:publish_article` | 无（渠道 API） |
+| `archive` | 归档 | `builtin:archive_article` | 无（本地脚本） |
+
+### handler
+
+```yaml
+handler: builtin:select_topic              # 内置实现（当前默认）
+handler: scripts/steps/select-topic.mjs    # 独立本地脚本
+handler: https://example.com/api/step      # HTTP 接口
+```
+
+### model
+
+模型配置统一为 `BASE_URL` / `MODEL_NAME` / `API_KEY`（也接受小写），默认继承 `defaults.model`，节点只写要覆盖的字段：
+
+```yaml
+defaults:
+  model:
+    PROVIDER: ollama
+    BASE_URL: "${LOCAL_LLM_BASE_URL:-http://localhost:11434}"
+    MODEL_NAME: "${LOCAL_LLM_BASE_MODEL:-qwen3.5:9b}"
+    API_KEY: "${LOCAL_LLM_API_KEY}"
+
+steps:
+  - step_name: select_topic
+    model:
+      MODEL_NAME: "${LOCAL_LLM_LARGE_MODEL:-qwen3.6:35b}"
+```
+
+支持的 `PROVIDER`：
+
+- `ollama` / `openai`：任意 OpenAI 兼容端点。
+- `opencode`：通过 opencode CLI 调模型，适合免费模型轮换：
+  ```yaml
+  model:
+    PROVIDER: opencode
+    COMMAND: opencode
+    AGENT: wechat-article-writer
+    MODEL_NAME: ""      # 留空 = 用 opencode 当前默认模型
+  ```
+- `systemone`：System One 决策模型（`/v1/systemone`）。
+- `image`：图片生成接口。
+- `none`：纯本地脚本，不调模型。
+- `mock`：测试用。
+
+### 类型覆盖
+
+类型文件可以覆盖同名节点的模型、超时、重试和提示词，优先级：`type.steps.<step>` > `steps.yaml` 的节点配置 > `defaults`。
+
+```yaml
+# config/types/ai-news.yaml
+steps:
+  draft_writing:
+    prompt:
+      system: |
+        你是「AI 资讯快评」栏目的作者，先事实后观点。
+      extra: "第一段不超过 80 字，直接说清事件。"
+    model:
+      MODEL_NAME: "${LOCAL_LLM_LARGE_MODEL:-qwen3.6:35b}"
+    timeout: 900000
+    retry_limit: 1
+```
+
+旧字段 `prompts.outline_extra` / `draft_extra` / `revise_extra` 仍然生效，会追加到对应节点的 `prompt.extra`。
+
+### 查看节点
+
+```bash
+# 全部节点
+node skills/wechat-article/scripts/wechat-article.mjs steps
+
+# 看某个类型覆盖后的配置
+node skills/wechat-article/scripts/wechat-article.mjs steps --type ai-news
+
+# 看单个节点的模型、I/O 和最终提示词
+node skills/wechat-article/scripts/wechat-article.mjs steps --step draft_writing --type ai-news
+
+# 机器可读
+node skills/wechat-article/scripts/wechat-article.mjs steps --json
+```
+
+`validate` 和 `doctor` 也会校验 `steps.yaml`。当前版本已经完成节点清单、加载、模型继承、类型覆盖、校验和展示；执行层会按这些节点逐步接入（先把契约固定下来）。
+
 
 - 总配置：`config/article-types.yaml`（输出目录、模型 profile、各类默认值、判断模型、类型清单）。
 - 类型明细：`config/types/<id>.yaml`，一个类型一个文件；`types:` 决定加载顺序，省略时自动扫描目录。
@@ -383,6 +482,8 @@ classifier:
 
 ## 模型 profile
 
+> 流程节点的默认模型在 `config/steps.yaml` 的 `defaults.model`，每个节点可以单独覆盖；下面这些 profile 写在 `article-types.yaml` 的 `models` 段，仍可用于 `--model`、类型的 `model` 字段，以及节点的 `model: <profile>`。
+
 写在配置的 `models` 段，按需切换；每个 profile 都能用 `base_url`（BASE_URL）、`model`（MODEL_NAME）/`model_name`、`api_key`（API_KEY）三项显式配置：
 
 | profile | provider | 说明 |
@@ -428,6 +529,9 @@ classifier:
 | `LOCAL_LLM_SMALL_MODEL` / `LOCAL_LLM_LARGE_MODEL` | 可选：`local-small` / `local-large` 使用的模型名 |
 | `WEKNORA_BASE_URL` / `WEKNORA_API_KEY` | WeKnora 远程知识库 |
 | `PB_MODEL_IMAGE_API_KEY` | ModelScope 配图（兼容旧名 `PB_MODEL_API_KEY`） |
+| `PB_IMAGE_BASE_URL` / `PB_IMAGE_MODEL` | 配图主通道的 BASE_URL / MODEL_NAME（默认 ModelScope + Z-Image-Turbo） |
+| `PB_POLLINATIONS_BASE_URL` / `PB_POLLINATIONS_MODEL` | 配图回退通道（默认 Pollinations / turbo） |
+| `PB_EMAIL_ENABLED` / `PB_WECHAT_ENABLED` / `PB_AUTO_PUBLISH` | 发布节点默认开关（命令行 `--email` / `--wechat` / `--auto-publish` 优先） |
 | `PB_RESEND_API_KEY` / `PB_RESEND_FROM` | 邮件 |
 | `PB_PYCORRECTOR_API_URL` / `PB_PYCORRECTOR_AUTH_KEY` | correct-cn 核稿 |
 | `PB_LLM_BASE_URL` / `PB_LLM_MODEL` / `PB_LLM_API_KEY` | 远程 OpenAI 兼容模型 |

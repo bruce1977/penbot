@@ -41,6 +41,15 @@ import { buildDraftInput, normalizeDraftInput, validateDraftInput, loadDraftTemp
 import { generateImages, resolveImageCount, planImages } from "./lib/illustrate.mjs";
 import { sendEmail, publishToWechat, markdownToHtml, emailShell, bodyOnly, derivePublishStatus } from "./lib/publish.mjs";
 import { classifyArticle, classifyOrFallback, formatOutline } from "./lib/classify.mjs";
+import {
+  DEFAULT_STEPS_PATH,
+  loadSteps,
+  validateSteps,
+  resolveStep,
+  resolveSteps,
+  formatModelLabel,
+  stepNames,
+} from "./lib/steps.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = path.resolve(__dirname, "..");
@@ -63,6 +72,7 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   manual             入口 2：用你给的标题 + 提纲，直接往下写（跳过选题与纲要模型）
   run                完整管线（等价 auto，保留兼容）
   topics             列出候选文章；加 --count N --output <目录> 则生成 N 个候选主题（含提纲）的 Markdown
+  steps              列出流程节点、处理方法、模型与产物；--type 查看类型覆盖后的配置
   classify           只用判断模型（systemone）根据标题 + 提纲选类型，打印得分
   kbs                列出 WeKnora 知识库（获取 kb_ids）
   topic              只做选题（自动选题，或 --topic 手动记录）
@@ -100,6 +110,7 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
 
 通用参数:
   --config <path>        配置文件，默认 ${DEFAULT_CONFIG_PATH}
+  --steps <path>         步骤配置，默认 config/steps.yaml
   --type <id>            文章类型 id（也可在 .env 设置 PB_ARTICLE_TYPE；都缺省时由判断模型自动分类）
   --article <slug>       选择/续跑 draft 下的文章；latest = 最近一篇；分步命令省略时自动选中唯一一篇
   --file <path>          review/illustrate/publish 直接指定稿件文件（也可继续用 --article <path>）
@@ -148,6 +159,7 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   node skills/wechat-article/scripts/wechat-article.mjs classify --title "某模型开源" --outline-file outline.md
 
 配置：config/article-types.yaml（总配置）+ config/types/<id>.yaml（各类型明细）
+流程节点：config/steps.yaml（处理方法、模型、I/O、重试、超时、默认提示词）
 判断模型：SYSTEMONE_BASE_URL / SYSTEMONE_API_KEY / SYSTEMONE_MODEL（未配置时回退 classifier.default_type）
 提示词与初稿校验规则：skills/wechat-article/config/prompts/draft.json（prompt + schema）
 `;
@@ -162,12 +174,23 @@ async function main() {
   loadDotEnv(PROJECT_ROOT);
   const configPath = path.resolve(PROJECT_ROOT, options.config || DEFAULT_CONFIG_PATH);
   const config = loadConfig(configPath, { root: PROJECT_ROOT });
+  config.stepsPath = path.resolve(PROJECT_ROOT, options.steps || path.join(config.__dir, "steps.yaml"));
+  if (fs.existsSync(config.stepsPath)) {
+    try {
+      config.steps = loadSteps(config.stepsPath, { root: PROJECT_ROOT, config });
+    } catch (error) {
+      config.steps = null;
+      config.stepsError = error.message;
+    }
+  }
 
   switch (command) {
     case "validate":
       return cmdValidate(config, options);
     case "doctor":
       return cmdDoctor(config, options);
+    case "steps":
+      return cmdSteps(config, options);
     case "topics":
       return cmdTopics(config, options);
     case "classify":
@@ -203,6 +226,10 @@ async function main() {
 function cmdValidate(config, options = {}) {
   const issues = validateConfig(config);
   const warnings = validateWarnings(config);
+  const stepReport = validateSteps(config.steps, { types: config.types });
+  issues.push(...stepReport.errors);
+  warnings.push(...stepReport.warnings);
+  if (config.stepsError) issues.push(`步骤配置加载失败：${config.stepsError}`);
   const rows = config.types.map((type) => ({
     id: type.id,
     name: type.name,
@@ -220,6 +247,22 @@ function cmdValidate(config, options = {}) {
   console.log(
     `判断模型：${classifier.enabled ? "启用" : "禁用"}（${classifier.model || "systemone"} @ ${classifier.base_url || "未配置"}，默认类型 ${classifier.default_type || "未设置"}）`,
   );
+  if (config.steps) {
+    const steps = resolveSteps(config.steps);
+    console.log(`步骤配置：${config.steps.file}（${steps.length} 个步骤）`);
+    console.table(
+      steps.map((step) => ({
+        step_name: step.step_name,
+        stage: step.stage,
+        handler: handlerLabel(step.handler),
+        model: formatModelLabel(step.model),
+        retry: step.retry_limit,
+        timeout: `${Math.round(step.timeout / 1000)}s`,
+      })),
+    );
+  } else {
+    console.warn(`\n未找到步骤配置：${config.stepsPath}（可用 --steps 指定）`);
+  }
   if (issues.length) {
     console.error("\n发现问题：");
     for (const issue of issues) console.error(`  - ${issue}`);
@@ -251,6 +294,115 @@ function cmdValidate(config, options = {}) {
   }
 }
 
+function cmdSteps(config, options = {}) {
+  if (!config.steps) {
+    console.error(`未找到步骤配置：${config.stepsPath || DEFAULT_STEPS_PATH}`);
+    process.exitCode = 1;
+    return;
+  }
+  const type = options.type
+    ? (() => {
+        try {
+          return findType(config, options.type);
+        } catch (error) {
+          console.error(error.message);
+          process.exitCode = 1;
+          return null;
+        }
+      })()
+    : null;
+  if (options.type && !type) return;
+
+  if (options.step) {
+    const step = resolveStep(String(options.step), { steps: config.steps, type });
+    if (!step) {
+      console.error(`未知步骤：${options.step}`);
+      process.exitCode = 1;
+      return;
+    }
+    if (options.json) {
+      console.log(JSON.stringify({ type: type?.id || null, step: redactStep(step) }, null, 2));
+      return;
+    }
+    console.log(`步骤：${step.step_name}（${step.label}）`);
+    console.log(`阶段：${step.stage}`);
+    console.log(`处理：${handlerLabel(step.handler)}`);
+    console.log(`模型：${formatModelLabel(step.model)}${step.model.base_url ? ` @ ${step.model.base_url}` : ""}`);
+    console.log(`重试：${step.retry_limit} 次；超时：${step.timeout}ms`);
+    console.log(`依赖：${step.depends_on.join(", ") || "（无）"}`);
+    console.log(`产物：读 ${step.artifacts.reads.join(", ") || "（无）"} → 写 ${step.artifacts.writes.join(", ") || "（无）"}`);
+    if (step.handler_options && Object.keys(step.handler_options).length) {
+      console.log(`\n处理参数：`);
+      console.log(JSON.stringify(redactSecrets(step.handler_options), null, 2));
+    }
+    console.log(`\n输入格式：`);
+    console.log(JSON.stringify(step.input_format, null, 2));
+    console.log(`\n输出格式：`);
+    console.log(JSON.stringify(step.output_format, null, 2));
+    if (Object.keys(step.prompt || {}).length) {
+      console.log(`\n提示词：`);
+      for (const [key, text] of Object.entries(step.prompt)) {
+        console.log(`--- ${key} ---`);
+        console.log(text);
+      }
+    }
+    return;
+  }
+
+  const steps = resolveSteps(config.steps, { type });
+  if (options.json) {
+    console.log(JSON.stringify({ type: type?.id || null, file: config.steps.file, steps: steps.map(redactStep) }, null, 2));
+    return;
+  }
+  console.log(`步骤配置：${config.steps.file}${type ? `（类型 ${type.id} 覆盖后）` : ""}`);
+  console.table(
+    steps.map((step) => ({
+      step_name: step.step_name,
+      label: step.label,
+      stage: step.stage,
+      handler: handlerLabel(step.handler),
+      model: formatModelLabel(step.model),
+      retry: step.retry_limit,
+      timeout: `${Math.round(step.timeout / 1000)}s`,
+      writes: step.artifacts.writes.join(", "),
+    })),
+  );
+  console.log(`共 ${steps.length} 个步骤：${stepNames(config.steps).join(" → ")}`);
+}
+
+function handlerLabel(handler) {
+  if (!handler) return "-";
+  if (handler.kind === "builtin") return `builtin:${handler.entry}`;
+  if (handler.kind === "script") return relativeTo(PROJECT_ROOT, handler.path) || handler.path;
+  if (handler.kind === "http") return handler.url;
+  return handler.raw || handler.kind;
+}
+
+/** steps --json / --step 不输出真实密钥。 */
+function redactStep(step) {
+  return {
+    ...step,
+    model: { ...step.model, api_key: maskSecret(step.model?.api_key) },
+    handler_options: redactSecrets(step.handler_options),
+  };
+}
+
+function redactSecrets(value) {
+  if (Array.isArray(value)) return value.map((item) => redactSecrets(item));
+  if (!value || typeof value !== "object") return value;
+  const out = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (/api_?key|auth_?key|secret|token|password/i.test(key)) out[key] = maskSecret(child);
+    else out[key] = redactSecrets(child);
+  }
+  return out;
+}
+
+function maskSecret(value) {
+  if (value === undefined || value === null || value === "") return "";
+  return "***";
+}
+
 async function cmdDoctor(config, options) {
   const logger = createLogger({ verbose: true, label: "doctor" });
   const checks = [];
@@ -258,6 +410,16 @@ async function cmdDoctor(config, options) {
 
   add("Node.js", Number(process.versions.node.split(".")[0]) >= 20, process.version);
   add("配置文件", fs.existsSync(config.__path), config.__path);
+  if (config.steps) {
+    const report = validateSteps(config.steps, { types: config.types });
+    add(
+      "步骤配置",
+      report.errors.length === 0,
+      report.errors.length ? report.errors.join("；") : `${config.steps.steps.length} 个步骤 @ ${config.steps.file}`,
+    );
+  } else {
+    add("步骤配置", false, config.stepsError || `未找到 ${config.stepsPath || DEFAULT_STEPS_PATH}`);
+  }
 
   for (const type of listTypes(config)) {
     const missing = type.knowledge_dirs.filter((dir) => !fs.existsSync(dir));
