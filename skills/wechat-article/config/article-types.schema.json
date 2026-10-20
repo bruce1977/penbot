@@ -10,7 +10,7 @@
     "project": {
       "type": "object",
       "properties": {
-        "output_dir": { "type": "string", "default": "output/wechat-article" },
+        "base_output_folder": { "type": "string", "default": "${BASE_OUTPUT_FOLDER:-output/wechat-article}" },
         "language": { "type": "string", "default": "zh-CN" }
       },
       "additionalProperties": true
@@ -162,6 +162,16 @@
       "type": "object",
       "properties": {
         "auto_publish": { "type": "boolean", "default": false },
+        "archive": {
+          "type": "object",
+          "description": "发布成功后的归档：终稿复制到知识库目录，随后打包并删除 draft 目录",
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "knowledge_dir": { "type": "string", "default": "" },
+            "filename": { "type": "string", "default": "{date}-{slug}.md" }
+          },
+          "additionalProperties": true
+        },
         "email": {
           "type": "object",
           "properties": {

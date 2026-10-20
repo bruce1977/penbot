@@ -2,7 +2,7 @@
   "$schema": "./article-types.schema.json",
   "version": 1,
   "project": {
-    "output_dir": "output/wechat-article",
+    "base_output_folder": "${BASE_OUTPUT_FOLDER:-output/wechat-article}",
     "language": "zh-CN"
   },
   "models": {
@@ -121,6 +121,11 @@
     },
     "publish": {
       "auto_publish": false,
+      "archive": {
+        "enabled": true,
+        "knowledge_dir": "",
+        "filename": "{date}-{slug}.md"
+      },
       "email": {
         "enabled": false,
         "to": ["jiangyifeng@myehome.cn"],

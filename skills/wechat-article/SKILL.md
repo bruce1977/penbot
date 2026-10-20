@@ -33,7 +33,7 @@ node skills/wechat-article/scripts/wechat-article.mjs topics --type ai-insight
 node skills/wechat-article/scripts/wechat-article.mjs kbs
 
 # 3) 用 mock 模型跑通全流程（不发真实请求）
-node skills/wechat-article/scripts/wechat-article.mjs auto --type ai-news --mock --output .temp/demo
+node skills/wechat-article/scripts/wechat-article.mjs auto --type ai-news --mock
 
 # 4) 入口 1（自动）：从知识库最新文档选题 + 自动纲要，再往下写
 node skills/wechat-article/scripts/wechat-article.mjs auto --type ai-insight
@@ -45,29 +45,47 @@ node skills/wechat-article/scripts/wechat-article.mjs manual --type ai-news \
 
 - 两个入口之后的步骤**完全一致**（资料 → 初稿 → 审稿 → 配图 → 发布），都支持 `--stage draft` 之类的提前停止。
 - `--type` 也可以不写在命令行：在 `.env` 里设 `PB_ARTICLE_TYPE=ai-news` 即可（命令行 `--type` 优先）。
-- 手动入口的提纲支持三种来源：`--outline-file outline.md`、`--outline "# 标题\n## 小节\n- 要点"`、或直接给 `02-outline.json`；标题可以从提纲的 `# 标题` 行推导，省略 `--title`。
+- 手动入口的提纲支持三种来源：`--outline-file outline.md`、`--outline "# 标题\n## 小节\n- 要点"`、或直接给 `03-outline.json`；标题可以从提纲的 `# 标题` 行推导，省略 `--title`。
 
-### 分步执行（推荐）
+### 文章目录与断点续跑
 
-每一步都能单独跑、单独检查，且**共用一个 `--output` 目录**，后一步会自动复用前一步的产物：
+文章根目录由环境变量 `BASE_OUTPUT_FOLDER` 决定（默认 `output/wechat-article`）：
+
+```text
+$BASE_OUTPUT_FOLDER/
+├── draft/<slug>/      一篇文章一个目录，所有中间产物和终稿都在里面
+└── published/         发布成功后归档的 <YYYYMMDD>-<slug>.zip
+```
+
+- 目录名取标题的 slug（保留中文，非法字符换成 `-`）；重名自动加 `-2`。
+- 每个阶段只写自己的产物，**产物存在 = 该阶段完成**；中断后重跑同一条命令即可从断点继续：
 
 ```bash
-DIR=output/wa-demo
+node skills/wechat-article/scripts/wechat-article.mjs auto  --type ai-news --article <slug>
+node skills/wechat-article/scripts/wechat-article.mjs draft --article <slug>
+```
 
-# 优先级 1a：自动选题（不指定 --topic 时调用模型）
-node skills/wechat-article/scripts/wechat-article.mjs topic   --type ai-news --output $DIR
+- `--article latest` 选最近一篇；分步命令省略 `--article` 时，若 `draft/` 下只有一篇文章会自动选中。
 
-# 优先级 1b：纲要（自动复用上一步的 01-topic.json）
-node skills/wechat-article/scripts/wechat-article.mjs outline --type ai-news --output $DIR
+### 分步执行
 
-# 优先级 2：资料收集（本地目录 / WeKnora / 两者都要，见下）
-node skills/wechat-article/scripts/wechat-article.mjs sources --type ai-news --output $DIR
+每一步都能单独跑、单独检查，产物都追加到同一篇文章目录：
 
-# 优先级 3：准备初稿输入（标题 + 大纲 + 资料 → 03-draft-input.json）
-node skills/wechat-article/scripts/wechat-article.mjs bundle  --type ai-news --output $DIR
+```bash
+# 1) 选题（自动选题；生成的目录名 = 标题 slug）
+node skills/wechat-article/scripts/wechat-article.mjs topic   --type ai-news
 
-# 优先级 4：初稿（读 03-draft-input.json）
-node skills/wechat-article/scripts/wechat-article.mjs draft   --type ai-news --output $DIR
+# 2) 资料收集（本地目录 / WeKnora / 两者都要，见下）
+node skills/wechat-article/scripts/wechat-article.mjs sources --article <slug>
+
+# 3) 纲要
+node skills/wechat-article/scripts/wechat-article.mjs outline --article <slug>
+
+# 4) 准备初稿输入（标题 + 大纲 + 资料 → 04-draft-input.json）
+node skills/wechat-article/scripts/wechat-article.mjs bundle  --article <slug>
+
+# 5) 初稿（读 04-draft-input.json）
+node skills/wechat-article/scripts/wechat-article.mjs draft   --article <slug>
 ```
 
 - **手动选题只有一步**：`outline --type ai-news --topic "主题" --requirements "..."` 会跳过选题模型，直接生成纲要。
@@ -101,7 +119,7 @@ node skills/wechat-article/scripts/wechat-article.mjs draft   --type ai-news --o
 - inline_1：正文配图说明
 ```
 
-- `## 结构` + 编号列表、`（约 400 字）` 标注、`## 反方观点`、`## 配图` 下的 `- prompt:` 行都兼容——也就是管线自己渲染的 `02-outline.md` 能原样喂回来。
+- `## 结构` + 编号列表、`（约 400 字）` 标注、`## 反方观点`、`## 配图` 下的 `- prompt:` 行都兼容——也就是管线自己渲染的 `03-outline.md` 能原样喂回来。
 - 小节字数没写时，会把该类型的目标字数均分到各小节。
 - 配图数量仍受类型配置约束（`--images` 可覆盖）。
 
@@ -123,7 +141,7 @@ node skills/wechat-article/scripts/wechat-article.mjs topics --type ai-news --co
 - 这一步只做选题与提纲，不检索 WeKnora、不写正文；资料收集在选定主题之后进行。
 - 不给 `--count` / `--output` / `--md` 时保持原行为：打印候选文章表格。
 
-## 初稿输入格式（`03-draft-input.json`）
+## 初稿输入格式（`04-draft-input.json`）
 
 写初稿前必须先准备好三样东西，它们全部装在一个 JSON 里，初稿阶段**只读这个文件**：
 
@@ -183,17 +201,17 @@ schema 语法：`"string"` / `["string", 最短]` / `["string", 最短, 最长]`
 用法：
 
 ```bash
-# 只做准备工作：选题 → 检索 → 纲要 → 打包成 03-draft-input.json
-node skills/wechat-article/scripts/wechat-article.mjs bundle --type ai-news --output output/wa-demo
+# 只做准备工作：选题 → 检索 → 纲要 → 打包成 04-draft-input.json
+node skills/wechat-article/scripts/wechat-article.mjs bundle --article <slug>
 
-# 校验这份输入（硬错误 + 软警告逐条列出）
-node skills/wechat-article/scripts/wechat-article.mjs validate --input output/wa-demo/03-draft-input.json
+# 校验这份输入（硬错误 + 软警告逐条列出）；也可直接给已有文件
+node skills/wechat-article/scripts/wechat-article.mjs validate --input <article>/04-draft-input.json
 
-# 用它写初稿（可以手改 JSON 后再跑；类型和输出目录都能从文件推断）
-node skills/wechat-article/scripts/wechat-article.mjs draft --input output/wa-demo/03-draft-input.json
+# 用它写初稿（可以手改 JSON 后再跑；类型从文件推断，目录用 --article 指定）
+node skills/wechat-article/scripts/wechat-article.mjs draft --article <slug> --input <article>/04-draft-input.json
 ```
 
-- `run` / `auto` / `manual` 也会在初稿前自动写出 `03-draft-input.json`，每一步都可审查、可手改。
+- `run` / `auto` / `manual` 也会在初稿前自动写出 `04-draft-input.json`，每一步都可审查、可手改。
 - **硬错误**（会中止）：缺 `title`、`outline` 为空或某节缺 `heading`/`points`、`materials` 为空或素材缺 `paragraphs`、字段超长或超项数上限。
 - **软警告**（不中止）：大纲字数与目标相差过大、某节没有要点、缺 `thesis`/`takeaway`/`requirements`。
 - 只给段落、没有整篇文章时，把段落放进 `paragraphs` 即可。
@@ -207,11 +225,11 @@ node skills/wechat-article/scripts/wechat-article.mjs draft --input output/wa-de
 | `run` | 完整管线（保留兼容，等同 `auto`） |
 | `topics` | 列出候选文章；`--count N --output <目录>` 生成 N 个候选主题（含提纲）的 Markdown |
 | `kbs` | 列出 WeKnora 知识库（获取 `kb_ids`） |
-| `topic` | 只做选题（自动选题，或 `--topic` 手动记录） |
+| `topic` | 只做选题（自动选题，或 `--topic` 手动记录；新文章目录按标题 slug 创建） |
 | `sources` | 只收集相关资料（本地目录 / WeKnora / 两者） |
-| `outline` | 只生成纲要（`--topic` / `--topic-file`，或复用输出目录里的选题） |
-| `bundle` | 只做准备工作：把标题 + 大纲 + 相关资料写成 `03-draft-input.json` |
-| `draft` | 只生成初稿（读 `03-draft-input.json`，或 `--input` 指定一份） |
+| `outline` | 只生成纲要（`--topic` / `--topic-file`，或复用文章目录里的选题） |
+| `bundle` | 只做准备工作：把标题 + 大纲 + 相关资料写成 `04-draft-input.json` |
+| `draft` | 只生成初稿（读 `04-draft-input.json`，或 `--input` 指定一份） |
 | `review` | 对已有稿件执行核稿/评稿/修正循环 |
 | `illustrate` | 为已有稿件生成并替换配图 |
 | `publish` | 发布已有稿件到邮件 / 公众号草稿箱 |
@@ -226,19 +244,22 @@ node skills/wechat-article/scripts/wechat-article.mjs draft --input output/wa-de
 - `--requirements <text>` 手动补充写作要求
 - `--topic-file <path>` 复用已有选题 JSON（如 `01-topic.json`）
 - `--sources-file <path>` 复用已有素材 JSON（如 `02-sources.json`）
-- `--outline-file <path>` 复用已有纲要 JSON（如 `02-outline.json`）
-- `--input <path>` 初稿输入 JSON（标题 + 大纲 + 资料，如 `03-draft-input.json`）；`draft` / `run` 用，跳过前置步骤
+- `--outline-file <path>` 复用已有纲要 JSON（如 `03-outline.json`）
+- `--input <path>` 初稿输入 JSON（标题 + 大纲 + 资料，如 `04-draft-input.json`）；`draft` / `run` 用，跳过前置步骤
 - `--knowledge-source <s>` 覆盖知识来源：`local` | `weknora` | `both`
-- `--article <path>` 已有稿件路径（`review`/`illustrate`/`publish` 用；也可从路径推断 `--type`）
-- `--output <dir>` 输出目录，默认 `output/wechat-article/<type>/<date>-<slug>`（分步执行时请复用同一目录）
+- `--article <slug>` 选择/续跑 `draft/<slug>/` 这篇文章；`latest` = 最近一篇；分步命令省略时自动选中唯一一篇
+- `--file <path>` `review`/`illustrate`/`publish` 直接指定稿件文件（`--article <path>` 仍兼容）
+- `--slug <name>` 新建文章时覆盖目录名（默认取标题 slug）
 - `--model <profile>` 覆盖写作模型 profile
 - `--review-model <profile>` 覆盖评稿模型 profile
 - `--rounds <n>` 审稿循环最大轮次（1-5，默认取配置 `review.max_rounds`）
 - `--length-attempts <n>` 初稿篇幅自动扩写/压缩的最大次数（默认 2，0 表示关闭）
 - `--images <n>` 配图数量（1-5）
-- `--stage <name>` `run` 的终止阶段：`topic|sources|outline|draft|review|illustrate|publish`
+- `--stage <name>` `run` 的终止阶段：`topic|sources|outline|bundle|draft|review|illustrate|publish`
 - `--mock` 用 mock 模型（不发真实网络请求，用于验证流程）
 - `--verbose` 输出调试日志
+
+> 文章根目录只认环境变量/配置里的 `BASE_OUTPUT_FOLDER`，`--output` 已取消。
 
 ### 发布参数
 
@@ -252,23 +273,34 @@ node skills/wechat-article/scripts/wechat-article.mjs draft --input output/wa-de
 
 ## 产出物
 
-每个 `run` 会创建一个输出目录（默认 `output/wechat-article/<type>/<日期>-<slug>/`），包含：
+一篇文章 = `$BASE_OUTPUT_FOLDER/draft/<slug>/` 一个目录：
 
 ```
-01-topic.json / 01-topic.md        选题
-02-sources.json                    命中的知识库素材
-02-outline.json / 02-outline.md    纲要
-03-draft.md                        初稿
-04-review/round-N/{before,after-correct,after-revise}.md + correct.json + score.json
-04-reviewed.md                     审稿后的稿件
-05-images.json / 05-illustrated.md 配图元数据与替换后的稿件
-06-publish.json                    发布结果（邮件 / 公众号草稿）
-article.md / article-final.md      终稿
-article-final.html                 邮件用 HTML（启用邮件时生成）
-images/                            生成的图片
-state.json                         管线最终状态（各阶段成功与否）
-pipeline.log                       运行日志
+01-topic.json / 01-topic.md              选题
+02-sources.json                          命中的知识库素材
+03-outline.json / 03-outline.md          纲要
+04-draft-input.json                      初稿输入（标题 + 大纲 + 资料）
+05-draft.md                              初稿
+06-review/round-N/{before,after-correct,after-revise}.md + correct.json + score.json
+06-reviewed.md                           审稿后的稿件
+07-images.json / 07-illustrated.md       配图元数据与替换后的稿件
+08-final.md                              终稿（发布用）
+08-final.html                            邮件用 HTML（启用邮件时生成）
+09-publish.json                          发布结果与状态
+images/                                  生成的图片
+state.json                               管线状态（文章身份 + 各阶段）
+pipeline.log                             运行日志
 ```
+
+### 发布成功后的归档
+
+只有 `09-publish.json` 的 `status` 为 `published`（至少一个渠道**真实投递成功**）才会归档：
+
+1. 终稿复制到该类型配置的 `publish.archive.knowledge_dir`（失败只记录，不阻塞）；
+2. 整个文章目录打包到 `published/<YYYYMMDD>-<slug>.zip`；
+3. 删除 `draft/<slug>/`。
+
+`skipped`（未启用发布 / `auto_publish=false`）、`dry_run`、`partial`、`failed` 都留在 `draft/`，修好后可重跑。归档是幂等的：zip 路径先写进 `09-publish.json`，重跑时已存在的 zip 直接复用。
 
 ## 文章类型与配置
 
@@ -291,7 +323,7 @@ pipeline.log                       运行日志
 - `review`：`max_rounds`、`pass_score`、`correct_cn`（核稿服务）
 - `illustrations`：`min`/`max`/`cover`/`style`/`negative_prompt`/图像服务
 - `topic`：`keywords`、`exclude_keywords`、`lookback_days`、`candidates`
-- `publish`：`auto_publish`、`email`（Resend）、`wechat`（wenyan）
+- `publish`：`auto_publish`、`archive`（`knowledge_dir` / `filename`，发布成功后归档到知识库）、`email`（Resend）、`wechat`（wenyan）
 
 新增一个类型：复制 `types` 里的一段，改 `id`/`name`/`knowledge_dirs`/`length`/`scoring` 即可，然后 `validate`。
 
@@ -393,6 +425,7 @@ WeKnora 相关配置（`knowledge.weknora`，可写在 `defaults` 里共享，�
 | `PB_LLM_BASE_URL` / `PB_LLM_MODEL` / `PB_LLM_API_KEY` | 远程 OpenAI 兼容模型 |
 | `WECHAT_MP_APP_ID` / `WECHAT_MP_APP_SECRET` | 公众号草稿发布 |
 | `PB_KNOWLEDGE_BASE_PATH` | 知识库根目录（配置里可用 `${...}` 引用） |
+| `BASE_OUTPUT_FOLDER` | 文章根目录（下面自动建 `draft/` 与 `published/`，默认 `output/wechat-article`） |
 | `PB_ARTICLE_TYPE` | 默认文章类型 id（命令行 `--type` 优先，可省略 `--type`） |
 | `PB_USE_WEKNORA` | WeKnora 总开关，默认 `false`（只用本地知识库目录） |
 

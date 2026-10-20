@@ -38,7 +38,10 @@ import { normalizeIssues, applyCorrections } from "../scripts/lib/corrector.mjs"
 import { composePrompt, resolveImageCount, planImages } from "../scripts/lib/illustrate.mjs";
 import { buildDraftInput, normalizeDraftInput, validateDraftInput, loadDraftTemplate, buildDraftVars, summarizeDraftInput } from "../scripts/lib/draft-input.mjs";
 import { renderTemplate, validateTemplateSchema } from "../scripts/lib/template.mjs";
-import { bodyOnly, emailShell, markdownToHtml } from "../scripts/lib/publish.mjs";
+import { bodyOnly, emailShell, markdownToHtml, derivePublishStatus } from "../scripts/lib/publish.mjs";
+import { ARTIFACT, STAGES, createArticle, detectStartStage, listArticles, openArticle, stageIndex } from "../scripts/lib/article-store.mjs";
+import { archiveArticle } from "../scripts/lib/archive.mjs";
+import { listZipEntries, zipDirectory } from "../scripts/lib/zip.mjs";
 
 const CONFIG_DIR = path.join(import.meta.dirname, "..", "config");
 const DRAFT_TEMPLATE = loadDraftTemplate(CONFIG_DIR);
@@ -925,4 +928,148 @@ test("emailShell escapes the title and markdownToHtml renders headings", async (
   const html = emailShell("<b>x</b>", await markdownToHtml("# 标题\n\n正文"));
   assert.match(html, /&lt;b&gt;x&lt;\/b&gt;/);
   assert.match(html, /<h1>标题<\/h1>/);
+});
+
+/* ------------------------------------------------------------------ */
+/* article store / resume / archive                                    */
+/* ------------------------------------------------------------------ */
+
+function storeConfig(prefix = "wa-store-") {
+  const root = tempDir(prefix);
+  return { __root: root, project: { base_output_folder: path.join(root, "articles") } };
+}
+
+test("normalizeConfig resolves base_output_folder against the project root", () => {
+  const config = normalizeConfig({ project: { base_output_folder: "out/wa" }, types: [] }, path.join("C:", "proj"));
+  assert.equal(config.project.base_output_folder, path.resolve("C:/proj", "out/wa"));
+});
+
+test("createArticle uses the title slug, creates draft/ and published/, and never overwrites", () => {
+  const config = storeConfig();
+  const type = { id: "ai-news", name: "AI 资讯" };
+  const first = createArticle(config, { title: "AI 测试 文章", type });
+  const second = createArticle(config, { title: "AI 测试 文章", type });
+
+  assert.equal(first.slug, "AI-测试-文章");
+  assert.equal(second.slug, "AI-测试-文章-2");
+  assert.ok(fs.existsSync(path.join(config.project.base_output_folder, "draft")));
+  assert.ok(fs.existsSync(path.join(config.project.base_output_folder, "published")));
+  assert.ok(fs.existsSync(first.dir));
+  assert.ok(fs.existsSync(second.dir));
+});
+
+test("detectStartStage follows the artifact chain, publish status decides archive", () => {
+  const config = storeConfig();
+  const { dir } = createArticle(config, { title: "断点续跑", type: { id: "ai-news" } });
+  const write = (name, content = "{}") => fs.writeFileSync(path.join(dir, name), content, "utf8");
+
+  assert.equal(detectStartStage(dir), "topic");
+  write(ARTIFACT.topic);
+  assert.equal(detectStartStage(dir), "sources");
+  write(ARTIFACT.sources);
+  assert.equal(detectStartStage(dir), "outline");
+  write(ARTIFACT.outline);
+  assert.equal(detectStartStage(dir), "bundle");
+  write(ARTIFACT.draftInput);
+  assert.equal(detectStartStage(dir), "draft");
+  write(ARTIFACT.draft);
+  assert.equal(detectStartStage(dir), "review");
+  write(ARTIFACT.reviewed);
+  assert.equal(detectStartStage(dir), "illustrate");
+  write(ARTIFACT.illustrated);
+  assert.equal(detectStartStage(dir), "publish");
+  write(ARTIFACT.final);
+  assert.equal(detectStartStage(dir), "publish");
+  write(ARTIFACT.publish, JSON.stringify({ status: "skipped" }));
+  assert.equal(detectStartStage(dir), "publish");
+  write(ARTIFACT.publish, JSON.stringify({ status: "published" }));
+  assert.equal(detectStartStage(dir), "archive");
+});
+
+test("openArticle auto-selects the only article and refuses to guess between several", () => {
+  const config = storeConfig();
+  const first = createArticle(config, { title: "第一篇", type: { id: "ai-news" } });
+  assert.equal(openArticle(config).slug, first.slug);
+
+  const second = createArticle(config, { title: "第二篇", type: { id: "ai-news" } });
+  assert.throws(() => openArticle(config), /--article/);
+  assert.equal(openArticle(config, "第二篇").slug, second.slug);
+  assert.ok(listArticles(config).length === 2);
+});
+
+test("zipDirectory writes a readable archive with nested paths", () => {
+  const src = tempDir("wa-zip-src-");
+  fs.mkdirSync(path.join(src, "images"), { recursive: true });
+  fs.writeFileSync(path.join(src, "a.md"), "hello 世界", "utf8");
+  fs.writeFileSync(path.join(src, "images", "01.png"), Buffer.from([1, 2, 3, 4]));
+
+  const out = path.join(tempDir("wa-zip-out-"), "out.zip");
+  const result = zipDirectory(src, out);
+  assert.equal(result.entries, 2);
+  assert.deepEqual(listZipEntries(out).sort(), ["a.md", "images/01.png"]);
+});
+
+test("archiveArticle zips the article, copies the final copy to the knowledge dir, then removes draft/", () => {
+  const root = tempDir("wa-archive-");
+  const config = { __root: root, project: { base_output_folder: path.join(root, "articles") } };
+  const type = { id: "ai-news", name: "AI 资讯", publish: { archive: { knowledge_dir: path.join(root, "kb") } } };
+  const created = createArticle(config, { title: "归档测试", type });
+  fs.writeFileSync(path.join(created.dir, ARTIFACT.final), "---\ntitle: 旧标题\n---\n\n正文内容\n", "utf8");
+
+  const result = archiveArticle({
+    config,
+    type,
+    dir: created.dir,
+    slug: created.slug,
+    publish: { title: "归档测试", status: "published" },
+  });
+
+  assert.equal(fs.existsSync(created.dir), false);
+  const zipFile = path.resolve(root, result.archive.zip);
+  assert.ok(fs.existsSync(zipFile));
+  const names = listZipEntries(zipFile);
+  assert.ok(names.includes(ARTIFACT.final));
+  assert.ok(names.includes(ARTIFACT.publish));
+
+  const knowledgeFile = result.archive.knowledge.file;
+  assert.ok(fs.existsSync(knowledgeFile));
+  const knowledge = fs.readFileSync(knowledgeFile, "utf8");
+  assert.match(knowledge, /title: 归档测试/);
+  assert.match(knowledge, /published_at:/);
+  assert.match(knowledge, /正文内容/);
+});
+
+test("archiveArticle is idempotent: an existing zip is reused instead of creating -2", () => {
+  const root = tempDir("wa-archive-retry-");
+  const config = { __root: root, project: { base_output_folder: path.join(root, "articles") } };
+  const type = { id: "ai-news", name: "AI 资讯", publish: { archive: { knowledge_dir: "" } } };
+  const created = createArticle(config, { title: "重试归档", type });
+  fs.writeFileSync(path.join(created.dir, ARTIFACT.final), "# 正文\n", "utf8");
+
+  const first = archiveArticle({ config, type, dir: created.dir, slug: created.slug, publish: { title: "重试归档", status: "published" } });
+
+  // 模拟「zip 已打包但目录没删掉」后重跑
+  fs.mkdirSync(created.dir, { recursive: true });
+  fs.writeFileSync(path.join(created.dir, ARTIFACT.final), "# 正文\n", "utf8");
+  const second = archiveArticle({
+    config,
+    type,
+    dir: created.dir,
+    slug: created.slug,
+    publish: { title: "重试归档", status: "published", archive: { ...first.archive } },
+  });
+
+  assert.equal(second.archive.zip, first.archive.zip);
+  const zips = fs.readdirSync(path.join(config.project.base_output_folder, "published")).filter((name) => name.endsWith(".zip"));
+  assert.equal(zips.length, 1);
+});
+
+test("derivePublishStatus only reports published when every enabled channel succeeded", () => {
+  assert.equal(derivePublishStatus({ dryRun: true, emailEnabled: true, email: { success: true } }), "dry_run");
+  assert.equal(derivePublishStatus({ emailEnabled: false, wechatEnabled: false }), "skipped");
+  assert.equal(derivePublishStatus({ emailEnabled: true, email: { success: true } }), "published");
+  assert.equal(derivePublishStatus({ emailEnabled: true, email: { success: true, dryRun: true } }), "dry_run");
+  assert.equal(derivePublishStatus({ emailEnabled: true, wechatEnabled: true, email: { success: true }, wechat: { success: true } }), "published");
+  assert.equal(derivePublishStatus({ emailEnabled: true, wechatEnabled: true, email: { success: true }, wechat: { success: false } }), "partial");
+  assert.equal(derivePublishStatus({ emailEnabled: true, email: { success: false } }), "failed");
 });

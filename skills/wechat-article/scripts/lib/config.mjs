@@ -33,13 +33,16 @@ export function normalizeConfig(config, root = process.cwd()) {
     if (ids.has(type.id)) throw new Error(`Duplicate article type id: ${type.id}`);
     ids.add(type.id);
   }
+  const project = {
+    base_output_folder: "output/wechat-article",
+    language: "zh-CN",
+    ...(config.project || {}),
+  };
+  // The article root comes from BASE_OUTPUT_FOLDER only (env/config), never from a CLI flag.
+  project.base_output_folder = path.resolve(root, project.base_output_folder);
   return {
     ...config,
-    project: {
-      output_dir: "output/wechat-article",
-      language: "zh-CN",
-      ...(config.project || {}),
-    },
+    project,
     models: config.models || {},
     defaults,
     types,

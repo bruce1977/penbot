@@ -2,6 +2,27 @@ import fs from "node:fs";
 import path from "node:path";
 import { ensureDir } from "./fsx.mjs";
 
+/**
+ * 发布结果状态：
+ *   published = 所有启用的渠道都真实投递成功
+ *   partial   = 有成功也有失败
+ *   failed    = 启用的渠道全部失败
+ *   skipped   = 未启用发布 / auto_publish=false
+ *   dry_run   = 演练
+ * 只有 published 会触发归档。
+ */
+export function derivePublishStatus({ dryRun, emailEnabled, wechatEnabled, email, wechat }) {
+  const channels = [emailEnabled ? email : null, wechatEnabled ? wechat : null].filter(Boolean);
+  if (dryRun) return "dry_run";
+  if (channels.length === 0) return "skipped";
+  // 渠道级演练（如 wechat.dry_run=true）没有真实投递，不触发归档。
+  if (channels.some((channel) => channel.dryRun === true)) return "dry_run";
+  const ok = channels.filter((channel) => channel.success === true).length;
+  if (ok === channels.length) return "published";
+  if (ok > 0) return "partial";
+  return "failed";
+}
+
 /** Publish via Resend. Inline local images as CID attachments when possible. */
 export async function sendEmail({ to, subject, html, text, images = [], config = {}, logger }) {
   const apiKey = config.api_key || process.env.PB_RESEND_API_KEY;
