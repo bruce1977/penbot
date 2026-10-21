@@ -51,8 +51,10 @@ image_position_format: "[[img:{index}]]"
 
 topic:
   keywords: [发布, 上线, 开源, 融资, 模型, 芯片, Agent]
-  lookback_days: 30
-  candidates: 15
+  candidate_days: 15   # 大样本：文件日期窗口
+  fresh_days: 7        # 小样本：采集日期窗口
+  max_candidates: 40
+  proposals: 3
 
 model: llm.local
 review:

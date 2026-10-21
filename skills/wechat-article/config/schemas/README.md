@@ -25,6 +25,8 @@ steps:
 
 `input` 对应节点的 `input_format`，`output` 对应 `output_format`；字段值是紧凑 DSL 字符串，用于文档和校验。
 
+`draft.yaml` 里的 `draft_input` 是 `03-draft-input.json` 的紧凑校验规则（key 直接是字段名，不包一层 `input` / `output`），完整 id 是 `draft.draft_input`。
+
 ## 命名与扩展
 
 - 文件名是命名空间，建议按阶段或类型命名：`topic.yaml`、`review.yaml`、`ai-news.yaml`。

@@ -1,7 +1,7 @@
 /**
  * Draft input — the contract between "准备阶段" and "写初稿阶段".
  *
- * 三样东西装在一个 JSON 里（schema 见 config/prompts/draft.json）：
+ * 三样东西装在一个 JSON 里（校验规则见 config/schemas/draft.yaml 的 draft_input）：
  *   title      文章标题
  *   outline    文章大纲：[{ heading, points[], target_words? }]
  *   materials  相关资料：[{ title, date?, source?, paragraphs[] }]
@@ -9,26 +9,48 @@
  * 其余字段都可选：type / thesis / audience / hook / requirements /
  * counterpoint / takeaway / images。
  *
- * 提示词与校验规则都在 config/prompts/draft.json 里，改文案不用碰代码。
+ * 提示词在 config/prompts/draft.yaml 的 draft_writing，校验规则在
+ * config/schemas/draft.yaml 的 draft_input；改文案不用碰代码。
  */
 
 import path from "node:path";
-import { readJson } from "./fsx.mjs";
-import { formatSources } from "./knowledge.mjs";
-import { loadTemplate, validateTemplateSchema } from "./template.mjs";
+import { parse as parseYaml } from "yaml";
+import { readText } from "./fsx.mjs";
+import { formatSources, loadSource } from "./knowledge.mjs";
+import { validateTemplateSchema } from "./template.mjs";
 
-export const DRAFT_TEMPLATE_FILE = "prompts/draft.json";
+export const DRAFT_PROMPT_FILE = "prompts/draft.yaml";
+export const DRAFT_SCHEMA_FILE = "schemas/draft.yaml";
 
 const text = (value) => String(value ?? "").trim();
 const lines = (value) => (Array.isArray(value) ? value : []).map(text).filter(Boolean);
 
-/** Load config/prompts/draft.json (prompt + compact schema). */
+/** Load config/prompts/draft.yaml + config/schemas/draft.yaml. */
 export function loadDraftTemplate(configDir) {
-  return loadTemplate(path.join(configDir, DRAFT_TEMPLATE_FILE), readJson);
+  const promptFile = path.join(configDir, DRAFT_PROMPT_FILE);
+  const schemaFile = path.join(configDir, DRAFT_SCHEMA_FILE);
+  const promptData = parseYaml(readText(promptFile));
+  const schemaData = parseYaml(readText(schemaFile));
+  const prompt = promptData?.prompts?.draft_writing;
+  const schema = schemaData?.schemas?.draft_input;
+
+  if (!prompt || typeof prompt !== "object") {
+    throw new Error(`${promptFile} 缺少 prompts.draft_writing`);
+  }
+  if (!prompt.system || !prompt.user) {
+    throw new Error(`${promptFile} 的 prompts.draft_writing 缺少 system / user`);
+  }
+  if (!prompt.retry) {
+    throw new Error(`${promptFile} 的 prompts.draft_writing 缺少 retry`);
+  }
+  if (!schema || typeof schema !== "object") {
+    throw new Error(`${schemaFile} 缺少 schemas.draft_input`);
+  }
+  return { prompt, schema };
 }
 
 /** Build a draft input from upstream artifacts (topic / outline / sources). */
-export function buildDraftInput({ type, topic = {}, outline = {}, sources = [], requirements = "" }) {
+export function buildDraftInput({ type, topic = {}, outline = {}, sources = [], requirements = "", baseDir = "" }) {
   return normalizeDraftInput({
     type: type.id,
     title: text(outline.title) || text(topic.title) || text(topic.topic),
@@ -43,12 +65,16 @@ export function buildDraftInput({ type, topic = {}, outline = {}, sources = [], 
     })),
     counterpoint: text(outline.counterpoint),
     takeaway: text(outline.takeaway),
-    materials: sources.map((source) => ({
-      title: source.title,
-      date: source.date,
-      source: source.file,
-      paragraphs: source.excerpts,
-    })),
+    materials: sources.map((source) => {
+      // 链接条目只带 index/title/link（link 相对文章目录），素材字段靠 baseDir 回读落地 MD。
+      const meta = loadSource(source, { baseDir });
+      return {
+        title: meta.title,
+        date: meta.date,
+        source: meta.source,
+        paragraphs: meta.excerpts,
+      };
+    }),
     images: (outline.image_plan || []).map((image) => ({
       position: image.position,
       description: image.description,
@@ -99,7 +125,7 @@ export function normalizeDraftInput(raw = {}) {
  * warnings (style/density hints) do not.
  */
 export function validateDraftInput(raw, { schema, type } = {}) {
-  if (!schema) throw new Error("validateDraftInput 需要 schema（config/prompts/draft.json 里的 schema）");
+  if (!schema) throw new Error("validateDraftInput 需要 schema（config/schemas/draft.yaml 的 draft_input）");
   // Validate the raw object so that empty headings / paragraphs are reported
   // instead of being silently dropped by normalization.
   const errors = [...validateTemplateSchema(raw || {}, schema).errors];
@@ -123,7 +149,7 @@ export function validateDraftInput(raw, { schema, type } = {}) {
   return { ok: errors.length === 0, errors, warnings };
 }
 
-/** Variables available to {{...}} in config/prompts/draft.json. */
+/** Variables available to {{...}} in config/prompts/draft.yaml. */
 export function buildDraftVars({ type, input, maxChars = 18000 }) {
   const outline = input.outline
     .map((section, i) => {

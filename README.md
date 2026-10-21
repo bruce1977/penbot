@@ -29,14 +29,14 @@ npm run wechat-article -- manual --type ai-news --title "某模型正式开源" 
 ```
 
 - 两个入口之后步骤完全一致；`--type` 可省略，在 `.env` 设 `PB_ARTICLE_TYPE=ai-news` 即可。
-- 手动提纲最简格式：`# 标题` + `## 小节` + `- 要点`；也可直接喂管线生成的 `03-outline.json`。
+- 手动提纲最简格式：`# 标题` + `## 小节` + `- 要点`；也可直接喂管线生成的 `02-outline.json`。
 - 想先看几个选题：`npm run wechat-article -- topics --type ai-news --count 3 --output output`（输出 3 个候选主题 + 提纲的 Markdown）。
 
 文章根目录由 `.env` 的 `BASE_OUTPUT_FOLDER` 决定（默认 `output/wechat-article`），每篇文章一个目录：
 
 ```text
 $BASE_OUTPUT_FOLDER/
-├── draft/<slug>/      # 一篇文章一个目录：01-topic.json … 09-publish.json
+├── draft/<slug>/      # 一篇文章一个目录：01-result.json … 08-publish.json
 └── published/         # 发布成功后归档的 <YYYYMMDD>-<slug>.zip
 ```
 
@@ -47,14 +47,13 @@ $BASE_OUTPUT_FOLDER/
 各步都在同一篇文章目录里追加产物，`--article <slug>` 指定文章（只有一篇时可省略）：
 
 ```bash
-npm run wechat-article -- topic   --type ai-news                    # 1a 自动选题（目录名 = 标题 slug）
-npm run wechat-article -- sources --article <slug>                  # 2  资料收集（本地目录）
-npm run wechat-article -- outline --article <slug>                  # 1b 纲要
-npm run wechat-article -- bundle  --article <slug>                  # 3  打包初稿输入
-npm run wechat-article -- draft   --article <slug>                  # 4  初稿
+npm run wechat-article -- topic   --type ai-news                    # 1 选题步：选题 → 判断类型 → 收集素材
+npm run wechat-article -- outline --article <slug>                  # 2 纲要
+npm run wechat-article -- bundle  --article <slug>                  # 3 打包初稿输入
+npm run wechat-article -- draft   --article <slug>                  # 4 初稿
 ```
 
-`bundle` 会把**标题 + 大纲 + 相关资料**写成 `04-draft-input.json`；提示词与校验规则都在 [`skills/wechat-article/config/prompts/draft.json`](skills/wechat-article/config/prompts/draft.json)（`prompt` + 紧凑 `schema`）。可以手改这份 JSON，再用 `draft --article <slug> --input <文件>` 写初稿；也可以用 `validate --input <文件>` 先校验。
+`bundle` 会把**标题 + 大纲 + 相关资料**写成 `03-draft-input.json`；提示词在 [`skills/wechat-article/config/prompts/draft.yaml`](skills/wechat-article/config/prompts/draft.yaml) 的 `draft_writing`，校验规则在 [`skills/wechat-article/config/schemas/draft.yaml`](skills/wechat-article/config/schemas/draft.yaml) 的 `draft_input`。可以手改这份 JSON，再用 `draft --article <slug> --input <文件>` 写初稿；也可以用 `validate --input <文件>` 先校验。
 
 发布成功后（邮件/公众号至少一个真实投递成功）会自动归档：终稿复制到本地知识库的 `pipeline/` 待入库目录（`KNOWLEDGE_PIPELINE_DIR`）→ 整个文章目录打包到 `published/` → 删除 `draft/<slug>/`。
 

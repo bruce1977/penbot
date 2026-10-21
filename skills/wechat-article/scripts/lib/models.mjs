@@ -12,7 +12,7 @@ import { ensureDir } from "./fsx.mjs";
  *
  * All calls return plain text. JSON calls parse the first JSON value found.
  */
-export function createModelClient(config, logger) {
+export function createModelClient(config, logger, recorder) {
   const cache = new Map();
 
   function getProfile(name) {
@@ -39,23 +39,41 @@ export function createModelClient(config, logger) {
     const profile = getProfile(profileName);
     const started = Date.now();
     logger?.debug(`model ${profile.id} (${profile.provider}) -> ${label || "text"}`);
+    const record = (extra) => {
+      // mock 不联网，没什么可审计的
+      if (!recorder || profile.provider === "mock") return;
+      recorder.record({
+        label: label || profile.id,
+        provider: profile.provider,
+        model: profile.model || profile.command || "mock",
+        duration_ms: Date.now() - started,
+        request: { system, prompt, format, temperature, max_tokens: maxTokens },
+        ...extra,
+      });
+    };
     let text;
-    switch (profile.provider) {
-      case "mock":
-        text = mockResponse(prompt, format);
-        break;
-      case "ollama":
-        text = await callOllama(profile, { system, prompt, format, temperature, maxTokens });
-        break;
-      case "openai":
-        text = await callOpenAI(profile, { system, prompt, temperature, maxTokens, format });
-        break;
-      case "opencode":
-        text = await callOpencode(profile, { system, prompt, label });
-        break;
-      default:
-        throw new Error(`Unsupported model provider: ${profile.provider}`);
+    try {
+      switch (profile.provider) {
+        case "mock":
+          text = mockResponse(prompt, format);
+          break;
+        case "ollama":
+          text = await callOllama(profile, { system, prompt, format, temperature, maxTokens });
+          break;
+        case "openai":
+          text = await callOpenAI(profile, { system, prompt, temperature, maxTokens, format });
+          break;
+        case "opencode":
+          text = await callOpencode(profile, { system, prompt, label });
+          break;
+        default:
+          throw new Error(`Unsupported model provider: ${profile.provider}`);
+      }
+    } catch (error) {
+      record({ response: "", error: error.message });
+      throw error;
     }
+    record({ response: text });
     logger?.debug(`model ${profile.id} done in ${((Date.now() - started) / 1000).toFixed(1)}s, ${text.length} chars`);
     return text;
   }

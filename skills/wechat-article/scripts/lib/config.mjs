@@ -238,7 +238,7 @@ function normalizeClassifier(classifier = {}, models = {}) {
   const modelId = String(classifier.model || "systemone.classifier");
   const profile = models[modelId] || {};
   const modelName = profile.model || profile.model_name || (modelId.includes(".") ? "" : modelId) || "jev-latest";
-  return {
+  const normalized = {
     enabled: toBool(classifier.enabled, true),
     provider: profile.provider || classifier.provider || "systemone",
     base_url: profile.base_url || classifier.base_url || "",
@@ -250,8 +250,31 @@ function normalizeClassifier(classifier = {}, models = {}) {
     timeout_ms: Number(profile.timeout_ms || classifier.timeout_ms || 15000),
     max_retries: Number(profile.max_retries ?? classifier.max_retries ?? 2),
     min_confidence: Number(classifier.min_confidence ?? 0.5),
+    // 一次判断置信度低于该值时升级到 deep_model 二次判断；deep_model 为空 = 不升级
+    escalate_below: Number(classifier.escalate_below ?? 0.65),
     default_type: classifier.default_type || "",
+    deep_model_id: "",
+    deep: null,
   };
+
+  const deepId = String(classifier.deep_model || "").trim();
+  if (deepId) {
+    normalized.deep_model_id = deepId;
+    const deepProfile = models[deepId] || {};
+    const deepName = deepProfile.model || deepProfile.model_name || (deepId.includes(".") ? "" : deepId);
+    if (deepName) {
+      // 端点/密钥缺省继承一次判断，允许 deep 节点独立覆盖 timeout / retries。
+      normalized.deep = {
+        model: deepName,
+        base_url: deepProfile.base_url || normalized.base_url,
+        endpoint: deepProfile.endpoint || normalized.endpoint,
+        api_key: deepProfile.api_key || normalized.api_key,
+        timeout_ms: Number(deepProfile.timeout_ms || normalized.timeout_ms),
+        max_retries: Number(deepProfile.max_retries ?? normalized.max_retries),
+      };
+    }
+  }
+  return normalized;
 }
 
 function normalizeType(type, defaults, root, config) {
@@ -266,6 +289,22 @@ function normalizeType(type, defaults, root, config) {
     max_file_bytes: 400000,
     ...(defaults.knowledge || {}),
     ...(type.knowledge || {}),
+  };
+  // 通道 2 外部检索：嵌套合并，类型文件可只覆盖个别阈值。
+  knowledge["web-search"] = {
+    enabled: false,
+    max_queries: 2,
+    max_per_query: 3,
+    max_sources: 6,
+    excerpt_chars: 800,
+    timeout_ms: 600000,
+    ...(defaults.knowledge?.["web-search"] || {}),
+    ...(type.knowledge?.["web-search"] || {}),
+  };
+  knowledge["web-search"].enabled = toBool(knowledge["web-search"].enabled, false);
+  knowledge["web-search"].gate = {
+    ...(defaults.knowledge?.["web-search"]?.gate || {}),
+    ...(type.knowledge?.["web-search"]?.gate || {}),
   };
   // 新写法：knowledge_source 直接写在类型顶层。
   if (type.knowledge_source) knowledge.source = type.knowledge_source;
@@ -521,14 +560,17 @@ export function validateWarnings(config) {
   const warnings = [];
   const classifier = config.classifier || {};
   if (classifier.enabled) {
-    if (!classifier.base_url || !classifier.api_key) {
-      warnings.push("判断模型（systemone）未配置 SYSTEMONE_BASE_URL / SYSTEMONE_API_KEY，录入时不会自动分类，将回退到 classifier.default_type");
+    if (!classifier.base_url) {
+      warnings.push("判断模型（systemone）未配置 SYSTEMONE_BASE_URL，录入时不会自动分类，将回退到 classifier.default_type");
     }
     if (classifier.default_type && !config.types.some((type) => type.id === classifier.default_type)) {
       warnings.push(`classifier.default_type="${classifier.default_type}" 不在 types 中`);
     }
     if (!classifier.default_type) {
       warnings.push("classifier.default_type 未设置：判断模型不可用时，未指定 --type 的录入会直接报错");
+    }
+    if (classifier.deep_model_id && !classifier.deep) {
+      warnings.push(`classifier.deep_model="${classifier.deep_model_id}" 未在 models.yaml 定义，不会进行二次判断`);
     }
   }
   return warnings;

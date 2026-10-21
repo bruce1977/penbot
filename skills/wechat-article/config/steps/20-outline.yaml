@@ -17,13 +17,14 @@ steps:
     retry_limit: 2
     timeout: 1200000
     artifacts:
-      reads: ["01-topic.json", "02-sources.json"]
-      writes: ["03-outline.json", "03-outline.md"]
+      # 素材在 01-result.json 的 sources 字段里（选题步已收齐）。
+      reads: ["01-result.json"]
+      writes: ["02-outline.json", "02-outline.md"]
     depends_on: [gather_materials]
 
   bundle_draft_input:
     label: 组装初稿输入
-    description: 把标题、大纲、素材和类型要求组装成 04-draft-input.json，并校验 schema。
+    description: 把标题、大纲、素材和类型要求组装成 03-draft-input.json，并校验 schema。
     stage: bundle
     enabled: true
     modes: [auto, manual, run]
@@ -33,6 +34,6 @@ steps:
     retry_limit: 0
     timeout: 30000
     artifacts:
-      reads: ["03-outline.json", "02-sources.json"]
-      writes: ["04-draft-input.json"]
+      reads: ["01-result.json", "02-outline.json"]
+      writes: ["03-draft-input.json"]
     depends_on: [outline, gather_materials]

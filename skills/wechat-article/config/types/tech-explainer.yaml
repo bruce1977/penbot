@@ -59,7 +59,10 @@ image_position_format: "[[img:{index}]]"
 
 topic:
   keywords: [原理, 架构, 教程, 实践, 部署, 论文, 实现, 源码]
-  candidates: 12
+  candidate_days: 15
+  fresh_days: 7
+  max_candidates: 40
+  proposals: 3
 
 model: llm.local
 review:

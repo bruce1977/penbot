@@ -36,8 +36,8 @@ test("steps.yaml lists the full pipeline in execution order", () => {
   const steps = loadSteps(STEPS_FILE);
   assert.equal(steps.steps.length, 14);
   assert.deepEqual(stepNames(steps), [
-    "classify_type",
     "select_topic",
+    "classify_type",
     "gather_materials",
     "outline",
     "bundle_draft_input",
@@ -55,7 +55,7 @@ test("steps.yaml lists the full pipeline in execution order", () => {
   assert.equal(getStep(steps, "classify_type").model.endpoint, "/v1/systemone");
   assert.equal(getStep(steps, "gather_materials").model.provider, "none");
   assert.equal(getStep(steps, "de_ai").stage, "polish");
-  assert.equal(getStep(steps, "de_ai").artifacts.writes[0], "06-polished.md");
+  assert.equal(getStep(steps, "de_ai").artifacts.writes[0], "05-polished.md");
   assert.equal(getStep(steps, "image_generation").model.provider, "none");
   assert.match(getStep(steps, "classify_type").source, /10-topic\.yaml$/);
   assert.match(getStep(steps, "de_ai").source, /50-revision\.yaml$/);
@@ -211,7 +211,8 @@ test("real phase files load prompts and schemas by file-scoped id", () => {
   assert.equal(select.prompt_id, "topic.select_topic");
   assert.equal(select.schema_id, "topic.select_topic");
   assert.equal(select.input_format.type, "ArticleType");
-  assert.equal(getStep(steps, "draft_writing").prompt.template, "prompts/draft.json");
+  assert.match(getStep(steps, "draft_writing").prompt.system, /栏目的作者/);
+  assert.match(getStep(steps, "draft_writing").prompt.retry, /上一稿不合格/);
   assert.equal(getStep(steps, "archive").output_format.removed, "boolean");
 });
 

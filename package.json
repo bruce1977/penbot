@@ -8,9 +8,18 @@
     "wechat-article": "node skills/wechat-article/scripts/wechat-article.mjs",
     "wechat-article:doctor": "node skills/wechat-article/scripts/wechat-article.mjs doctor",
     "wechat-article:validate": "node skills/wechat-article/scripts/wechat-article.mjs validate",
-    "test": "node --test skills/wechat-article/tests/*.test.mjs"
+    "test": "node --test skills/wechat-article/tests/*.test.mjs",
+    "test:steps": "node --test skills/wechat-article/tests/steps.test.mjs",
+    "test:infra": "node --test skills/wechat-article/tests/infra.test.mjs skills/wechat-article/tests/markdown.test.mjs",
+    "test:topic": "node --test skills/wechat-article/tests/topic.test.mjs",
+    "test:sources": "node --test skills/wechat-article/tests/sources.test.mjs",
+    "test:outline": "node --test skills/wechat-article/tests/outline.test.mjs",
+    "test:draft": "node --test skills/wechat-article/tests/draft.test.mjs",
+    "test:review": "node --test skills/wechat-article/tests/review.test.mjs",
+    "test:publish": "node --test skills/wechat-article/tests/publish.test.mjs"
   },
   "dependencies": {
+    "@opencode/client": "^2.1.1",
     "markdown-it": "^15.0.3",
     "yaml": "^2.9.1"
   },

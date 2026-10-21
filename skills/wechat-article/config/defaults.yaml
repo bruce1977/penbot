@@ -30,6 +30,10 @@ classifier:
   enabled: true
   # 模型 id，定义在 config/models.yaml 的 systemone 分类下
   model: systemone.classifier
+  # 一次判断置信度低于 escalate_below 时，用这个更重的模型再判一次；
+  # 留空 = 不做二次判断。二次判断失败时保留一次结果。
+  deep_model: systemone.classifier-deep
+  escalate_below: 0.65
   # questions 里的问题名，答案会从 answers.<question> 读取
   question: article_type
   min_confidence: 0.5
@@ -72,6 +76,21 @@ defaults:
       auth_header: X-API-Key
       match_count: 8
       timeout_ms: 30000
+    # 通道 2：充分性闸门判定本地不足时，用 opencode websearch 补外部素材。
+    # 检索模型在 config/steps/10-topic.yaml gather_materials.handler_options.web_search_model。
+    # 类型文件可覆盖（如随笔类设 enabled: false 关掉出门检索）。
+    web-search:
+      enabled: true
+      max_queries: 2      # 最多几组关键字（标题一组 + 关键词一组）
+      max_per_query: 3    # 每组结果解析取几条
+      max_sources: 6      # 最多并入几条外部素材
+      excerpt_chars: 800  # 外部结果摘录截断
+      timeout_ms: 600000  # 单组检索超时
+      gate:
+        min_hits_ratio: 0.5     # 命中数 < max_sources × 该比例 → 不足
+        min_excerpt_chars: 3000 # 本地摘录总字数下限
+        min_hint_coverage: 0.5  # source_hints 覆盖率下限
+        fresh_days: 90          # 无任何命中在此窗口内 → 不足
 
   illustrations:
     min: 1

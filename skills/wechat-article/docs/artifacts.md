@@ -2,7 +2,7 @@
 
 > 目标：每篇文章一个独立目录，每个阶段一个固定产物；中断后看「最后一个产物」就能知道从哪继续。
 >
-> 流程节点（处理方法 / 模型 / I/O / 重试 / 超时 / 提示词）定义在 [`config/steps/`](../config/steps/)（入口 [`steps.yaml`](../config/steps.yaml)）；节点的 `stage` 字段对应下表的阶段。
+> 流程节点（处理方法 / 模型 / I/O / 重试 / 超时 / 提示词）定义在 [`config/steps/`](../config/steps/)（入口 [`steps.yaml`](../config/steps.yaml)）；节点的 `stage` 只是节点分组标签，一个产物阶段可以由多个节点组成（选题步 = `select_topic → classify_type → gather_materials`）。
 >
 > 节点只引用提示词和数据结构的 id（`<文件名>.<配置项>`，例如 `topic.classify_type`），内容分别在 [`config/prompts/`](../config/prompts/) 和 [`config/schemas/`](../config/schemas/)。
 
@@ -26,81 +26,95 @@ $BASE_OUTPUT_FOLDER/                 # 环境变量，默认 output/wechat-artic
 
 ```text
 <slug>/
-├── state.json              # 文章身份 + 各阶段状态（派生数据，删了也能续跑）
 ├── pipeline.log            # 运行日志
-├── 01-topic.json           # 选题
-├── 01-topic.md
-├── 02-sources.json         # 素材
-├── 03-outline.json         # 纲要
-├── 03-outline.md
-├── 04-draft-input.json     # 初稿输入（标题 + 大纲 + 资料）
-├── 05-draft.md             # 初稿
-├── 06-review/              # 审稿过程
+├── 01-result.json          # 选题步结果（标题 + 类型 + systemone 选中项 + sources 链接条目）
+├── 01-step/                # 选题步的中间文件
+│   ├── topic.md            # 选题的人类可读版
+│   ├── proposal.json       # 自动选题的全部候选 + 热度表（仅自动选题时生成，可用 --from-proposal 复用）
+│   ├── sources/            # 每条素材一份 MD（frontmatter 溯源 + 摘录正文），#sources 的 file 指向这里
+│   ├── web-search/           # 外部检索结果（每组关键字一个 .md，本地素材不足时才产生）
+│   └── llm/                # 本步 LLM/API 调用留痕：<label>.<model>.json（request+response 成对，重跑覆盖）
+├── 02-outline.json         # 纲要
+├── 02-outline.md
+├── 03-draft-input.json     # 初稿输入（标题 + 大纲 + 资料）
+├── 04-draft.md             # 初稿
+├── 05-review/              # 审稿过程
 │   └── round-<n>/
 │       ├── before.md
 │       ├── correct.json
 │       ├── after-correct.md
 │       ├── score.json
 │       └── after-revise.md
-├── 06-reviewed.md          # 审稿后的定稿
-├── 06-polished.md          # 去 AI 化后的稿件（de_ai 接入后）
-├── 07-images.json          # 配图清单（成功/失败、通道、文件）
-├── 07-illustrated.md       # 配图后的稿件
+├── 05-reviewed.md          # 审稿后的定稿
+├── 05-polished.md          # 去 AI 化后的稿件（de_ai 接入后）
+├── 06-images.json          # 配图清单（成功/失败、通道、文件）
+├── 06-illustrated.md       # 配图后的稿件
 ├── images/                 # 实际图片文件
 │   └── 01_modelscope.png
-├── 08-final.md             # 最终正文（发布用）
-├── 08-final.html           # 邮件版 HTML（email 开启时）
-└── 09-publish.json         # 发布结果（status + 归档信息）
+├── 07-final.md             # 最终正文（发布用）
+├── 07-final.html           # 邮件版 HTML（email 开启时）
+└── 08-publish.json         # 发布结果（status + 归档信息）
 ```
 
-`state.json` 只用于展示和排错，核心字段：
+> **过渡期约定**：不再使用 `state.json`——文章身份、类型、进度全部从产物文件推导。选题步（01）已完成改造：根目录只输出 `01-result.json`，中间文件收进 `01-step/`；02–08 暂时沿用旧文件名，后续逐步收敛为「每步一个 `NN-result.json` + `NN-step/` 子目录」。`08-publish.json` 名称固定保留（去重/归档依赖它）。
+
+`01-result.json` 是扁平结构（选题字段直接铺在根上，素材收在 `sources` 数组里）：
 
 ```jsonc
 {
-  "version": "1.0.0",
-  "article": { "slug": "...", "title": "...", "type": "ai-news", "entry": "auto", "createdAt": "..." },
-  "stages": { "topic": { "ok": true }, "draft": { "ok": true, "words": 1100 }, "...": {} },
-  "error": null,
-  "finishedAt": "..."
+  "step": "topic",
+  "slug": "...",
+  "generated_at": "...",            // 文章创建时间（列表/去重用它排序）
+  "title": "...", "topic": "...", "thesis": "...", "angle": "...", "rationale": "...",
+  "keywords": ["..."], "source_hints": ["..."],
+  "type": {                          // 判断模型结果（选题后才分类）
+    "id": "ai-news", "name": "...", "source": "classifier", "confidence": 0.8, "reason": "..."
+  },
+  "picked": { "choice": "1", "first_choice": "3", "escalated": true },  // systemone 3 选 1 的过程
+  "sources": [                       // 收集素材的纯链接条目（其余信息都在落地 MD 里）
+    { "index": 1, "title": "...", "link": "01-step/sources/1-....md" }  // 相对文章目录
+  ]
 }
 ```
+
+> 素材正文与出处（`origin/source/date/score`）只存 `01-step/sources/*.md`：frontmatter
+> 溯源 + 摘录段正文（不整篇复制原文）；下游经 `loadSource` 按 `link` 回读（相对路径
+> 以文章目录为 `baseDir`），旧格式的内嵌 `excerpts` 仍兼容。
 
 ### 阶段产物与完成判据
 
 | 阶段 | 产物 | 完成判据（续跑依据） | 下一步读什么 |
 | --- | --- | --- | --- |
-| `topic` | `01-topic.json` + `.md` | 文件存在且 `title` 非空 | `01-topic.json` |
-| `sources` | `02-sources.json` | 文件存在且为数组 | `02-sources.json` |
-| `outline` | `03-outline.json` + `.md` | 文件存在且 `outline` 非空 | `03-outline.json` |
-| `bundle`（准备） | `04-draft-input.json` | 文件存在且通过 schema 校验 | `04-draft-input.json` |
-| `draft` | `05-draft.md` | 文件存在且字数 > 0 | `05-draft.md` |
-| `review` | `06-reviewed.md` + `06-review/` | `06-reviewed.md` 存在 | `06-reviewed.md` |
-| `polish`（规划） | `06-polished.md` | `06-polished.md` 存在 | `06-polished.md` |
-| `illustrate` | `07-illustrated.md` + `07-images.json` + `images/` | `07-illustrated.md` 存在 | `07-illustrated.md` |
-| `publish` | `08-final.md`、`09-publish.json` | `09-publish.json` 存在 | `09-publish.json` |
-| `archive` | `published/<date>-<slug>.zip` | zip 存在，`draft/<slug>/` 已删除 | `09-publish.json` |
+| `topic`（选题 → 定类 → 收集素材） | `01-result.json` + `01-step/topic.md`、`01-step/sources/*.md`（自动选题另存 `01-step/proposal.json`，外部检索另存 `01-step/web-search/*.md`，LLM 调用留痕在 `01-step/llm/`） | 文件存在且 `title` 非空、`sources` 为数组 | `01-result.json` |
+| `outline` | `02-outline.json` + `.md` | 文件存在且 `outline` 非空 | `02-outline.json` |
+| `bundle`（准备） | `03-draft-input.json` | 文件存在且通过 schema 校验 | `03-draft-input.json` |
+| `draft` | `04-draft.md` | 文件存在且字数 > 0 | `04-draft.md` |
+| `review` | `05-reviewed.md` + `05-review/` | `05-reviewed.md` 存在 | `05-reviewed.md` |
+| `polish`（规划） | `05-polished.md` | `05-polished.md` 存在 | `05-polished.md` |
+| `illustrate` | `06-illustrated.md` + `06-images.json` + `images/` | `06-illustrated.md` 存在 | `06-illustrated.md` |
+| `publish` | `07-final.md`、`08-publish.json` | `08-publish.json` 存在 | `08-publish.json` |
+| `archive` | `published/<date>-<slug>.zip` | zip 存在，`draft/<slug>/` 已删除 | `08-publish.json` |
 
 规则：
 
-- **文件即状态**：续跑只看上表产物是否存在，不依赖 `state.json`；`state.json` 只用于展示和排错。
+- **文件即状态**：续跑只看上表产物是否存在；没有 `state.json`，文章身份/类型/进度全部从 `01-result.json` 和阶段产物推导。
 - **写入要原子**：zip 先写 `<file>.tmp` 再 rename，避免中断后留下半截包。
-- **阶段名保持不变**（`--stage topic|sources|outline|bundle|draft|review|illustrate|publish`），编号只是给人和续跑逻辑看的。
-- `de_ai` 节点已定义，但执行层接入前 `polish` 阶段不参与续跑；产物链仍是 `06-reviewed.md` → `07-illustrated.md`。
+- **阶段名保持不变**（`--stage topic|outline|bundle|draft|review|illustrate|publish`），编号只是给人和续跑逻辑看的。收集素材不再是独立阶段：它是 `topic` 步的第三个节点（`select_topic → classify_type → gather_materials`）。
+- `de_ai` 节点已定义，但执行层接入前 `polish` 阶段不参与续跑；产物链仍是 `05-reviewed.md` → `06-illustrated.md`。
 
 ## 3. 续跑规则
 
 再次对同一个 article 目录执行 `auto` / `run` / `manual`（带 `--article <slug>`）时：
 
 ```text
-有 09-publish.json 且 status=published → archive（幂等，见 4.2）
-否则有 08-final.md                      → publish
-否则有 07-illustrated.md                → publish
-否则有 06-reviewed.md                   → illustrate
-否则有 05-draft.md                      → review
-否则有 04-draft-input.json              → draft
-否则有 03-outline.json                  → bundle
-否则有 02-sources.json                  → outline
-否则有 01-topic.json                    → sources
+有 08-publish.json 且 status=published → archive（幂等，见 4.2）
+否则有 07-final.md                      → publish
+否则有 06-illustrated.md                → publish
+否则有 05-reviewed.md                   → illustrate
+否则有 04-draft.md                      → review
+否则有 03-draft-input.json              → draft
+否则有 02-outline.json                  → bundle
+否则有 01-result.json                   → outline（其 sources 为空则先补收素材）
 否则                                     → topic
 ```
 
@@ -111,7 +125,7 @@ $BASE_OUTPUT_FOLDER/                 # 环境变量，默认 output/wechat-artic
 
 ### 4.1 发布成功判定
 
-`09-publish.json` 的 `status`：
+`08-publish.json` 的 `status`：
 
 | 取值 | 含义 | 是否归档 |
 | --- | --- | --- |
@@ -128,17 +142,17 @@ $BASE_OUTPUT_FOLDER/                 # 环境变量，默认 output/wechat-artic
 发布成功后，按顺序执行：
 
 1. 把最终稿复制到知识库归档目录（**按文章类型配置**，见 4.3）；失败只记录，不阻塞。
-2. 把 zip 路径与知识库结果写进 `09-publish.json`（这份清单因此会进入 zip）。
+2. 把 zip 路径与知识库结果写进 `08-publish.json`（这份清单因此会进入 zip）。
 3. 打包整个 article 目录 → `published/<YYYYMMDD>-<slug>.zip`。
 4. 删除 `draft/<slug>/`。
 
 幂等依据：
 
-- zip 路径在打包前就写进 `09-publish.json`；重跑时该文件已存在 → 跳过打包，直接删目录。
+- zip 路径在打包前就写进 `08-publish.json`；重跑时该文件已存在 → 跳过打包，直接删目录。
 - 知识库目标是固定文件名，重复复制会覆盖，不会产生副本。
 - 打包走 `<zip>.tmp` → rename，不会留下半截 zip。
 
-> 崩溃恢复：`09-publish.json` 里的 `archive.zip` 是第一执行标记，zip 文件是第二执行标记；两者都在时只需删目录。
+> 崩溃恢复：`08-publish.json` 里的 `archive.zip` 是第一执行标记，zip 文件是第二执行标记；两者都在时只需删目录。
 
 ### 4.3 知识库归档（统一落到 pipeline 待入库目录）
 
@@ -152,7 +166,7 @@ publish:
 ```
 
 - 所有类型统一落到本地知识库的 `pipeline/` 目录，由后续入库脚本扫描处理；类型文件不单独配置归档目录。
-- 写入时基于 `08-final.md` 补一层 frontmatter（`title` / `type` / `published_at`），供入库脚本消费。
+- 写入时基于 `07-final.md` 补一层 frontmatter（`title` / `type` / `published_at`），供入库脚本消费。
 - `knowledge_dir` 为空就跳过，不影响打包与删除——**这一步失败不应阻塞归档**（记录到 `archive.knowledge.error`）。
 
 ## 5. 已确认

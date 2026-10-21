@@ -18,7 +18,7 @@
 | `scoring_criteria` | 是 | 评分维度数组，每项 `{ id, name, weight, description?, criteria? }` |
 | `image_count` | 否 | `1-5`、`3`，或 `{ min, max, default, cover }` |
 | `image_position_format` | 否 | 配图标记模板，`{index}` 会替换成序号，默认 `[[img:{index}]]` |
-| `topic` | 否 | `keywords` / `exclude_keywords` / `lookback_days` / `candidates` |
+| `topic` | 否 | `keywords` / `exclude_keywords` / `candidate_days` / `fresh_days` / `max_candidates` / `proposals`（旧字段 `lookback_days` / `candidates` 作为回退，见 docs/topic-selection.md） |
 | `model` | 否 | 写作模型 id（如 `llm.local`、`llm.large`），默认 `defaults.model` |
 | `review` | 否 | 覆盖 `model` / `max_rounds` / `pass_score` / `correct_cn` |
 | `steps` | 否 | 按节点覆盖 `model` / `timeout` / `retry_limit` / `prompt` / `schema`；`prompt` 和 `schema` 写注册表 id |

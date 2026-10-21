@@ -31,7 +31,6 @@ steps:
 | `user` | user prompt，支持 `{{变量}}` |
 | `retry` | 重试时使用的 prompt |
 | `extra` | 追加到 user prompt 末尾的额外要求 |
-| `template` | 引用 `config/` 下的提示词模板文件，例如 `prompts/draft.json` |
 
 ## 命名与扩展
 
@@ -48,4 +47,4 @@ steps:
 ```
 
 - 覆盖按字段合并：只写 `extra` 会保留基础提示词的 `system` / `user`。
-- `draft.json` 是初稿输入的特殊模板（同时含校验 schema），不参与 id 注册；`draft.draft_writing` 通过 `template: prompts/draft.json` 引用它。
+- 初稿提示词在 `prompts/draft.yaml` 的 `draft_writing`；初稿输入的校验规则在 `schemas/draft.yaml` 的 `draft_input`，两者都按普通 id 注册。

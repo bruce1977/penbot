@@ -4,7 +4,7 @@
 schemas:
   draft_writing:
     input:
-      draft_input: "DraftInput（见 04-draft-input.json）"
+      draft_input: "DraftInput（见 03-draft-input.json）"
     output:
       article: "string（Markdown，含 frontmatter 和配图标记）"
 
@@ -16,3 +16,28 @@ schemas:
       target: "number"
     output:
       article: "string"
+
+  # 03-draft-input.json 的紧凑校验规则，由 draft-input.mjs 读取。
+  # 完整 id：draft.draft_input
+  draft_input:
+    "type": ["string", 1]
+    "title": ["string", 1, 64]
+    "thesis?": ["string", 0, 200]
+    "audience?": "string"
+    "hook?": "string"
+    "requirements?": "string"
+    "outline": ["array", 1, 12]
+    "outline[].heading": ["string", 1]
+    "outline[].points": ["array", 1, 8]
+    "outline[].target_words?": ["number", 0, 2000]
+    "counterpoint?": "string"
+    "takeaway?": "string"
+    "materials": ["array", 1, 20]
+    "materials[].title": ["string", 1]
+    "materials[].paragraphs": ["array", 1, 20]
+    "materials[].date?": "string"
+    "materials[].source?": "string"
+    "images?": ["array", 0, 6]
+    "images[].position": ["string", 1]
+    "images[].description": ["string", 1]
+    "images[].prompt?": "string"

@@ -14,7 +14,7 @@ schemas:
 
   archive:
     input:
-      publish: "09-publish.json"
+      publish: "08-publish.json"
       article_dir: "string"
     output:
       zip: "string"

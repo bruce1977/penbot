@@ -8,81 +8,45 @@ const JSON_RULES = [
   "不要编造素材中不存在的事实、数字、机构或引用。",
 ].join("\n");
 
-export function buildTopicPrompt({ type, candidates, mode = "auto", userTopic = "", userRequirements = "", count = 1 }) {
-  const list = candidates
-    .map(
-      (note, i) =>
-        `${i + 1}. 《${note.title}》\n   日期：${note.date}${note.tags.length ? `｜标签：${note.tags.slice(0, 6).join("、")}` : ""}\n   ${truncate(note.summary || note.excerpt || "", 160)}`,
-    )
-    .join("\n");
-
+/**
+ * 选题提示词：模板来自 config/prompts/topic.yaml 的 select_topic（步骤引用
+ * topic.select_topic），动态部分全部用占位符渲染；代码只准备变量，不再内联文案。
+ * 输入是精简候选（标题 + 距今天数 + 新采集标记）和确定性词频热度表，
+ * 不含逐篇 tags/summary/正文。时效以随条目给定的数字为准，模型不自行推断。
+ * type 可以是选题阶段的占位对象（auto/deferred 入口，未定类）：类型相关字段全部可缺省。
+ * 见 docs/topic-selection.md。
+ */
+export function buildTopicPrompt({ prompt, type, candidates, heatmap = "", written = [], mode = "auto", userTopic = "", userRequirements = "", count = 3 }) {
+  if (!prompt?.system || !prompt?.user) {
+    throw new Error("缺少选题提示词配置 topic.select_topic（system/user）");
+  }
   const total = Math.max(1, Number(count) || 1);
-  const multi = total > 1;
-
-  return {
-    system: [
-      `你是「${type.name}」栏目的选题编辑。${type.description || ""}`,
-      `目标读者：${type.style.audience || "对相关话题感兴趣的读者"}。`,
-      multi
-        ? `你的任务是从近期知识库文章中提炼 ${total} 个彼此独立、都值得写的主题，而不是简单复述某一篇。`
-        : "你的任务是从近期知识库文章中提炼一个值得写的主题，而不是简单复述某一篇。",
-      JSON_RULES,
-    ].join("\n"),
-    prompt: [
-      mode === "manual"
-        ? `用户已指定主题：${userTopic}\n补充要求：${userRequirements || "无"}`
-        : multi
-          ? `请从下列近期知识库文章中自动挑选 ${total} 个最适合本栏目的主题。`
-          : "请从下列近期知识库文章中自动选择一个最适合本栏目的主题。",
-      "",
-      "近期文章候选：",
-      list || "（无候选）",
-      "",
-      "选题要求：",
-      `1. 主题要具体，能用一个明确判断或问题概括，不要写成「AI 行业观察」这类空泛题目。`,
-      `2. 优先选择有事实密度、有冲突或反常识、且近期讨论度高的方向。`,
-      `3. 与已有文章形成差异，不要重复同一事件的消息面。`,
-      `4. 目标篇幅 ${type.length.min}-${type.length.max} 字。`,
-      ...(multi
-        ? [
-            `${5}. ${total} 个主题之间必须明显不同：事件不同、判断不同、切入角度不同；尽量来自不同的候选文章。`,
-            `${6}. 按推荐优先级从高到低排列。`,
-          ]
-        : []),
-      "",
-      "输出 JSON 结构：",
-      ...(multi
-        ? [
-            "{",
-            '  "topics": [',
-            "    {",
-            '      "topic": "一句话主题（不超过 30 字）",',
-            '      "thesis": "核心判断，一句话，必须可证伪",',
-            '      "angle": "切入角度，说明与常见报道的差异",',
-            '      "rationale": "为什么现在写这个主题（80 字内）",',
-            '      "keywords": ["检索关键词", "3-6 个"],',
-            '      "source_hints": ["最相关的候选文章标题"],',
-            '      "title_candidates": ["标题 1", "标题 2", "标题 3"]',
-            "    }",
-            "  ]",
-            "}",
-          ]
-        : [
-            "{",
-            '  "topic": "一句话主题（不超过 30 字）",',
-            '  "thesis": "核心判断，一句话，必须可证伪",',
-            '  "angle": "切入角度，说明与常见报道的差异",',
-            '  "rationale": "为什么现在写这个主题（80 字内）",',
-            '  "keywords": ["检索关键词", "3-6 个"],',
-            '  "source_hints": ["最相关的候选文章标题"],',
-            '  "title_candidates": ["标题 1", "标题 2", "标题 3"]',
-            "}",
-          ]),
-    ].join("\n"),
-  };
+  const render = (text) => renderTemplate(text, {
+    type_name: type.name || "公众号",
+    type_description: type.description || "",
+    audience: type.style?.audience || "对相关话题感兴趣的读者",
+    count: total,
+    count_label: `${total} 个`,
+    json_rules: JSON_RULES,
+    mode_line: mode === "manual"
+      ? `用户已指定主题：${userTopic}\n补充要求：${userRequirements || "无"}`
+      : `请从下列近期知识库文章中自动挑选 ${total} 个最值得写的主题。`,
+    candidates: candidates
+      .map((note, i) => `${i + 1}. 《${note.title}》 · ${note.daysAgo} 天前${note.fresh ? "（新采集）" : ""}`)
+      .join("\n") || "（无候选）",
+    heatmap: heatmap || "（无热度数据）",
+    written: written
+      .map((w) => `- 《${w.title}》${w.date ? `（${w.date}）` : ""}`)
+      .join("\n") || "（无历史记录）",
+    dedupe_rule: written.length
+      ? "严禁与上方「已写过的文章」重复：事件、标题、核心判断任一撞车的候选会被程序直接作废，白白浪费名额；宁可退选热度较低的新方向。"
+      : "与已有文章形成差异，不要重复同一事件的消息面。",
+    length_range: type.length ? `目标篇幅 ${type.length.min}-${type.length.max} 字。` : "",
+  }).replace(/[ \t]+$/gm, "");
+  return { system: render(prompt.system), prompt: render(prompt.user) };
 }
 
-export function buildOutlinePrompt({ type, topic, sources, userRequirements = "", maxChars = 14000 }) {
+export function buildOutlinePrompt({ type, topic, sources, userRequirements = "", maxChars = 14000, baseDir = "" }) {
   const dimensionText = type.scoring.dimensions
     .map((d) => `- ${d.name}（权重 ${(d.weight * 100).toFixed(0)}%）：${d.description || ""}`)
     .join("\n");
@@ -102,7 +66,7 @@ export function buildOutlinePrompt({ type, topic, sources, userRequirements = ""
       userRequirements ? `用户补充要求：${userRequirements}` : "",
       "",
       "可用素材（来自本地知识库，引用时使用编号）：",
-      formatSources(sources, { maxChars }) || "（无可用素材，请基于常识谨慎写作，并明确标注不确定处）",
+      formatSources(sources, { maxChars, baseDir }) || "（无可用素材，请基于常识谨慎写作，并明确标注不确定处）",
       "",
       "写作要求：",
       `1. 篇幅 ${type.length.min}-${type.length.max} 字，目标 ${type.length.target} 字。`,
@@ -288,9 +252,4 @@ export function buildLengthPrompt({ type, article, wordCount, direction, retry, 
       length: { min: type.length.min, target, max: type.length.max },
     }),
   };
-}
-
-export function truncate(text, max) {
-  const value = String(text || "").replace(/\s+/g, " ").trim();
-  return value.length > max ? `${value.slice(0, max)}…` : value;
 }

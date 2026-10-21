@@ -85,7 +85,10 @@ image_position_format: "[[img:{index}]]"
 
 topic:
   keywords: [AI, 大模型, Agent, 智能体, OpenAI, Anthropic, 开源模型]
-  candidates: 12
+  candidate_days: 15
+  fresh_days: 7
+  max_candidates: 40
+  proposals: 3
 
 model: llm.local
 review:

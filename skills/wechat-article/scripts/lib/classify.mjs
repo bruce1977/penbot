@@ -2,7 +2,7 @@
  * 判断模型：System One 决策模型 API（TypeSafe Jev / Laya / vLLM 同款）。
  *
  *   POST {base_url}/v1/systemone
- *   Authorization: Bearer <api_key>
+ *   Authorization: Bearer <api_key>（可选，端点未启用鉴权时可不配置）
  *   {
  *     "model": "jev-latest",
  *     "state": "标题 + 提纲",
@@ -29,27 +29,130 @@
  *     "usage": { ... }
  *   }
  *
+ * 两段式判断：先用轻量模型（cfg.model）判一次；置信度低于 cfg.escalate_below
+ * 且配置了 cfg.deep 时，用重模型（cfg.deep.model）再判一次并采用其结果。
+ * 二次判断失败时保留一次结果。classifyOrFallback 再按 min_confidence 兜底。
+ *
+ * 两类判定共用同一端点与升级策略：
+ *   classifyArticle  标题 + 提纲 → 选文章类型；
+ *   selectBestTopic  写作模型的候选主题（带评分）→ 选最值得写的编号。
+ *
  * 任何网络/解析问题都不抛出：返回 { ok:false, reason }，由调用方回退到
  * classifier.default_type。真正的“配置缺失”在 validate 里给警告。
+ *
+ * 请求文案可配置：instructions（纯文本）与 state 模板（{{title}}/{{outline}}、
+ * {{blocks}} 等占位符经 renderTemplate 渲染）来自 config/prompts/topic.yaml
+ * 的 topic.classify_type、topic.select_best，经 promptById 取回；代码里的
+ * 字符串只是缺省兜底。
  */
-export async function classifyArticle({ config, title, outline, logger, fetchImpl = fetch, mock = false } = {}) {
+import { promptById } from "./steps.mjs";
+import { renderTemplate } from "./template.mjs";
+
+export async function classifyArticle({ config, title, outline, logger, fetchImpl = fetch, mock = false, recorder } = {}) {
   const cfg = config?.classifier || {};
   const types = (config?.types || []).filter((type) => type.enabled !== false);
 
   if (mock) {
-    return { ok: true, type: cfg.default_type || types[0]?.id || "", confidence: 1, probabilities: {}, model: "mock" };
+    return { ok: true, type: cfg.default_type || types[0]?.id || "", confidence: 1, probabilities: {}, model: "mock", escalated: false };
   }
   if (!cfg.enabled) return { ok: false, reason: "classifier.disabled" };
   if (!types.length) return { ok: false, reason: "没有启用的文章类型" };
-  if (!cfg.base_url || !cfg.api_key) return { ok: false, reason: "未配置 SYSTEMONE_BASE_URL / SYSTEMONE_API_KEY" };
+  if (!cfg.base_url) return { ok: false, reason: "未配置 SYSTEMONE_BASE_URL" };
 
   const question = cfg.question || "article_type";
-  const body = buildSystemOneBody({ types, title, outline, question, model: cfg.model || "jev-latest" });
-  if (!body.state) return { ok: false, reason: "缺少标题或提纲" };
+  const lightBody = buildSystemOneBody({
+    types,
+    title,
+    outline,
+    question,
+    model: cfg.model || "jev-latest",
+    prompt: promptById(config?.steps, "topic.classify_type"),
+  });
+  if (!lightBody.state) return { ok: false, reason: "缺少标题或提纲" };
 
+  return twoPassChoice({ cfg, lightBody, options: types, question, logger, fetchImpl, recorder, label: "classify_type" });
+}
+
+/**
+ * 选题判定：写作模型给出候选主题（标题 + 评分 + 依据），systemone 选一个最值得写的。
+ * 选项编号 "1".."N"；返回 { ok, index }，失败由调用方回退到评分第一篇。
+ */
+export async function selectBestTopic({ config, topics = [], logger, fetchImpl = fetch, mock = false, recorder } = {}) {
+  const cfg = config?.classifier || {};
+
+  if (mock) {
+    let best = 0;
+    topics.forEach((t, i) => {
+      if (Number(t.score) > Number(topics[best].score)) best = i;
+    });
+    return { ok: true, index: best, confidence: 1, model: "mock", escalated: false };
+  }
+  if (!cfg.enabled) return { ok: false, reason: "classifier.disabled" };
+  if (!topics.length) return { ok: false, reason: "没有候选主题" };
+  if (topics.length === 1) return { ok: true, index: 0, confidence: 1, model: "single-candidate", escalated: false };
+  if (!cfg.base_url) return { ok: false, reason: "未配置 SYSTEMONE_BASE_URL" };
+
+  const question = cfg.topic_question || "topic_pick";
+  const options = topics.map((_, i) => ({ id: String(i + 1) }));
+  const lightBody = buildTopicChoiceBody({
+    topics,
+    question,
+    model: cfg.model || "jev-latest",
+    prompt: promptById(config?.steps, "topic.select_best"),
+  });
+
+  const result = await twoPassChoice({ cfg, lightBody, options, question, logger, fetchImpl, recorder, label: "select_best" });
+  if (!result.ok) return result;
+  const index = Number(result.type) - 1;
+  if (!Number.isInteger(index) || index < 0 || index >= topics.length) {
+    return { ok: false, reason: `未知的候选编号 ${result.type}`, raw: result.raw };
+  }
+  return { ...result, index };
+}
+
+/** 一次轻量 → 置信度低于 escalate_below 时用重模型再判一次；二次失败保留一次结果。 */
+async function twoPassChoice({ cfg, lightBody, options, question, logger, fetchImpl, recorder, label }) {
+  const lightModel = cfg.model || "jev-latest";
+  const ask = { options, question, logger, fetchImpl, recorder, label };
+
+  const first = await askSystemOne({ ...ask, cfg, model: lightModel, body: lightBody });
+  if (!first.ok) return first;
+
+  const escalateBelow = Number(cfg.escalate_below ?? 0.65);
+  const deep = cfg.deep;
+  if (!deep?.model || deep.model === lightModel || first.confidence >= escalateBelow) {
+    return { ...first, escalated: false };
+  }
+
+  logger?.info?.(
+    `一次判断（${lightModel}）置信度 ${first.confidence} 低于 ${escalateBelow}，升级二次判断（${deep.model}）`,
+  );
+  const second = await askSystemOne({ ...ask, cfg: { ...cfg, ...deep }, model: deep.model, body: { ...lightBody, model: deep.model } });
+  if (!second.ok) {
+    logger?.warn?.(`二次判断不可用（${second.reason || "unknown"}），保留一次判断结果`);
+    return { ...first, escalated: true };
+  }
+  return { ...second, escalated: true, first };
+}
+
+/** 单次 /v1/systemone choice 查询：发请求（带重试）、解析答案；问题都不抛出。 */
+async function askSystemOne({ cfg, model, body, options, question, logger, fetchImpl, recorder, label }) {
   const url = systemOneUrl(cfg.base_url, cfg.endpoint);
+  const started = Date.now();
+  const record = (extra) => {
+    if (!recorder) return;
+    recorder.record({
+      label: label || "systemone",
+      provider: "systemone",
+      model,
+      duration_ms: Date.now() - started,
+      request: { url, body },
+      ...extra,
+    });
+  };
   try {
     const { res, text } = await postWithRetry({ fetchImpl, url, body, cfg, logger });
+    record({ response: text, error: res.ok ? undefined : `HTTP ${res.status}` });
     if (!res.ok) {
       const detail = errorMessage(text);
       logger?.warn?.(`判断模型 HTTP ${res.status}${detail ? `：${detail}` : ""}`);
@@ -62,13 +165,14 @@ export async function classifyArticle({ config, title, outline, logger, fetchImp
       logger?.warn?.(`判断模型返回不是 JSON：${text.slice(0, 200)}`);
       return { ok: false, reason: "响应不是 JSON", raw: text };
     }
-    const result = normalizeClassifyResult(data, types, { ...cfg, question });
+    const result = normalizeClassifyResult(data, options, { ...cfg, question });
     if (!result.ok) {
       logger?.warn?.(`判断模型返回无法识别：${result.reason}`);
       return { ...result, raw: data };
     }
-    return { ...result, model: data.model || cfg.model, usage: data.usage, raw: data };
+    return { ...result, model: data.model || model, usage: data.usage, raw: data };
   } catch (error) {
+    record({ response: "", error: error.message });
     logger?.warn?.(`判断模型调用失败：${error.message}`);
     return { ok: false, reason: error.message };
   }
@@ -78,14 +182,14 @@ export async function classifyArticle({ config, title, outline, logger, fetchImp
  * 分类 + 回退。返回 { typeId, source, result }：
  *   source = classifier | default | none
  */
-export async function classifyOrFallback({ config, title, outline, logger, mock = false } = {}) {
+export async function classifyOrFallback({ config, title, outline, logger, mock = false, recorder } = {}) {
   const cfg = config?.classifier || {};
   const fallbackId =
     cfg.default_type && config.types.some((type) => type.id === cfg.default_type && type.enabled !== false)
       ? cfg.default_type
       : "";
 
-  const result = await classifyArticle({ config, title, outline, logger, mock });
+  const result = await classifyArticle({ config, title, outline, logger, mock, recorder });
   if (result.ok && result.type) {
     if (result.confidence < Number(cfg.min_confidence ?? 0.5)) {
       logger?.warn?.(`判断模型置信度 ${result.confidence} 低于 ${cfg.min_confidence}，按 ${fallbackId || "未分类"} 处理`);
@@ -104,17 +208,59 @@ export async function classifyOrFallback({ config, title, outline, logger, mock 
 }
 
 /** 组装 /v1/systemone 请求体：一个 choice 问题，选项就是启用的文章类型。 */
-export function buildSystemOneBody({ types, title, outline, question = "article_type", model } = {}) {
-  const state = buildState({ title, outline });
+export function buildSystemOneBody({ types, title, outline, question = "article_type", model, prompt = {} } = {}) {
+  let state;
+  if (prompt.state) {
+    // 去掉 YAML 块缩进残留的行尾空格，保持 state 干净。
+    state = renderTemplate(prompt.state, { title: title || "", outline: outline || "" })
+      .replace(/[ \t]+$/gm, "")
+      .trim();
+  } else {
+    state = buildState({ title, outline });
+  }
   return {
     ...(model ? { model } : {}),
     state,
     questions: {
       [question]: {
         type: "choice",
-        instructions:
-          "判断这篇公众号文章最适合归入哪个类型。只依据标题和提纲表达的内容与体裁，不要依据选项在列表中的顺序。",
+        instructions: (prompt.instructions || "").trim()
+          || "判断这篇公众号文章最适合归入哪个类型。只依据标题和提纲表达的内容与体裁，不要依据选项在列表中的顺序。",
         criteria: Object.fromEntries(types.map((type) => [type.id, describeType(type)])),
+      },
+    },
+  };
+}
+
+/** 组装选题判定请求体：选项是候选主题编号 1..N，评分与依据写进 state/criteria。 */
+export function buildTopicChoiceBody({ topics, question = "topic_pick", model, prompt = {} } = {}) {
+  const blocks = topics.map((t, i) => {
+    const lines = [`${i + 1}. 《${t.title || t.topic}》（写作模型评分 ${t.score ?? "未给出"}）`];
+    if (t.thesis) lines.push(`   核心判断：${t.thesis}`);
+    if (t.rationale) lines.push(`   理由：${t.rationale}`);
+    if (t.source_hints?.length) lines.push(`   素材：${t.source_hints.join(" / ")}`);
+    return lines.join("\n");
+  });
+  let state;
+  if (prompt.state) {
+    // YAML 块标量解析后已去掉公共缩进，占位符替换按原样插入。
+    state = renderTemplate(prompt.state, { count: topics.length, blocks: blocks.join("\n\n") })
+      .replace(/[ \t]+$/gm, "")
+      .trim();
+  } else {
+    state = `候选主题（公众号选题，一次模型调用产出，按评分从高到低）：\n\n${blocks.join("\n\n")}`;
+  }
+  return {
+    ...(model ? { model } : {}),
+    state,
+    questions: {
+      [question]: {
+        type: "choice",
+        instructions: (prompt.instructions || "").trim()
+          || "这些是同一批候选选题，请选出最值得现在写的一个，返回其编号。依据：素材是否新、核心判断是否有信息量、标题是否具体不空泛。写作模型评分只作参考；编号只是标签，不要偏向任何编号。",
+        criteria: Object.fromEntries(
+          topics.map((t, i) => [String(i + 1), `《${t.title || t.topic}》：${t.topic || ""}`]),
+        ),
       },
     },
   };
@@ -181,7 +327,7 @@ async function postWithRetry({ fetchImpl, url, body, cfg, logger }) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${cfg.api_key}`,
+        ...(cfg.api_key ? { Authorization: `Bearer ${cfg.api_key}` } : {}),
       },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(Number(cfg.timeout_ms || 15000)),
@@ -210,7 +356,7 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** 把提纲（Markdown 字符串或 03-outline.json）转成可读文本。 */
+/** 把提纲（Markdown 字符串或 02-outline.json）转成可读文本。 */
 export function formatOutline(outline) {
   if (!outline) return "（无）";
   if (typeof outline === "string") return outline.trim() || "（无）";

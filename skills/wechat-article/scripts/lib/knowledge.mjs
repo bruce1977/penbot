@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { walkFiles, readText, readJson, writeJson, ensureDir } from "./fsx.mjs";
+import { walkFiles, readText, readJson, writeJson, writeText, ensureDir, slugify } from "./fsx.mjs";
 import { splitFrontmatter } from "./markdown.mjs";
 
 const STOPWORDS = new Set([
@@ -16,7 +16,9 @@ const STOPWORDS = new Set([
  */
 export function indexKnowledge(type, { logger, maxFileBytes = 400000, cacheDir = null } = {}) {
   const cacheFile = cacheDir ? path.join(cacheDir, "knowledge-index.json") : null;
-  const cache = cacheFile ? readJson(cacheFile, { version: 1, notes: {} }) : { version: 1, notes: {} };
+  const cache = cacheFile ? readJson(cacheFile, { version: 0, notes: {} }) : { version: 0, notes: {} };
+  // v2：note 增加 source（frontmatter 出处）；旧缓存整体作废重建一次。
+  if (cache.version !== 2) cache.notes = {};
   const cacheNotes = cache.notes || {};
   const nextCache = {};
   const notes = [];
@@ -59,6 +61,7 @@ export function indexKnowledge(type, { logger, maxFileBytes = 400000, cacheDir =
       const note = {
         file,
         title: cleanTitle(title),
+        source: String(data.source || "").trim(),
         date,
         mtime: stat.mtimeMs,
         tags,
@@ -76,7 +79,7 @@ export function indexKnowledge(type, { logger, maxFileBytes = 400000, cacheDir =
   if (cacheFile && (parsed > 0 || reused === 0)) {
     try {
       ensureDir(path.dirname(cacheFile));
-      writeJson(cacheFile, { version: 1, updatedAt: new Date().toISOString(), notes: nextCache });
+      writeJson(cacheFile, { version: 2, updatedAt: new Date().toISOString(), notes: nextCache });
     } catch (error) {
       logger?.debug(`知识库缓存写入失败：${error.message}`);
     }
@@ -95,6 +98,79 @@ export function pickRecent(notes, { days = 365, limit = 40 } = {}) {
     })
     .sort((a, b) => (Date.parse(b.date) || b.mtime) - (Date.parse(a.date) || a.mtime))
     .slice(0, limit);
+}
+
+/** Days between the note's content date (file date) and now. */
+export function daysAgo(note, now = Date.now()) {
+  const stamp = Date.parse(note.date);
+  return Math.max(0, Math.floor((now - (Number.isFinite(stamp) ? stamp : note.mtime)) / 86400000));
+}
+
+/** Collect date (mtime) freshness: documents ingested within the fresh window. */
+export function isFreshlyCollected(note, { days = 7, now = Date.now() } = {}) {
+  return note.mtime >= now - days * 86400000;
+}
+
+const TERM_NOISE = new Set([
+  "http", "https", "www", "com", "cn", "org", "net", "img", "src", "alt", "png", "jpg", "jpeg",
+  "gif", "webp", "mp", "qq", "qpic", "mmbiz", "appmsg", "data", "id", "wx", "idc", "cdn",
+]);
+
+/** Strip link/URL/HTML noise so the heatmap ranks content words, not scraper artifacts. */
+function cleanTermText(text) {
+  return String(text || "")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/[\w-]+\.(com|cn|net|org|html?|png|jpe?g|gif|webp)\b/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&[a-z]+;/gi, " ");
+}
+
+/**
+ * Deterministic term heatmap over a candidate pool: term x docs x latest date x
+ * freshly-collected count. Replaces per-note LLM tags as the grouping signal —
+ * tags are noisy, cross-document term frequency is not.
+ */
+export function termHeatmap(notes, { top = 15, freshDays = 7, bodyChars = 2000, now = Date.now() } = {}) {
+  const stats = new Map();
+  for (const note of notes) {
+    const text = cleanTermText(`${note.title}\n${note.tags.join(" ")}\n${note.summary}\n${String(note.body || "").slice(0, bodyChars)}`);
+    const stamp = Number.isFinite(Date.parse(note.date)) ? Date.parse(note.date) : note.mtime;
+    const fresh = isFreshlyCollected(note, { days: freshDays, now });
+    for (const term of new Set(buildTerms(text))) {
+      if (TERM_NOISE.has(term)) continue;
+      let item = stats.get(term);
+      if (!item) {
+        item = { term, docs: 0, latest: 0, fresh: 0 };
+        stats.set(term, item);
+      }
+      item.docs += 1;
+      item.latest = Math.max(item.latest, stamp);
+      if (fresh) item.fresh += 1;
+    }
+  }
+  const rows = [...stats.values()]
+    .filter((item) => item.docs >= 2)
+    .sort((a, b) => b.docs - a.docs || b.latest - a.latest)
+    .slice(0, top)
+    .map((item) => ({
+      term: item.term,
+      docs: item.docs,
+      latest_date: new Date(item.latest).toISOString().slice(0, 10),
+      days_ago: Math.max(0, Math.floor((now - item.latest) / 86400000)),
+      fresh: item.fresh,
+    }));
+  const all = rows.map((r) => r.term);
+  return rows.filter((r) => !all.some((other) => other !== r.term && other.includes(r.term)));
+}
+
+/** Render the heatmap as prompt lines; model consumes numbers, never guesses. */
+export function formatHeatmap(rows) {
+  if (!rows.length) return "（无明显热词）";
+  return rows
+    .map((r) => `${r.term}｜${r.docs} 篇｜最近 ${r.latest_date}（${r.days_ago} 天前）｜近 7 天新采集 ${r.fresh} 篇`)
+    .join("\n");
 }
 
 /**
@@ -148,6 +224,8 @@ export function searchKnowledge(notes, { topic, keywords = [], limit = 8, excerp
   return selected.map(({ note, score, matched }, i) => ({
     index: i + 1,
     file: note.file,
+    // 出处优先取资料 frontmatter 的 source（原始剪存来源），没有才回退本地路径。
+    source: note.source || note.file,
     title: note.title,
     date: note.date,
     tags: note.tags,
@@ -342,19 +420,154 @@ function interleave(a, b, limit) {
   return out;
 }
 
+const TITLE_NOISE = /[\s\u3000/\\\-_－—()（）\[\]【】{}「」『』"'‘’“”!！?？.。:：;；、,，]+/g;
+
+function normTitle(text) {
+  return String(text || "").toLowerCase().replace(TITLE_NOISE, "");
+}
+
+/**
+ * 素材充分性闸门（纯代码，不调模型）：任一确定性信号不达标即判不足。
+ * 四个信号：命中条数、摘录总字数、source_hints 覆盖率、时效（90 天内有命中）。
+ * 返回 { ok, reasons[], signals }，reasons 直接进日志说明为什么走外部检索。
+ */
+export function assessSourceSufficiency(sources, { topic, maxSources = 8, gate = {}, now = Date.now(), baseDir = "" } = {}) {
+  const list = Array.isArray(sources) ? sources : [];
+  const reasons = [];
+  const signals = {};
+
+  const minHits = gate.min_hits ?? Math.ceil(maxSources * (Number(gate.min_hits_ratio) || 0.5));
+  signals.hits = list.length;
+  if (signals.hits < minHits) reasons.push(`命中 ${signals.hits} 篇 < ${minHits}`);
+
+  const chars = list.reduce(
+    (n, s) => n + sourceExcerpts(s, { baseDir }).reduce((m, e) => m + String(e).length, 0),
+    0,
+  );
+  signals.excerpt_chars = chars;
+  const minChars = Number(gate.min_excerpt_chars) || 3000;
+  if (chars < minChars) reasons.push(`摘录 ${chars} 字 < ${minChars}`);
+
+  const hints = (topic?.source_hints || []).map(normTitle).filter(Boolean);
+  signals.hint_coverage = 1;
+  if (hints.length) {
+    const titles = list.map((s) => normTitle(s.title));
+    const covered = hints.filter((h) => titles.some((t) => t && (t.includes(h) || h.includes(t)))).length;
+    signals.hint_coverage = covered / hints.length;
+    const minCoverage = Number(gate.min_hint_coverage) || 0.5;
+    if (signals.hint_coverage < minCoverage) {
+      reasons.push(`source_hints 覆盖 ${covered}/${hints.length} < ${minCoverage}`);
+    }
+  }
+
+  const freshDays = Number(gate.fresh_days) || 90;
+  signals.fresh_hits = list.filter((s) => {
+    // 链接条目没有 date 字段，从落地 MD 的 frontmatter 回读。
+    const stamp = Date.parse(s.date || loadSource(s, { baseDir }).date);
+    return Number.isFinite(stamp) && now - stamp <= freshDays * 86400000;
+  }).length;
+  if (signals.fresh_hits === 0) reasons.push(`${freshDays} 天内无命中`);
+
+  return { ok: reasons.length === 0, reasons, signals };
+}
+
+/**
+ * 素材落地：每条素材写 01-step/sources/<index>-<slug>.md（frontmatter 记录
+ * 来源可追溯，正文只放摘录段——版权考虑，不整篇复制）。`01-result.json#sources`
+ * 只留 {index, title, link}（link 为相对文章目录的路径，/ 分隔），其余信息都在
+ * MD 里，回读统一走 loadSource（相对 link 需传 baseDir=文章目录）。
+ * 重复运行同 index+标题覆盖同一文件。
+ */
+export function landSources(articleDir, sources) {
+  const dir = ensureDir(path.join(articleDir, "01-step", "sources"));
+  // parseSimpleYaml 只剥外层引号，不做转义还原：值原样写，首字符是引号才整体加引号。
+  const scalar = (value) => {
+    const text = String(value ?? "");
+    return /^['"]/.test(text.trim()) ? JSON.stringify(text) : text;
+  };
+  return (Array.isArray(sources) ? sources : []).map((source, i) => {
+    const index = source.index || i + 1;
+    const excerpts = sourceExcerpts(source);
+    const file = path.join(dir, `${index}-${slugify(source.title, "source")}.md`);
+    writeText(file, [
+      "---",
+      `title: ${scalar(source.title || "")}`,
+      `origin: ${source.origin || "local"}`,
+      `source: ${scalar(source.source || source.file || "")}`,
+      `date: ${scalar(source.date || "")}`,
+      `score: ${source.score ?? 0}`,
+      "---",
+      "",
+      // 空行分隔：loadSource 按空行切段回读，段落必须一一对应。
+      ...excerpts.flatMap((excerpt) => [String(excerpt).trim(), ""]),
+    ].join("\n"));
+    return {
+      index,
+      title: source.title || "",
+      // 相对文章目录、统一 / 分隔：文章目录本身固定，result.json 只留变化部分。
+      link: path.relative(articleDir, file).split(path.sep).join("/"),
+    };
+  });
+}
+
+/**
+ * 素材字段统一读取：内嵌字段优先（运行中的完整条目 / 旧格式 / --sources-file），
+ * 缺失的（origin/source/date/score/excerpts）从 link 指向的落地 MD 回读。
+ * link 是相对文章目录的相对路径时（现格式），用 baseDir 解析。
+ */
+export function loadSource(source, { baseDir = "" } = {}) {
+  const meta = {
+    title: source?.title || "",
+    origin: source?.origin || "",
+    // 落地前的条目没有 source 字段，file（知识库路径/URL）即出处；链接条目交给落地 MD 回读。
+    source: source?.source || (source?.link ? "" : source?.file) || "",
+    date: source?.date || "",
+    score: source?.score ?? 0,
+    excerpts: Array.isArray(source?.excerpts) && source.excerpts.length ? source.excerpts : [],
+  };
+  if (meta.excerpts.length) return meta;
+  let file = source?.link || source?.file;
+  if (typeof file === "string" && file && baseDir && !path.isAbsolute(file) && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(file)) {
+    file = path.resolve(baseDir, file);
+  }
+  if (typeof file !== "string" || !file || !fs.existsSync(file)) return meta;
+  try {
+    const { data, body } = splitFrontmatter(readText(file));
+    return {
+      title: meta.title || String(data.title || "").trim(),
+      origin: meta.origin || String(data.origin || "").trim(),
+      source: meta.source || String(data.source || "").trim(),
+      date: meta.date || String(data.date || "").trim(),
+      score: meta.score || Number(data.score) || 0,
+      excerpts: String(body)
+        .split(/\r?\n\s*\r?\n/)
+        .map((p) => p.trim())
+        .filter(Boolean),
+    };
+  } catch {
+    return meta;
+  }
+}
+
+/** 素材正文：loadSource 的 excerpts 投影。 */
+export function sourceExcerpts(source, options = {}) {
+  return loadSource(source, options).excerpts;
+}
+
 /** Build compact source blocks for prompts (bounded by characters). */
-export function formatSources(sources, { maxChars = 24000 } = {}) {
+export function formatSources(sources, { maxChars = 24000, baseDir = "" } = {}) {
   const parts = [];
   let used = 0;
   for (const source of sources) {
+    const meta = loadSource(source, { baseDir });
     const block = [
-      `### 素材 ${source.index}：${source.title}`,
-      `- 文件：${source.file}`,
-      `- 日期：${source.date}`,
-      source.tags.length ? `- 标签：${source.tags.join("、")}` : "",
+      `### 素材 ${source.index}：${meta.title}`,
+      `- 文件：${meta.source || source.link || source.file}`,
+      `- 日期：${meta.date}`,
+      source.tags?.length ? `- 标签：${source.tags.join("、")}` : "",
       source.summary ? `- 摘要：${source.summary}` : "",
       "",
-      ...source.excerpts.map((excerpt) => `> ${excerpt.replace(/\n/g, "\n> ")}`),
+      ...meta.excerpts.map((excerpt) => `> ${String(excerpt).replace(/\n/g, "\n> ")}`),
       "",
     ]
       .filter(Boolean)
@@ -406,6 +619,46 @@ export function buildTerms(text) {
     }
   }
   return [...terms].slice(0, 60);
+}
+
+/**
+ * 选题提案校验（防幻觉 + 防重复）：
+ *   - source_hints 必须能对上给定候选标题，对不上的降到末位兜底；
+ *   - 与已写文章标题词面重合 ≥0.6 的打 duplicate_of 标记并剔除（除非全部撞车）。
+ * 查重在这里（写作模型侧）做完，判断模型择题时看到的选项天然不含重复。
+ */
+export function validateProposals(topics, candidates, written = []) {
+  const titleOf = (hint) => String(hint || "").replace(/[《》]/g, "").trim();
+  const match = (hint) =>
+    candidates.find((c) => {
+      const t = titleOf(c.title);
+      const h = titleOf(hint);
+      return h && (t.includes(h) || h.includes(t.slice(0, 18)));
+    });
+  const writtenSets = written
+    .filter((w) => w.title)
+    .map((w) => ({ title: w.title, terms: new Set(buildTerms(w.title)) }))
+    .filter((w) => w.terms.size);
+  const valid = [];
+  const demoted = [];
+  const duplicates = [];
+  for (const topic of topics) {
+    topic.source_hints = [...new Set(topic.source_hints.map((hint) => match(hint)?.title).filter(Boolean))];
+    if (!topic.source_hints.length) {
+      demoted.push(topic);
+      continue;
+    }
+    const terms = new Set(buildTerms(`${topic.title} ${topic.topic}`));
+    for (const w of writtenSets) {
+      let hit = 0;
+      for (const t of w.terms) if (terms.has(t)) hit += 1;
+      if (hit / w.terms.size >= 0.6) topic.duplicate_of = w.title;
+    }
+    if (topic.duplicate_of) duplicates.push(topic);
+    else valid.push(topic);
+  }
+  if (valid.length) return [...valid, ...demoted];
+  return [...duplicates, ...demoted];
 }
 
 function countOccurrences(text, term) {

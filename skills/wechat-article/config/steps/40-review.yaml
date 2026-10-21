@@ -23,13 +23,13 @@ steps:
         auth_header: X-Auth-Key
         apply: issues
         fallback_llm: true
-        timeout: 180000
+        timeout_ms: 180000
     retry_limit: 1
     timeout: 180000
     artifacts:
-      reads: ["05-draft.md"]
-      writes: ["06-review/round-<n>/before.md", "06-review/round-<n>/correct.json", "06-review/round-<n>/after-correct.md"]
-    depends_on: [draft_writing]
+      reads: ["04-draft.md"]
+      writes: ["05-review/round-<n>/before.md", "05-review/round-<n>/correct.json", "05-review/round-<n>/after-correct.md"]
+    depends_on: [length_adjust]
 
   scoring:
     label: 评稿
@@ -48,6 +48,6 @@ steps:
       max_rounds: 3
       until: "total >= pass_score"
     artifacts:
-      reads: ["06-reviewed.md", "05-draft.md"]
-      writes: ["06-review/round-<n>/score.json"]
+      reads: ["05-review/round-<n>/after-correct.md"]
+      writes: ["05-review/round-<n>/score.json"]
     depends_on: [review]

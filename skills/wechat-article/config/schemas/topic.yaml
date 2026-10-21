@@ -17,19 +17,31 @@ schemas:
     input:
       type: "ArticleType"
       mode: "auto|manual"
-      candidates: "Array<{title: string, date: string, summary?: string, tags: string[]}>"
+      # 候选只给标题 + 距今天数 + 新采集标记；时效由代码算好，模型不推断。
+      candidates: "Array<{title: string, days_ago: number, fresh: boolean}>"
+      heatmap: "string"
+      # 已写过的文章（published/ 归档 + draft/ 在写），用于避免重复选题。
+      written: "Array<{title: string, date?: string, type?: string}>"
       count: "number?"
       user_topic: "string?"
       requirements: "string?"
     output:
-      topic: "string(1..30)"
-      title: "string(1..64)"
-      thesis: "string"
-      angle: "string"
-      rationale: "string"
-      keywords: "string[]"
-      source_hints: "string[]"
-      title_candidates: "string[]"
+      # 始终返回 topics 数组（默认 3 个候选，按写作模型评分排列）。
+      # 输出 JSON 结构由 prompts/topic.yaml 的 select_topic_output_schema 渲染进提示词；
+      # 这里只是文档，运行时校验在 validateProposals()。
+      # 最终写哪个由 systemone 择题判定（topic.select_best，choice = 编号）。
+      # 判定结果记在 01-step/proposal.json 的 picked；选定主题 → 01-result.json。
+      # duplicate_of 由代码校验阶段回填（与已写文章标题词面重合 ≥0.6），不由模型输出。
+      topics: "Array<{topic: string(1..30), title: string(1..64), thesis: string, angle: string, rationale: string, score: number(0..100), keywords: string[], source_hints: string[], title_candidates: string[], duplicate_of?: string}>"
+
+  select_best:
+    # 择题判定请求体（buildTopicChoiceBody）：选项是候选编号 1..N。
+    input:
+      topics: "Array<{title: string, score: number}>"
+    output:
+      # picked = { index, title, confidence, model, escalated, first_choice? }，
+      # 记在 01-step/proposal.json；判定不可用或仅 1 个候选时 picked = null。
+      picked: "object?"
 
   gather_materials:
     input:
@@ -38,5 +50,7 @@ schemas:
       knowledge_dirs: "string[]"
       max_sources: "number?"
       lookback_days: "number?"
-    output:
-      sources: "Array<{title: string, path: string, date: string, tags: string[], excerpt: string, score: number}>"
+    # 输出数组并入 01-result.json 的 sources 字段（不再单独成文件）。
+    # 素材正文经 landSources 落 01-step/sources/*.md，链接条目只有三个字段；
+    # 下游读取统一走 loadSource（相对 link 以文章目录为 baseDir 回读）。
+    output: "Array<{index: number, title: string, link: string}>"

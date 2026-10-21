@@ -1,11 +1,69 @@
 # 提示词：初稿阶段
 # key = 配置项名；完整 id = <文件名>.<key>，例如 topic.classify_type。
 #
-# draft_writing 的长模板在 prompts/draft.json（同时包含初稿输入的校验 schema）。
+# 初稿输入的数据结构在 config/schemas/draft.yaml 的 draft_input；
+# 这里只放提示词，不再引用 prompts/draft.json。
 
 prompts:
   draft_writing:
-    template: "prompts/draft.json"
+    system: |
+      你是「{{type_name}}」栏目的作者。{{persona}}
+      文风：{{tone}}。
+      标题风格：{{title_style}}。
+      直接输出 Markdown 正文，不要输出任何解释、前言或结尾寒暄。
+      不要在正文里写「本文将」「下面我们来看」这类元叙述。
+    user: |
+      # 任务
+      根据纲要写一篇完整的微信公众号文章。
+
+      ## 主题
+      {{title}}
+
+      核心判断：{{thesis}}
+      开篇钩子：{{hook}}
+      读者：{{audience}}{{requirements_block}}
+
+      ## 纲要
+      {{outline}}
+
+      ## 必须回应的反方观点
+      {{counterpoint}}
+
+      ## 结尾要落到的结论
+      {{takeaway}}
+
+      ## 可用素材
+      {{materials}}
+
+      ## 硬性要求
+      - 篇幅 {{length.min}}-{{length.max}} 字，不要低于 {{length.min}} 字。
+      - 每个小节至少 2 个自然段，每段 2-5 句；不要一句一段，也不要把同一小节的内容写成要点清单。
+      - 每段不超过 5 行，适配手机阅读。
+      - 使用 Markdown：一级标题只出现一次作为文章标题，小节用 ##。
+      - 必须为纲要里的每个小节写一行 `## 小节标题`，标题文字与纲要一致、顺序不变；不要把小节标题揉进正文句子。
+      - 首行必须是 frontmatter：
+      ---
+      title: {{title}}
+      ---
+      - 正文中按以下格式插入配图标记，全文 {{image.min}}-{{image.max}} 个，必须使用这种格式：
+      [[img:1|中文画面说明|English image prompt]]
+      - 配图位置建议：
+      {{image_hint}}
+      - 不要使用 HTML 标签，不要插入真实图片链接，不要写图片来源。
+      - 引用素材中的事实时自然叙述，不要出现「根据素材 3」这类字样。{{extra}}
+
+      现在开始输出文章：
+    retry: |
+      上一稿不合格（第 {{retry_tag}} 次尝试）：
+      {{errors}}
+
+      修改要求：
+      {{length_fix}}
+
+      保留第一行 frontmatter、所有小节标题和配图标记 [[img:n|中文说明|English prompt]]；只输出完整 Markdown 正文，不要输出任何说明或前后缀。
+
+      ## 原稿
+      {{article}}
 
   length_adjust:
     system: |

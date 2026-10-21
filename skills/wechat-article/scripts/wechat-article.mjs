@@ -8,9 +8,9 @@ import { loadConfig, findType, listTypes, getModelProfile, validateConfig, valid
 import { ensureDir, writeText, writeJson, readJson, readText, exists, uniqueDir, relativeTo, timestamp, slugify } from "./lib/fsx.mjs";
 import { createLogger } from "./lib/log.mjs";
 import { createModelClient } from "./lib/models.mjs";
-import { ARTIFACT, createArticle, detectStartStage, openArticle, pickArticleFile, stageIndex } from "./lib/article-store.mjs";
+import { ARTIFACT, createArticle, detectStartStage, listWrittenArticles, openArticle, pickArticleFile, readArticleMeta, stageIndex } from "./lib/article-store.mjs";
 import { archiveArticle } from "./lib/archive.mjs";
-import { indexKnowledge, pickRecent, searchKnowledge, searchWeKnora, collectSources, buildTerms, formatSources, extractExcerpts } from "./lib/knowledge.mjs";
+import { indexKnowledge, pickRecent, searchKnowledge, searchWeKnora, collectSources, buildTerms, validateProposals, formatSources, landSources, extractExcerpts, daysAgo, isFreshlyCollected, termHeatmap, formatHeatmap } from "./lib/knowledge.mjs";
 import {
   buildTopicPrompt,
   buildOutlinePrompt,
@@ -40,7 +40,8 @@ import { createCorrector, applyCorrections } from "./lib/corrector.mjs";
 import { buildDraftInput, normalizeDraftInput, validateDraftInput, loadDraftTemplate, summarizeDraftInput } from "./lib/draft-input.mjs";
 import { generateImages, resolveImageCount, planImages } from "./lib/illustrate.mjs";
 import { sendEmail, publishToWechat, markdownToHtml, emailShell, bodyOnly, derivePublishStatus } from "./lib/publish.mjs";
-import { classifyArticle, classifyOrFallback, formatOutline } from "./lib/classify.mjs";
+import { classifyArticle, classifyOrFallback, formatOutline, selectBestTopic } from "./lib/classify.mjs";
+import { createRecorder } from "./lib/io-record.mjs";
 import {
   DEFAULT_STEPS_PATH,
   loadSteps,
@@ -49,13 +50,15 @@ import {
   resolveSteps,
   formatModelLabel,
   stepNames,
+  getStep,
+  promptById,
 } from "./lib/steps.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_DIR = path.resolve(__dirname, "..");
 const PROJECT_ROOT = findProjectRoot(process.cwd());
 const VERSION = "1.0.0";
-/** 写初稿前必须准备好的东西：标题 + 大纲 + 相关资料（schema 见 config/prompts/draft.json）。 */
+/** 写初稿前必须准备好的东西：标题 + 大纲 + 相关资料（校验规则见 config/schemas/draft.yaml）。 */
 const DRAFT_INPUT_FILE = ARTIFACT.draftInput;
 
 const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
@@ -68,34 +71,34 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   published/              发布成功后归档的 <YYYYMMDD>-<slug>.zip
 
 命令:
-  auto               入口 1：从知识库最新文档自动选题 + 自动纲要，然后往下写
+  auto               入口 1：从知识库自动选题（目录并集，3 候选 + 评分 → 判断模型择一）→ 判断模型定类 → 自动纲要 → 往下写
   manual             入口 2：用你给的标题 + 提纲，直接往下写（跳过选题与纲要模型）
   run                完整管线（等价 auto，保留兼容）
   topics             列出候选文章；加 --count N --output <目录> 则生成 N 个候选主题（含提纲）的 Markdown
   steps              列出流程节点、处理方法、模型与产物；--type 查看类型覆盖后的配置
   classify           只用判断模型（systemone）根据标题 + 提纲选类型，打印得分
   kbs                列出 WeKnora 知识库（获取 kb_ids）
-  topic              只做选题（自动选题，或 --topic 手动记录）
-  sources            只收集相关资料（本地知识库）
-  outline            只生成纲要（复用文章目录里的选题）
-  bundle             把标题 + 大纲 + 相关资料写成 04-draft-input.json
-  draft              只生成初稿（读 04-draft-input.json，或 --input 指定一份）
+  topic              选题步：选题 → 判断类型 → 收集素材（--topic 可手动指定主题）
+  outline            只生成纲要（复用文章目录里的选题 + 素材）
+  bundle             把标题 + 大纲 + 相关资料写成 03-draft-input.json
+  draft              只生成初稿（读 03-draft-input.json，或 --input 指定一份）
   review             对已有稿件执行核稿/评稿/修正循环
   illustrate         为已有稿件生成并替换配图
   publish            发布已有稿件（邮件 / 公众号草稿）
   validate           校验配置文件（加 --input <file> 可同时校验初稿输入）
   doctor             检查环境与依赖
 
-阶段产物（存在即完成；续跑时看最后一个产物决定从哪继续）:
-  01-topic.json/.md → 02-sources.json → 03-outline.json/.md → 04-draft-input.json
-  → 05-draft.md → 06-reviewed.md → 07-illustrated.md → 08-final.md → 09-publish.json
-  另：06-review/round-N/、images/、state.json、pipeline.log
+阶段产物（存在即完成；续跑时看最后一个产物决定从哪继续，没有 state.json）:
+  01-result.json（选题 + 类型 + sources）→ 02-outline.json/.md → 03-draft-input.json
+  → 04-draft.md → 05-reviewed.md → 06-illustrated.md → 07-final.md → 08-publish.json
+  每步中间文件收进 NN-step/ 子目录（如 01-step/proposal.json、01-step/web-search/*.md）；
+  另：05-review/round-N/、images/、pipeline.log
 
 两个入口（后续步骤完全一致，都可用 --stage 提前停止）:
   # 入口 1：自动选题 + 自动纲要
   node skills/wechat-article/scripts/wechat-article.mjs auto --type ai-news --stage draft
 
-  # 入口 2：手动标题 + 提纲（提纲用「## 小节」+「- 要点」；也可直接给 03-outline.json）
+  # 入口 2：手动标题 + 提纲（提纲用「## 小节」+「- 要点」；也可直接给 02-outline.json）
   node skills/wechat-article/scripts/wechat-article.mjs manual --type ai-news --title "文章标题" --outline-file outline.md
 
 中断续跑（从最后一个产物继续，不会重复已完成阶段）:
@@ -104,7 +107,6 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
 
 分步执行（都在同一篇文章目录里追加产物）:
   node skills/wechat-article/scripts/wechat-article.mjs topic   --type ai-news
-  node skills/wechat-article/scripts/wechat-article.mjs sources --article <slug>
   node skills/wechat-article/scripts/wechat-article.mjs outline --article <slug>
   node skills/wechat-article/scripts/wechat-article.mjs draft   --article <slug>
 
@@ -113,17 +115,18 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   --defaults <path>      全局默认配置，默认 config/defaults.yaml
   --models <path>        模型总表，默认 config/models.yaml
   --steps <path>         步骤配置，默认 config/steps.yaml
-  --type <id>            文章类型 id（也可在 .env 设置 PB_ARTICLE_TYPE；都缺省时由判断模型自动分类）
+  --type <id>            文章类型 id（历史遗留，现仅作判断模型失败时的回退；定类由 systemone 完成）
   --article <slug>       选择/续跑 draft 下的文章；latest = 最近一篇；分步命令省略时自动选中唯一一篇
   --file <path>          review/illustrate/publish 直接指定稿件文件（也可继续用 --article <path>）
   --slug <name>          新建文章时覆盖目录名（默认取标题的 slug）
   --title <text>         手动入口的文章标题
-  --outline-file <path>  手动入口 / classify 的提纲文件（.md 或 .json）；分步时也可复用自动生成的 03-outline.json
+  --outline-file <path>  手动入口 / classify 的提纲文件（.md 或 .json）；分步时也可复用自动生成的 02-outline.json
   --outline <text>       手动入口的内联提纲（Markdown 或 JSON）
   --topic <text>         手动指定主题（省略则自动选题；手动时跳过选题模型调用）
+  --from-proposal <n>    复用文章目录里 01-step/proposal.json 的第 n 个候选主题（需配合 --article）
   --requirements <text>  手动补充写作要求
-  --topic-file <path>    复用已有选题 JSON（如 01-topic.json）
-  --sources-file <path>  复用已有素材 JSON（如 02-sources.json）
+  --topic-file <path>    复用已有选题 JSON（如 01-result.json）
+  --sources-file <path>  复用已有素材 JSON（数组，跳过检索；照常落地 01-step/sources/ 并转成链接条目）
   --input <path>         初稿输入 JSON（标题 + 大纲 + 资料）；draft / run 可用，跳过前置步骤
   --model <profile>      覆盖写作模型 profile
   --review-model <p>     覆盖评稿模型 profile
@@ -133,7 +136,7 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   --images <n>           配图数量（1-5）
   --count <n>            topics：生成多少个候选主题（含提纲，1-10）
   --md                   topics：把候选主题以 Markdown 打印到终端
-  --stage <name>         终止阶段：topic|sources|outline|bundle|draft|review|illustrate|publish
+  --stage <name>         终止阶段：topic|outline|bundle|draft|review|illustrate|publish
   --mock                 使用 mock 模型（不发真实请求，用于验证流程）
   --verbose              输出调试日志
   --help                 显示帮助
@@ -155,15 +158,15 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   node skills/wechat-article/scripts/wechat-article.mjs topics --type ai-insight
   node skills/wechat-article/scripts/wechat-article.mjs run --type ai-insight --mock
   node skills/wechat-article/scripts/wechat-article.mjs run --type ai-news --topic "某模型开源" --requirements "重点写对开发者的影响"
-  node skills/wechat-article/scripts/wechat-article.mjs draft --input output/wa-demo/04-draft-input.json
+  node skills/wechat-article/scripts/wechat-article.mjs draft --input output/wa-demo/03-draft-input.json
   node skills/wechat-article/scripts/wechat-article.mjs review --article my-article-slug
   node skills/wechat-article/scripts/wechat-article.mjs publish --article my-article-slug --to me@example.com
   node skills/wechat-article/scripts/wechat-article.mjs classify --title "某模型开源" --outline-file outline.md
 
 配置：config/defaults.yaml（全局默认）+ config/models.yaml（模型）+ config/article-types.yaml（类型注册表）+ config/types/<id>.yaml（类型明细）
 流程节点：config/steps.yaml（处理方法、模型、I/O、重试、超时、默认提示词）
-判断模型：SYSTEMONE_BASE_URL / SYSTEMONE_API_KEY / SYSTEMONE_MODEL（未配置时回退 classifier.default_type）
-提示词与初稿校验规则：skills/wechat-article/config/prompts/draft.json（prompt + schema）
+判断模型：SYSTEMONE_BASE_URL / SYSTEMONE_MODEL1（一次）/ SYSTEMONE_MODEL2（二次，置信度 < classifier.escalate_below 时）；SYSTEMONE_API_KEY 可选，配置了才发送；未配置端点时回退 classifier.default_type
+初稿提示词：config/prompts/draft.yaml（draft_writing）；初稿校验规则：config/schemas/draft.yaml（draft_input）
 `;
 
 async function main() {
@@ -206,7 +209,6 @@ async function main() {
     case "auto":
     case "manual":
     case "topic":
-    case "sources":
     case "outline":
     case "draft":
     case "bundle":
@@ -261,7 +263,7 @@ function cmdValidate(config, options = {}) {
   console.table(rows);
   const classifier = config.classifier || {};
   console.log(
-    `判断模型：${classifier.enabled ? "启用" : "禁用"}（${classifier.model || "systemone"} @ ${classifier.base_url || "未配置"}，默认类型 ${classifier.default_type || "未设置"}）`,
+    `判断模型：${classifier.enabled ? "启用" : "禁用"}（${classifier.model || "systemone"}${classifier.deep ? ` → 二次 ${classifier.deep.model}（< ${classifier.escalate_below ?? 0.65}）` : ""} @ ${classifier.base_url || "未配置"}，默认类型 ${classifier.default_type || "未设置"}）`,
   );
   if (config.steps) {
     const steps = resolveSteps(config.steps);
@@ -454,11 +456,11 @@ async function cmdDoctor(config, options) {
   const classifier = config.classifier || {};
   if (!classifier.enabled) {
     add("判断模型 systemone", true, "已禁用（classifier.enabled=false）");
-  } else if (!classifier.base_url || !classifier.api_key) {
+  } else if (!classifier.base_url) {
     add(
       "判断模型 systemone",
       true,
-      `未配置（缺 ${!classifier.base_url ? "SYSTEMONE_BASE_URL" : ""}${!classifier.base_url && !classifier.api_key ? " / " : ""}${!classifier.api_key ? "SYSTEMONE_API_KEY" : ""}），将回退 ${classifier.default_type || "（无默认类型）"}`,
+      "未配置（缺 SYSTEMONE_BASE_URL），将回退 " + (classifier.default_type || "（无默认类型）"),
     );
   } else {
     add("判断模型 systemone", true, `${classifier.model} @ ${classifier.base_url}`);
@@ -580,13 +582,19 @@ async function cmdClassify(config, options) {
   const result = await classifyArticle({ config, title, outline, logger, mock: asBool(options.mock) });
   const fallback = config.classifier?.default_type || "";
 
-  console.log(`判断模型：${config.classifier?.model || "systemone"} @ ${config.classifier?.base_url || "（未配置）"}`);
+  const chain = config.classifier?.deep
+    ? `${config.classifier.model} → 二次 ${config.classifier.deep.model}（置信度 < ${config.classifier.escalate_below ?? 0.65} 时）`
+    : config.classifier?.model || "systemone";
+  console.log(`判断模型：${chain} @ ${config.classifier?.base_url || "（未配置）"}`);
   if (outline) console.log(`提纲：${outline.split(/\r?\n/).filter(Boolean).length} 行`);
   const scores = Object.entries(result.scores || {});
   if (scores.length) console.table(scores.map(([id, score]) => ({ type: id, score })));
 
   if (result.ok) {
-    console.log(`选择：${result.type}（置信度 ${result.confidence}）`);
+    console.log(`选择：${result.type}（置信度 ${result.confidence}${result.first ? "，二次判断" : ""}）`);
+    if (result.escalated && result.first) {
+      console.log(`一次判断：${result.first.type}（置信度 ${result.first.confidence}，模型 ${result.first.model}）`);
+    }
     if (result.reason) console.log(`理由：${result.reason}`);
     const min = Number(config.classifier?.min_confidence ?? 0.5);
     if (result.confidence < min) {
@@ -633,7 +641,8 @@ async function cmdTopics(config, options) {
       })
     : [];
   const candidates = await buildCandidates({ type, logger }, notes);
-  const recent = pickRecent(candidates, { days: type.topic.lookback_days || type.knowledge.lookback_days, limit: type.topic.candidates || 20 });
+  const w = topicWindows(type);
+  const recent = pickRecent(candidates, { days: w.candidateDays, limit: w.maxCandidates });
 
   const count = clamp(options.count ?? options.n ?? 0, 0, 10);
   const wantsProposals = count > 0 || Boolean(options.output) || asBool(options.md);
@@ -647,7 +656,8 @@ async function cmdTopics(config, options) {
       chars: note.length,
     }));
     console.table(rows);
-    console.log(`\n共 ${candidates.length} 篇（来源 ${type.knowledge.source}），近 ${type.topic.lookback_days || type.knowledge.lookback_days} 天 ${recent.length} 篇。`);
+    const freshRows = rows.length ? recent.filter((note) => isFreshlyCollected(note, { days: w.freshDays })).length : 0;
+    console.log(`\n共 ${candidates.length} 篇（来源 ${type.knowledge.source}），近 ${w.candidateDays} 天文件日期 ${recent.length} 篇，其中近 ${w.freshDays} 天新采集 ${freshRows} 篇。`);
     console.log(`提示：加 --count 3 --output output 可以生成 3 个候选主题（含提纲）的 Markdown；或运行 topic --type ${type.id} 自动选题。`);
     return;
   }
@@ -656,6 +666,7 @@ async function cmdTopics(config, options) {
   const models = createModelClient(config, logger);
   const pool = recent.length ? recent : candidates;
   const proposals = await generateProposals({
+    config,
     type,
     pool,
     count: total,
@@ -729,6 +740,7 @@ function normalizeTopic(raw) {
     thesis: String(raw?.thesis || "").trim(),
     angle: String(raw?.angle || "").trim(),
     rationale: String(raw?.rationale || "").trim(),
+    score: asNumber(raw?.score) || 0,
     keywords: Array.isArray(raw?.keywords) ? raw.keywords.map(String) : [],
     source_hints: Array.isArray(raw?.source_hints) ? raw.source_hints.map(String) : [],
     title_candidates: Array.isArray(raw?.title_candidates) ? raw.title_candidates.map(String) : [],
@@ -738,9 +750,37 @@ function normalizeTopic(raw) {
   return topic;
 }
 
+/** 双窗口配置：大样本按文件日期，小样本按采集日期（mtime）。见 docs/topic-selection.md。 */
+function topicWindows(type) {
+  const cfg = type.topic || {};
+  return {
+    candidateDays: asNumber(cfg.candidate_days) || asNumber(cfg.lookback_days) || 15,
+    freshDays: asNumber(cfg.fresh_days) || 7,
+    maxCandidates: asNumber(cfg.max_candidates) || asNumber(cfg.candidates) || 40,
+    proposals: clamp(asNumber(cfg.proposals) || 3, 1, 5),
+  };
+}
+
+/** 候选池 → 模型输入：只有标题 + 距今天数 + 新采集标记，外加确定性词频热度表。 */
+function buildTopicInput(type, notes) {
+  const { candidateDays, freshDays, maxCandidates } = topicWindows(type);
+  const now = Date.now();
+  const recent = pickRecent(notes, { days: candidateDays, limit: maxCandidates });
+  const pool = recent.length ? recent : notes.slice(0, maxCandidates);
+  const candidates = pool.map((note) => ({
+    note,
+    title: note.title,
+    daysAgo: daysAgo(note, now),
+    fresh: isFreshlyCollected(note, { days: freshDays, now }),
+  }));
+  const heatmap = termHeatmap(pool, { top: 15, freshDays, now });
+  return { pool, candidates, heatmap, heatmapText: formatHeatmap(heatmap) };
+}
+
 /** Step 1 of the pipeline: pick N topics, then give each one an outline (no article retrieval). */
-async function generateProposals({ type, pool, count, models, logger, mock, options }) {
+async function generateProposals({ config, type, pool, count, models, logger, mock, options }) {
   const requirements = options.requirements ? String(options.requirements) : "";
+  const written = config ? listWrittenArticles(config) : [];
 
   if (mock) {
     return Array.from({ length: count }, (_, i) => ({
@@ -762,7 +802,17 @@ async function generateProposals({ type, pool, count, models, logger, mock, opti
   }
 
   let rawTopics = [];
-  const prompt = buildTopicPrompt({ type, candidates: pool, mode: "auto", userRequirements: requirements, count });
+  const input = buildTopicInput(type, pool);
+  const prompt = buildTopicPrompt({
+    prompt: promptById(config.steps, "topic.select_topic"),
+    type,
+    candidates: input.candidates,
+    heatmap: input.heatmapText,
+    written,
+    mode: "auto",
+    userRequirements: requirements,
+    count,
+  });
   try {
     const result = await models.json(options.model || type.model, { ...prompt, label: "topic" });
     rawTopics = Array.isArray(result.topics) ? result.topics : [result];
@@ -778,17 +828,18 @@ async function generateProposals({ type, pool, count, models, logger, mock, opti
     }));
   }
 
-  const topics = rawTopics.map(normalizeTopic).filter((t) => t.topic).slice(0, count);
-  for (const note of pool) {
+  let topics = rawTopics.map(normalizeTopic).filter((t) => t.topic);
+  topics = validateProposals(topics, input.candidates, written).slice(0, count);
+  for (const c of input.candidates) {
     if (topics.length >= count) break;
-    if (topics.some((t) => t.topic === note.title)) continue;
+    if (topics.some((t) => t.topic === c.title)) continue;
     topics.push(
       normalizeTopic({
-        topic: note.title,
-        title: note.title,
-        thesis: note.summary || "",
+        topic: c.title,
+        title: c.title,
+        thesis: c.note.summary || "",
         angle: "基于知识库最新文章",
-        source_hints: [note.title],
+        source_hints: [c.title],
       }),
     );
   }
@@ -894,18 +945,27 @@ async function cmdPipeline(config, options, command) {
     throw new Error("--output 已取消：文章根目录由环境变量 BASE_OUTPUT_FOLDER 决定；用 --article <slug> 选择或续跑某篇文章");
   }
 
-  // 先定位文章目录，这样 --type 也可以从 state.json 里推断。
+  // 先定位文章目录，这样 --type 也可以从 01-result.json 里推断。
   const selector = options.article && options.article !== true ? String(options.article) : "";
   const existing = selector ? openArticle(config, selector) : null;
-  const typeInfo = await resolveTypeForEntry(config, options, {
+  let typeInfo = await resolveTypeForEntry(config, options, {
     title: entryTitle,
     command,
     existing,
   });
-  const type = findType(config, typeInfo.typeId);
-  if (!type.enabled) throw new Error(`文章类型 ${type.id} 已禁用`);
+  let type;
+  if (typeInfo.deferred) {
+    // auto 入口：选题阶段用所有启用类型知识库的并集，定类在选题之后由判断模型完成。
+    type = autoTopicType(config);
+    if (!type.knowledge_dirs.length) {
+      throw new Error("启用类型都没有配置 knowledge_base_path，无法自动选题");
+    }
+  } else {
+    type = findType(config, typeInfo.typeId);
+    if (!type.enabled) throw new Error(`文章类型 ${type.id} 已禁用`);
+  }
 
-  applyKnowledgeSource(config, type, options);
+  if (!typeInfo.deferred) applyKnowledgeSource(config, type, options);
 
   const verbose = asBool(options.verbose);
   const mock = asBool(options.mock);
@@ -916,7 +976,7 @@ async function cmdPipeline(config, options, command) {
   const inputArg = options.input || options["draft-input"];
   const inputProvided = Boolean(inputArg);
   if (inputProvided && !["draft", "run"].includes(command)) {
-    throw new Error("--input 只用于 draft / run：给它一份 04-draft-input.json（标题 + 大纲 + 资料）");
+    throw new Error("--input 只用于 draft / run：给它一份 03-draft-input.json（标题 + 大纲 + 资料）");
   }
   // Entry 2: the user supplies the title (and outline); the topic model is skipped.
   if (manualEntry && !options.topic && entryTitle) options.topic = entryTitle;
@@ -927,7 +987,7 @@ async function cmdPipeline(config, options, command) {
 
   // 文章目录：--article <slug> 指定/续跑；manual 与 --input 直接新建；
   // 其余分步命令要求 draft/ 下已有文章（只有一篇时自动选中）。
-  const stepCommands = ["sources", "outline", "bundle", "draft", "review", "illustrate", "publish"];
+  const stepCommands = ["outline", "bundle", "draft", "review", "illustrate", "publish"];
   let article = existing;
   if (article) {
     // 续跑已有文章，后面按最后一个产物判断从哪开始。
@@ -945,9 +1005,12 @@ async function cmdPipeline(config, options, command) {
     label: type.id,
   });
 
-  const previousState = article ? readJsonSafe(path.join(article.dir, ARTIFACT.state)) : null;
+  // LLM/API 请求落地：文章目录建立前先进内存缓冲，bindArticle 时 flush 到 01-step/llm/。
+  const recorder = createRecorder();
+
   const ctx = {
     config,
+    recorder,
     type,
     logger,
     verbose,
@@ -956,6 +1019,7 @@ async function cmdPipeline(config, options, command) {
     mock,
     stamp,
     options,
+    // 纯内存的执行摘要（仅用于收尾打印），不落盘：进度一律以产出文件为准
     state: {
       version: VERSION,
       article: article ? { ...article.article, title: article.article.title || entryTitle } : null,
@@ -966,7 +1030,7 @@ async function cmdPipeline(config, options, command) {
       startedAt: new Date().toISOString(),
       outputDir: article?.dir || "",
       mock,
-      stages: { ...(previousState?.stages || {}) },
+      stages: {},
     },
   };
 
@@ -978,29 +1042,34 @@ async function cmdPipeline(config, options, command) {
     ctx.state.article = { ...created.article, title: created.article.title || ctx.topic?.title || "" };
     logger = createLogger({ file: path.join(created.dir, ARTIFACT.log), verbose, label: type.id });
     ctx.logger = logger;
-    ctx.models = createModelClient(config, logger);
-    writeJson(path.join(created.dir, ARTIFACT.state), ctx.state);
+    ctx.models = createModelClient(config, logger, recorder);
+    recorder.setStepDir(path.join(created.dir, "01-step"));
     logger.info(`文章目录：${created.dir}`);
   }
 
-  logger.step(`管线启动：${type.name}（${type.id}）`);
+  logger.step(
+    typeInfo.deferred
+      ? `管线启动：类型待定（选题后由判断模型定类；知识库并集 ${type.knowledge_dirs.length} 个目录）`
+      : `管线启动：${type.name}（${type.id}）`,
+  );
   logger.info(`入口：${manualEntry ? "手动（标题 + 提纲）" : "自动（基于知识库选题 + 自动纲要）"}`);
   logger.info(`类型来源：${TYPE_SOURCE_LABEL[typeInfo.source] || typeInfo.source}`);
   if (typeInfo.classification?.reason) logger.info(`分类理由：${typeInfo.classification.reason}`);
   logger.info(`文章根目录：${config.project.base_output_folder}`);
   logger.info(`知识来源：${type.knowledge.source}${type.knowledge.source !== "local" ? `（WeKnora ${type.knowledge.weknora.kb_ids.length} 个知识库）` : ""}`);
-  logger.info(`模型：写作=${options.model || type.model}，评稿=${options["review-model"] || type.review.model || type.model}`);
+  logger.info(`模型：写作=${options.model || type.model}，评稿=${options["review-model"] || type.review?.model || type.model}`);
 
   try {
-    ctx.models = createModelClient(config, logger);
+    ctx.models = createModelClient(config, logger, recorder);
+    if (article) recorder.setStepDir(path.join(article.dir, "01-step"));
 
     const resume = Boolean(article?.existing);
     const resumeStage = fullPipeline && resume ? detectStartStage(article.dir) : "topic";
     const resumeIndex = stageIndex(resumeStage);
     if (resume) logger.info(`断点续跑：从 ${resumeStage} 阶段开始`);
 
-    // 只在可能真的要用知识库时才建索引；已有 01/02/03 产物时直接读文件。
-    const earlyFiles = [ARTIFACT.topic, ARTIFACT.sources, ARTIFACT.outline];
+    // 只在可能真的要用知识库时才建索引；已有 01/02 产物时直接读文件。
+    const earlyFiles = [ARTIFACT.topic, ARTIFACT.outline];
     const earlyMissing = !article || earlyFiles.some((name) => !exists(path.join(article.dir, name)));
     const needLocal = type.knowledge.source === "local" || type.knowledge.source === "both";
     if (!inputProvided) {
@@ -1022,28 +1091,108 @@ async function cmdPipeline(config, options, command) {
 
     if (!inputProvided && !(fullPipeline && resumeIndex > stageIndex("bundle"))) {
       // Stage 1: topic -------------------------------------------------
-      topic = await resolveTopic(ctx, ctx.notes || [], resume);
+      const selection = await resolveTopic(ctx, ctx.notes || [], resume);
+      topic = selection.topic;
       ctx.topic = topic;
+
+      // deferred 入口：拿到选题标题后，由判断模型定类，类型从此决定下游所有步骤。
+      if (typeInfo.deferred) {
+        const outcome = await classifyOrFallback({
+          config,
+          title: topic.title || topic.topic,
+          outline: topic.thesis || "",
+          logger,
+          mock,
+          recorder,
+        });
+        let typeId = "";
+        let source = outcome.source;
+        if (outcome.source === "classifier" && outcome.typeId) {
+          typeId = outcome.typeId;
+        } else if (typeInfo.hint) {
+          typeId = typeInfo.hint.typeId;
+          source = typeInfo.hint.source;
+          logger.info(`判断模型未定类，回退${TYPE_SOURCE_LABEL[source] || source}：${typeId}`);
+        } else if (outcome.typeId) {
+          typeId = outcome.typeId;
+        }
+        if (!typeId) {
+          throw new Error(
+            `无法确定文章类型：判断模型未返回结果（${outcome.result?.reason || "未配置或不可用"}），且 classifier.default_type 和 --type 均未配置`,
+          );
+        }
+        type = findType(config, typeId);
+        if (!type.enabled) throw new Error(`文章类型 ${type.id} 已禁用`);
+        applyKnowledgeSource(config, type, options);
+        typeInfo = { typeId, source };
+        ctx.type = type;
+        ctx.state.type = type.id;
+        ctx.state.typeName = type.name;
+        ctx.state.typeSource = source;
+        ctx.state.classification = outcome.result || undefined;
+        // 素材检索收窄到定类后的知识库目录（并集里其他类型的内容不作素材）。
+        const underDirs = (file) =>
+          type.knowledge_dirs.some((dir) => file === dir || file.startsWith(`${dir}/`) || file.startsWith(`${dir}${path.sep}`));
+        const narrowed = (ctx.notes || []).filter((note) => underDirs(note.file));
+        if (narrowed.length) ctx.notes = narrowed;
+        if (selection.proposals) {
+          selection.proposals.type = type.id;
+          selection.proposals.classification = {
+            type: typeId,
+            source,
+            confidence: outcome.result?.confidence,
+            reason: outcome.result?.reason,
+          };
+        }
+        logger.info(`判断模型定类：${type.name}（${type.id}，来源 ${TYPE_SOURCE_LABEL[source] || source}）`);
+      }
+
       if (!article) {
         bindArticle(createArticle(config, { title: topic.title || topic.topic, slug: options.slug, type, entry: command }));
       }
-      writeJson(path.join(article.dir, ARTIFACT.topic), topic);
+      // 素材收集属于选题步：先把素材收齐，再一次性写 01-result.json。
+      const gathered = await resolveSources(ctx, topic, resume);
+      const counts = gathered.reduce((acc, s) => ({ ...acc, [s.origin || "local"]: (acc[s.origin || "local"] || 0) + 1 }), {});
+      const breakdown = Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(" + ") || "none";
+      logger.info(`收集到 ${gathered.length} 篇素材（${breakdown}）：${gathered.map((s) => s.title.slice(0, 24)).join(" / ") || "（无）"}`);
+      // 正文落 01-step/sources/*.md，01-result.json#sources 只留 {index,title,link}。
+      sources = landSources(article.dir, gathered);
+      ctx.sources = sources;
+
+      // 01 步对外只有 01-result.json（标题 + 类型 + 素材）；候选、人读版等中间文件收进 01-step/
+      ensureDir(path.join(article.dir, "01-step"));
+      const classification = ctx.state.classification || null;
+      const topicResult = {
+        step: "topic",
+        slug: article.slug,
+        generated_at: new Date().toISOString(),
+        ...topic,
+        type: {
+          id: type.id,
+          name: type.name,
+          source: ctx.state.typeSource,
+          confidence: classification?.confidence,
+          reason: classification?.reason,
+        },
+        picked: selection.proposals?.picked || null,
+        sources,
+      };
+      writeJson(path.join(article.dir, ARTIFACT.topic), topicResult);
       writeText(path.join(article.dir, ARTIFACT.topicMd), renderTopicMarkdown(topic));
+      if (selection.proposals) {
+        writeJson(path.join(article.dir, ARTIFACT.topicProposal), selection.proposals);
+      }
       logger.step(`选题完成：《${topic.title || topic.topic}》`);
-      ctx.state.stages.topic = { ok: true, title: topic.title || topic.topic, reused: Boolean(ctx.topicReused) };
+      ctx.state.stages.topic = {
+        ok: true,
+        title: topic.title || topic.topic,
+        reused: Boolean(ctx.topicReused),
+        sources: sources.length,
+      };
       if (stopStage === "topic") return finish(ctx);
 
-      // Stage 2: sources -----------------------------------------------
-      sources = await resolveSources(ctx, topic, resume);
-      ctx.sources = sources;
-      const counts = sources.reduce((acc, s) => ({ ...acc, [s.origin || "local"]: (acc[s.origin || "local"] || 0) + 1 }), {});
-      const breakdown = Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(" + ") || "none";
-      logger.info(`收集到 ${sources.length} 篇素材（${breakdown}）：${sources.map((s) => s.title.slice(0, 24)).join(" / ") || "（无）"}`);
-      writeJson(path.join(article.dir, ARTIFACT.sources), sources);
-      ctx.state.stages.sources = { ok: true, count: sources.length, source: type.knowledge.source };
-      if (stopStage === "sources") return finish(ctx);
-
-      // Stage 3: outline -----------------------------------------------
+      // Stage 2: outline -----------------------------------------------
+      recorder.setStepDir(path.join(article.dir, "02-step"));
       outline = manualEntry ? buildManualOutline(ctx, topic) : await resolveOutline(ctx, sources, resume);
       ctx.outline = outline;
       writeJson(path.join(article.dir, ARTIFACT.outline), outline);
@@ -1063,7 +1212,7 @@ async function cmdPipeline(config, options, command) {
     } else {
       // 续跑：前面的产物直接读回来，供后续阶段使用。
       ctx.topic = readJsonSafe(path.join(article.dir, ARTIFACT.topic)) || { title: article.article?.title || "" };
-      ctx.sources = readJsonSafe(path.join(article.dir, ARTIFACT.sources)) || [];
+      ctx.sources = ctx.topic.sources || [];
       ctx.outline = readJsonSafe(path.join(article.dir, ARTIFACT.outline)) || { title: ctx.topic.title, outline: [], image_plan: [] };
       if (exists(path.join(article.dir, ARTIFACT.draftInput))) {
         ctx.draftInput = normalizeDraftInput(readJson(path.join(article.dir, ARTIFACT.draftInput)));
@@ -1076,7 +1225,8 @@ async function cmdPipeline(config, options, command) {
       ctx.state.stages.bundle = { ok: true, file: path.join(article.dir, ARTIFACT.draftInput) };
     }
 
-    // Stage 4: draft ---------------------------------------------------
+    // Stage 3: draft ---------------------------------------------------
+    recorder.setStepDir(path.join(article.dir, "04-step"));
     let articleText;
     if (fullPipeline && resumeIndex > stageIndex("draft")) {
       articleText = readText(path.join(article.dir, ARTIFACT.draft));
@@ -1093,7 +1243,8 @@ async function cmdPipeline(config, options, command) {
     }
     if (stopStage === "draft") return finish(ctx);
 
-    // Stage 5: review loop --------------------------------------------
+    // Stage 4: review loop --------------------------------------------
+    recorder.setStepDir(path.join(article.dir, "05-step"));
     if (fullPipeline && resumeIndex > stageIndex("review")) {
       articleText = readText(path.join(article.dir, ARTIFACT.reviewed));
       ctx.state.stages.review = { ok: true, reused: true, file: path.join(article.dir, ARTIFACT.reviewed) };
@@ -1116,7 +1267,8 @@ async function cmdPipeline(config, options, command) {
     }
     if (stopStage === "review") return finish(ctx);
 
-    // Stage 6: illustrations ------------------------------------------
+    // Stage 5: illustrations ------------------------------------------
+    recorder.setStepDir(path.join(article.dir, "06-step"));
     if (fullPipeline && resumeIndex > stageIndex("illustrate")) {
       articleText = readText(path.join(article.dir, ARTIFACT.illustrated));
       ctx.images = readJsonSafe(path.join(article.dir, ARTIFACT.images)) || [];
@@ -1138,7 +1290,8 @@ async function cmdPipeline(config, options, command) {
     }
     if (stopStage === "illustrate") return finish(ctx);
 
-    // Stage 7: publish + archive --------------------------------------
+    // Stage 6: publish + archive --------------------------------------
+    recorder.setStepDir(path.join(article.dir, "07-step"));
     let publishResult = null;
     if (fullPipeline && resumeIndex > stageIndex("publish")) {
       publishResult = readJsonSafe(path.join(article.dir, ARTIFACT.publish));
@@ -1160,7 +1313,7 @@ async function cmdPipeline(config, options, command) {
       });
       ctx.state.stages.archive = { ok: true, zip: archived.archive?.zip };
       ctx.archivedZip = archived.archive?.zip;
-      // 目录已被打包删除，后续不能再往里写 state.json。
+      // 目录已被打包删除，收尾只打印，不再写任何文件。
       ctx.outputDir = "";
     } else {
       logger.info(`未归档：发布状态为 ${publishResult?.status || "unknown"}（只有真实投递成功才打包并清理 draft）`);
@@ -1172,14 +1325,12 @@ async function cmdPipeline(config, options, command) {
     if (verbose && error.stack) console.error(error.stack);
     ctx.state.error = error.message;
     ctx.state.finishedAt = new Date().toISOString();
-    if (ctx.outputDir) writeJson(path.join(ctx.outputDir, ARTIFACT.state), ctx.state);
     process.exitCode = 1;
   }
 }
 
 function finish(ctx) {
   ctx.state.finishedAt = new Date().toISOString();
-  if (ctx.outputDir) writeJson(path.join(ctx.outputDir, ARTIFACT.state), ctx.state);
   console.log("\n=== 管线完成 ===");
   console.log(`类型：${ctx.type.name}`);
   if (ctx.state.article?.slug) console.log(`文章：${ctx.state.article.slug}`);
@@ -1201,12 +1352,34 @@ async function resolveTopic(ctx, notes, resume) {
   const file = options["topic-file"]
     ? path.resolve(PROJECT_ROOT, String(options["topic-file"]))
     : resume
-      ? path.join(outputDir, "01-topic.json")
+      ? path.join(outputDir, ARTIFACT.topic)
       : null;
   if (file && fs.existsSync(file)) {
     logger.info(`复用已有选题：${file}`);
     ctx.topicReused = true;
-    return readJson(file);
+    return { topic: normalizeTopic(readJson(file)), proposals: null };
+  }
+  if (options["from-proposal"]) {
+    const idx = clamp(asNumber(options["from-proposal"]) || 1, 1, 10);
+    const value = String(options["from-proposal"]);
+    const proposalFile = path.isAbsolute(value)
+      ? value
+      : outputDir
+        ? path.join(outputDir, ARTIFACT.topicProposal)
+        : null;
+    if (!proposalFile) {
+      throw new Error("--from-proposal 需要配合 --article <slug>（选题候选存在文章目录里）");
+    }
+    if (!fs.existsSync(proposalFile)) {
+      throw new Error(`找不到选题候选：${proposalFile}（先跑一次自动选题，或改用 --topic）`);
+    }
+    const payload = readJson(proposalFile);
+    const chosen = (payload.topics || [])[idx - 1];
+    if (!chosen) {
+      throw new Error(`候选第 ${idx} 个不存在（文件里共 ${(payload.topics || []).length} 个）`);
+    }
+    logger.info(`从候选选题 #${idx}：《${chosen.title || chosen.topic}》`);
+    return { topic: normalizeTopic(chosen), proposals: null };
   }
   const candidates = await buildCandidates(ctx, notes);
   return selectTopic(ctx, candidates);
@@ -1240,16 +1413,52 @@ async function buildCandidates(ctx, notes) {
 
 async function resolveSources(ctx, topic, resume) {
   const { options, logger, outputDir, type } = ctx;
-  const file = options["sources-file"]
-    ? path.resolve(PROJECT_ROOT, String(options["sources-file"]))
-    : resume
-      ? path.join(outputDir, "02-sources.json")
-      : null;
-  if (file && fs.existsSync(file)) {
+  if (options["sources-file"]) {
+    const file = path.resolve(PROJECT_ROOT, String(options["sources-file"]));
+    if (!fs.existsSync(file)) throw new Error(`--sources-file 不存在：${file}`);
     logger.info(`复用已有素材：${file}`);
     return readJson(file);
   }
-  return collectSources(type, { topic, notes: ctx.notes, logger, mock: ctx.mock });
+  // 素材收在 01-result.json 的 sources 字段里：续跑时收过就不重复检索。
+  const resultFile = path.join(outputDir, ARTIFACT.topic);
+  if (resume && fs.existsSync(resultFile)) {
+    const prev = readJson(resultFile).sources;
+    if (Array.isArray(prev) && prev.length) {
+      logger.info(`复用已有素材：${ARTIFACT.topic}#sources（${prev.length} 条）`);
+      return prev;
+    }
+  }
+  return mergeWebSearchSources(ctx, topic, await collectSources(type, { topic, notes: ctx.notes, logger, mock: ctx.mock }));
+}
+
+/**
+ * 通道 2：充分性闸门判定本地不足时，用 opencode websearch 补外部素材。
+ * 任何失败只 warn（serve 起不来 / 全组检索失败都不阻塞），mock 永不联网。
+ * 外部 Markdown 落地在 01-step/web-search/，与 01-result.json#sources 同属选题步。
+ */
+async function mergeWebSearchSources(ctx, topic, local) {
+  const { config, type, logger, mock, outputDir } = ctx;
+  const cfg = type.knowledge?.["web-search"] || {};
+  if (!cfg.enabled || mock || !outputDir) return local;
+  try {
+    const { gatherWebSearch } = await import("./lib/web-search.mjs");
+    const step = getStep(config.steps, "gather_materials");
+    const webSearch = await gatherWebSearch({
+      topic,
+      localSources: local,
+      articleDir: outputDir,
+      cfg,
+      model: step?.handler_options?.web_search_model,
+      maxSources: Number(type.knowledge?.max_sources) || 8,
+      logger,
+      recorder: ctx.recorder,
+    });
+    if (!webSearch.length) return local;
+    return [...local, ...webSearch].map((item, i) => ({ ...item, index: i + 1 }));
+  } catch (error) {
+    logger.warn(`外部检索不可用：${error.message}`);
+    return local;
+  }
 }
 
 /**
@@ -1284,7 +1493,7 @@ function buildManualOutline(ctx, topic) {
   }
 
   if (!parsed && !raw.trim()) {
-    throw new Error('manual 入口需要提纲：用 --outline-file <提纲.md> 或 --outline "…"（也可直接传 03-outline.json）');
+    throw new Error('manual 入口需要提纲：用 --outline-file <提纲.md> 或 --outline "…"（也可直接传 02-outline.json）');
   }
 
   const title = String(options.title || topic.title || topic.topic || "").trim();
@@ -1321,83 +1530,161 @@ async function selectTopic(ctx, candidates) {
   const manual = options.topic ? String(options.topic).trim() : "";
   const requirements = options.requirements ? String(options.requirements).trim() : "";
 
-  const recent = pickRecent(candidates, {
-    days: type.topic.lookback_days || type.knowledge.lookback_days,
-    limit: type.topic.candidates || 12,
-  });
-  const fallbackCandidates = recent.length ? recent : candidates.slice(0, type.topic.candidates || 12);
+  const input = buildTopicInput(type, candidates);
+  const { candidateDays, freshDays, proposals: proposalCount } = topicWindows(type);
+  const freshCount = input.candidates.filter((c) => c.fresh).length;
+  const written = listWrittenArticles(ctx.config);
 
   // Manual topic: skip the topic model entirely (one step instead of two).
   if (manual) {
     logger.info(`手动主题：${manual}（跳过选题模型）`);
     const keywords = (type.topic.keywords || []).slice(0, 6);
-    return {
+    const topic = {
       topic: manual,
       title: manual,
       thesis: "",
       angle: "手动指定",
       rationale: requirements || "用户手动指定主题。",
       keywords: keywords.length ? keywords : buildTerms(manual).slice(0, 6),
-      source_hints: fallbackCandidates.slice(0, 3).map((n) => n.title),
+      source_hints: input.candidates.slice(0, 3).map((c) => c.title),
       title_candidates: [],
     };
+    return { topic, proposals: null };
   }
 
-  logger.info(`自动选题：${fallbackCandidates.length} 篇候选参与`);
+  logger.info(
+    `自动选题：近 ${candidateDays} 天文件日期 ${input.candidates.length} 篇候选，其中近 ${freshDays} 天新采集 ${freshCount} 篇`,
+  );
 
   if (mock) {
+    const mockTopics = Array.from({ length: proposalCount }, (_, i) =>
+      normalizeTopic({
+        topic: `（Mock）${type.name}测试主题 ${i + 1}`,
+        title: `（Mock）${type.name}测试标题 ${i + 1}`,
+        thesis: "这是 mock 选题，用于验证脚本流程。",
+        angle: "流程验证",
+        rationale: "mock 模式不调用模型。",
+        score: 90 - i * 5,
+        keywords: type.topic.keywords?.slice(0, 4) || ["测试"],
+        source_hints: input.candidates.slice(0, 2).map((c) => c.title),
+        title_candidates: [`（Mock）${type.name}测试标题 ${i + 1}`],
+      }),
+    );
+    const mockVerdict = await selectBestTopic({ config: ctx.config, topics: mockTopics, logger, mock: true });
+    const mockChosen = mockTopics[mockVerdict.ok ? mockVerdict.index : 0];
     return {
-      topic: `（Mock）${type.name}测试主题`,
-      title: `（Mock）${type.name}测试标题`,
-      thesis: "这是 mock 选题，用于验证脚本流程。",
-      angle: "流程验证",
-      rationale: "mock 模式不调用模型。",
-      keywords: type.topic.keywords?.slice(0, 4) || ["测试"],
-      source_hints: fallbackCandidates.slice(0, 3).map((n) => n.title),
-      title_candidates: [`（Mock）${type.name}测试标题`],
+      topic: mockChosen,
+      proposals: buildProposalPayload(type, input, mockTopics, { mock: true, picked: mockVerdict, chosen: mockChosen }),
     };
   }
 
   const prompt = buildTopicPrompt({
+    prompt: promptById(ctx.config.steps, "topic.select_topic"),
     type,
-    candidates: fallbackCandidates,
+    candidates: input.candidates,
+    heatmap: input.heatmapText,
+    written,
     mode: "auto",
     userRequirements: requirements,
+    count: proposalCount,
   });
   const model = options.model || type.model;
+  let topics = [];
   try {
     const result = await models.json(model, { ...prompt, label: "topic" });
-    const topic = {
-      topic: String(result.topic || "").trim(),
-      title: String(result.title || result.topic || "").trim(),
-      thesis: String(result.thesis || "").trim(),
-      angle: String(result.angle || "").trim(),
-      rationale: String(result.rationale || "").trim(),
-      keywords: Array.isArray(result.keywords) ? result.keywords.map(String) : [],
-      source_hints: Array.isArray(result.source_hints) ? result.source_hints.map(String) : [],
-      title_candidates: Array.isArray(result.title_candidates) ? result.title_candidates.map(String) : [],
-    };
-    if (!topic.topic) topic.topic = fallbackCandidates[0]?.title || type.name;
-    if (!topic.title) topic.title = topic.topic;
-    return topic;
+    const raw = Array.isArray(result.topics) ? result.topics : [result];
+    topics = validateProposals(raw.map(normalizeTopic).filter((t) => t.topic), input.candidates, written);
   } catch (error) {
     logger.warn(`选题模型失败（${error.message}），回退到规则选题`);
-    const best = fallbackCandidates[0];
-    return {
-      topic: best?.title || type.name,
-      title: best?.title || type.name,
-      thesis: best?.summary || "",
-      angle: "基于知识库最新文章",
-      rationale: "模型不可用，采用最新文章作为主题。",
-      keywords: type.topic.keywords?.slice(0, 4) || [],
-      source_hints: fallbackCandidates.slice(0, 3).map((n) => n.title),
-      title_candidates: [best?.title || type.name],
-    };
   }
+
+  if (!topics.length) {
+    const best = input.candidates[0];
+    topics = [
+      normalizeTopic({
+        topic: best?.title || type.name,
+        title: best?.title || type.name,
+        thesis: best?.note.summary || "",
+        angle: "基于知识库最新文章",
+        rationale: "模型不可用或输出无效，采用最新候选文章作为主题。",
+        keywords: type.topic.keywords?.slice(0, 4) || [],
+        source_hints: best ? [best.title] : [],
+        title_candidates: [best?.title || type.name],
+      }),
+    ];
+  }
+
+  // 本地负责凑齐选项：撞车剔除后不足 proposalCount 个时按时间顺序回填，再校验一次防止回填重复
+  if (topics.length < proposalCount) {
+    for (const c of input.candidates) {
+      if (topics.length >= proposalCount) break;
+      if (topics.some((t) => t.topic === c.title)) continue;
+      topics.push(
+        normalizeTopic({
+          topic: c.title,
+          title: c.title,
+          thesis: c.note?.summary || "",
+          angle: "基于知识库最新文章",
+          rationale: "选题模型候选不足，按时间顺序回填。",
+          keywords: type.topic?.keywords?.slice(0, 4) || [],
+          source_hints: [c.title],
+          title_candidates: [c.title],
+        }),
+      );
+    }
+    topics = validateProposals(topics, input.candidates, written);
+  }
+
+  // 写作模型出候选 + 评分，systemone 判定择一；判定不可用时按评分第一篇。
+  let picked = null;
+  if (topics.length > 1) {
+    const verdict = await selectBestTopic({ config: ctx.config, topics, logger, recorder: ctx.recorder });
+    if (verdict.ok) {
+      picked = verdict;
+      const t = topics[verdict.index];
+      logger.info(
+        `判断模型择题：第 ${verdict.index + 1} 个候选《${t.title || t.topic}》（置信度 ${verdict.confidence}${verdict.escalated ? "，二次判断" : ""}）`,
+      );
+    } else {
+      logger.warn(`判断模型择题不可用（${verdict.reason}），按写作模型评分取第一篇`);
+    }
+  }
+  const chosen = topics[picked ? picked.index : 0];
+  return { topic: chosen, proposals: buildProposalPayload(type, input, topics, { picked, chosen }) };
+}
+
+function buildProposalPayload(type, input, topics, { mock = false, picked = null, chosen = null } = {}) {
+  const w = topicWindows(type);
+  return {
+    version: 1,
+    mock,
+    generated_at: new Date().toISOString(),
+    type: type.id,
+    windows: { candidate_days: w.candidateDays, fresh_days: w.freshDays },
+    candidates: input.candidates.map((c) => ({
+      title: c.title,
+      date: c.note.date,
+      days_ago: c.daysAgo,
+      fresh: c.fresh,
+    })),
+    heatmap: input.heatmap,
+    topics,
+    // systemone 择题判定（从 topics 里选第 index 个）；判定不可用或单候选时为 null
+    picked: picked
+      ? {
+          index: picked.index,
+          title: chosen?.title || chosen?.topic || "",
+          confidence: picked.confidence,
+          model: picked.model,
+          escalated: Boolean(picked.escalated),
+          first_choice: picked.first ? Number(picked.first.type) || null : null,
+        }
+      : null,
+  };
 }
 
 async function generateOutline(ctx, sources) {
-  const { type, models, logger, topic, options, mock } = ctx;
+  const { type, models, logger, topic, options, mock, outputDir } = ctx;
   if (mock) {
     return {
       title: topic.title,
@@ -1425,6 +1712,7 @@ async function generateOutline(ctx, sources) {
     sources,
     userRequirements: options.requirements ? String(options.requirements) : "",
     maxChars: 16000,
+    baseDir: outputDir || "",
   });
   const model = options.model || type.model;
   let outline;
@@ -1466,7 +1754,7 @@ function fallbackOutline(type, topic, sources) {
 /**
  * Resolve the draft input: `--input <file>` wins, otherwise it is built from
  * the topic / outline / sources stages. Either way the result is validated and
- * written to `04-draft-input.json` so the draft step reads one stable artifact.
+ * written to `03-draft-input.json` so the draft step reads one stable artifact.
  */
 function resolveDraftInput(ctx, { topic, outline, sources } = {}) {
   const { options, type, logger, outputDir, draftTemplate } = ctx;
@@ -1491,6 +1779,7 @@ function resolveDraftInput(ctx, { topic, outline, sources } = {}) {
       outline: outline || ctx.outline || {},
       sources: sources || ctx.sources || [],
       requirements: options.requirements ? String(options.requirements) : "",
+      baseDir: outputDir || "",
     });
     raw = input;
   }
@@ -2090,8 +2379,7 @@ function resolveArticleTarget(config, options, preferred) {
 }
 
 function inferTypeFromDir(config, dir) {
-  const state = readJsonSafe(path.join(dir, ARTIFACT.state));
-  const id = state?.article?.type || state?.type;
+  const id = readArticleMeta(dir).type;
   if (id && config.types.some((type) => type.id === id)) return id;
   return inferTypeFromPath(config, dir);
 }
@@ -2206,26 +2494,51 @@ function resolveTypeId(options, fallback = "") {
   return String(value);
 }
 
+/**
+ * auto 入口（deferred）选题阶段的占位类型：不预设栏目，
+ * 知识库取所有 enabled 类型 knowledge_dirs 的并集，topic 窗口用内置默认值。
+ * 选题完成后由判断模型定类，本对象不再参与下游步骤。
+ */
+function autoTopicType(config) {
+  const enabled = (config.types || []).filter((t) => t.enabled);
+  const dirs = [...new Set(enabled.flatMap((t) => t.knowledge_dirs || []))];
+  const knowledge = enabled[0]?.knowledge || {};
+  return {
+    id: "auto",
+    name: "公众号",
+    description: "",
+    enabled: true,
+    knowledge_dirs: dirs,
+    knowledge: {
+      ...knowledge,
+      source: "local",
+      weknora: { ...(knowledge.weknora || {}), enabled: false, kb_ids: [] },
+    },
+    style: {},
+    topic: {},
+    length: null,
+    model: "llm.local",
+  };
+}
+
 const TYPE_SOURCE_LABEL = {
   cli: "--type 指定",
   env: "环境变量 PB_ARTICLE_TYPE",
   input: "初稿输入的 type",
-  article: "续跑文章的 state.json",
+  article: "续跑文章已有 01-result.json",
   classifier: "判断模型（systemone）自动分类",
   default: "classifier.default_type",
+  deferred: "选题后由判断模型定类",
 };
 
 /**
  * 入口阶段的类型解析（异步版）：
- *   --type > 续跑文章 > PB_ARTICLE_TYPE > --input.type > 判断模型 > default_type
- * 判断模型只在能拿到标题/提纲时才有意义；auto 入口没有标题时直接走 default_type。
+ *   续跑文章 > --input.type > 判断模型 > --type/env 回退提示 > default_type
+ * auto 入口（没有标题/提纲）返回 deferred：类型在选题之后由判断模型确定，
+ * --type 只是分类失败时的回退提示，不再预先定类。
  */
 async function resolveTypeForEntry(config, options, { title = "", command, existing } = {}) {
-  if (options.type && options.type !== true) return { typeId: String(options.type), source: "cli" };
   if (existing?.article?.type) return { typeId: existing.article.type, source: "article" };
-
-  const envType = env("PB_ARTICLE_TYPE") || env("ARTICLE_TYPE");
-  if (envType) return { typeId: envType, source: "env" };
 
   const inputArg = options.input || options["draft-input"];
   if (inputArg && inputArg !== true) {
@@ -2236,6 +2549,13 @@ async function resolveTypeForEntry(config, options, { title = "", command, exist
       /* 读不出来就继续往下走 */
     }
   }
+
+  const hint =
+    options.type && options.type !== true
+      ? { typeId: String(options.type), source: "cli" }
+      : env("PB_ARTICLE_TYPE") || env("ARTICLE_TYPE")
+        ? { typeId: env("PB_ARTICLE_TYPE") || env("ARTICLE_TYPE"), source: "env" }
+        : null;
 
   const outline = readOutlineText(options);
   const headline = String(title || options.topic || "").trim();
@@ -2248,19 +2568,22 @@ async function resolveTypeForEntry(config, options, { title = "", command, exist
       logger: classifierLogger,
       mock: asBool(options.mock),
     });
-    if (outcome.typeId) {
-      if (outcome.source === "classifier") {
-        classifierLogger.info(
-          `判断模型选择：${outcome.typeId}（置信度 ${outcome.result?.confidence ?? "?"}）${outcome.result?.reason ? `：${outcome.result.reason}` : ""}`,
-        );
-      }
+    if (outcome.source === "classifier" && outcome.typeId) {
+      classifierLogger.info(
+        `判断模型选择：${outcome.typeId}（置信度 ${outcome.result?.confidence ?? "?"}）${outcome.result?.reason ? `：${outcome.result.reason}` : ""}`,
+      );
       return { typeId: outcome.typeId, source: outcome.source, classification: outcome.result };
     }
+    // 判断模型没能定类：--type/env 提示优先于 default_type。
+    if (hint) return { ...hint, classification: outcome.result };
+    if (outcome.typeId) return { typeId: outcome.typeId, source: outcome.source, classification: outcome.result };
+    throw new Error(
+      "无法确定文章类型：判断模型未给出结果，且 classifier.default_type 和 --type 均未配置（配置 SYSTEMONE_* 或 --type 后重试）",
+    );
   }
 
-  throw new Error(
-    "缺少文章类型：用 --type <id> 指定，或在 .env 设置 PB_ARTICLE_TYPE；也可以配置 SYSTEMONE_* 让判断模型根据标题和提纲自动分类",
-  );
+  // auto 入口：没有标题也没有提纲——先选题，选题后再让判断模型定类。
+  return { deferred: true, source: "deferred", hint };
 }
 
 /** 读取 manual 入口的提纲文本（Markdown 原样返回，JSON 转成可读文本）。 */
@@ -2298,7 +2621,7 @@ function assertEntryInputs(options, command) {
   const fileArg = options["outline-file"];
   const inline = options.outline !== undefined ? String(options.outline) : "";
   if (!fileArg && !inline.trim()) {
-    throw new Error('manual 入口需要提纲：用 --outline-file <提纲.md> 或 --outline "…" 提供（也可直接传 03-outline.json）');
+    throw new Error('manual 入口需要提纲：用 --outline-file <提纲.md> 或 --outline "…" 提供（也可直接传 02-outline.json）');
   }
   let text = inline;
   if (fileArg) {

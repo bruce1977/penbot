@@ -67,10 +67,19 @@ opencode:
     timeout_ms: 600000
 
 systemone:
+  # 一次判断（轻量模型）；置信度低于 classifier.escalate_below 时升级到二次判断
   classifier:
     base_url: "${SYSTEMONE_BASE_URL}"
     endpoint: "/v1/systemone"
     api_key: "${SYSTEMONE_API_KEY}"
-    model: "${SYSTEMONE_MODEL:-jev-latest}"
-    timeout_ms: 15000
+    model: "${SYSTEMONE_MODEL1:-tev1}"
+    timeout_ms: 60000
+    max_retries: 2
+  # 二次判断（重模型）；base_url / api_key 与一次判断相同，可在本节点覆盖
+  classifier-deep:
+    base_url: "${SYSTEMONE_BASE_URL}"
+    endpoint: "/v1/systemone"
+    api_key: "${SYSTEMONE_API_KEY}"
+    model: "${SYSTEMONE_MODEL2:-nimble}"
+    timeout_ms: 120000
     max_retries: 2

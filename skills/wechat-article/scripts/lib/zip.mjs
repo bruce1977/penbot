@@ -146,3 +146,33 @@ export function listZipEntries(zipFile) {
   }
   return names;
 }
+
+/** 解压 zip 内指定路径的文件内容；不存在返回 null。支持 store(0) 与 deflate(8)。 */
+export function readZipEntry(zipFile, wantedName) {
+  const buffer = fs.readFileSync(zipFile);
+  const end = buffer.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  if (end < 0) throw new Error(`不是合法的 zip：${zipFile}`);
+  const count = buffer.readUInt16LE(end + 10);
+  let offset = buffer.readUInt32LE(end + 16);
+  for (let i = 0; i < count; i += 1) {
+    if (buffer.readUInt32LE(offset) !== 0x02014b50) throw new Error(`zip 中央目录损坏：${zipFile}`);
+    const method = buffer.readUInt16LE(offset + 10);
+    const compSize = buffer.readUInt32LE(offset + 20);
+    const nameLength = buffer.readUInt16LE(offset + 28);
+    const extraLength = buffer.readUInt16LE(offset + 30);
+    const commentLength = buffer.readUInt16LE(offset + 32);
+    const localOffset = buffer.readUInt32LE(offset + 42);
+    const name = buffer.subarray(offset + 46, offset + 46 + nameLength).toString("utf8");
+    if (name === wantedName) {
+      const localNameLength = buffer.readUInt16LE(localOffset + 26);
+      const localExtraLength = buffer.readUInt16LE(localOffset + 28);
+      const start = localOffset + 30 + localNameLength + localExtraLength;
+      const raw = buffer.subarray(start, start + compSize);
+      if (method === 0) return Buffer.from(raw);
+      if (method === 8) return zlib.inflateRawSync(raw);
+      throw new Error(`zip 条目 ${name} 使用了不支持的压缩方法 ${method}`);
+    }
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+  return null;
+}

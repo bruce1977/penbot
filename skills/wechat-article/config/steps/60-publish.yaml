@@ -24,8 +24,8 @@ steps:
     retry_limit: 1
     timeout: 300000
     artifacts:
-      reads: ["07-illustrated.md"]
-      writes: ["08-final.md", "08-final.html?", "09-publish.json"]
+      reads: ["06-illustrated.md"]
+      writes: ["07-final.md", "07-final.html?", "08-publish.json"]
     depends_on: [image_generation]
 
   archive:
@@ -40,6 +40,6 @@ steps:
     retry_limit: 1
     timeout: 120000
     artifacts:
-      reads: ["09-publish.json"]
+      reads: ["08-publish.json"]
       writes: ["../../published/<date>-<slug>.zip"]
     depends_on: [publish]

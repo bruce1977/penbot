@@ -21,8 +21,8 @@ steps:
       max_rounds: 3
       until: "score.verdict == pass"
     artifacts:
-      reads: ["06-review/round-<n>/score.json"]
-      writes: ["06-review/round-<n>/after-revise.md", "06-reviewed.md"]
+      reads: ["05-review/round-<n>/score.json"]
+      writes: ["05-review/round-<n>/after-revise.md", "05-reviewed.md"]
     depends_on: [scoring]
 
   de_ai:
@@ -38,8 +38,8 @@ steps:
     retry_limit: 1
     timeout: 900000
     artifacts:
-      reads: ["06-reviewed.md"]
-      writes: ["06-polished.md"]
+      reads: ["05-reviewed.md"]
+      writes: ["05-polished.md"]
     depends_on: [revision]
 
   image_generation:
@@ -56,6 +56,6 @@ steps:
     retry_limit: 2
     timeout: 300000
     artifacts:
-      reads: ["06-polished.md", "03-outline.json"]
-      writes: ["07-images.json", "07-illustrated.md", "images/"]
+      reads: ["05-polished.md", "02-outline.json"]
+      writes: ["06-images.json", "06-illustrated.md", "images/"]
     depends_on: [de_ai]

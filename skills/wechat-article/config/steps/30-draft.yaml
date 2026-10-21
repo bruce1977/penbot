@@ -6,7 +6,7 @@
 steps:
   draft_writing:
     label: 写初稿
-    description: 按 04-draft-input.json 的 prompt + schema 写出完整 Markdown 初稿。
+    description: 按 03-draft-input.json 的数据写完整 Markdown 初稿；提示词和校验规则分别来自 draft.draft_writing / draft.draft_input。
     stage: draft
     enabled: true
     modes: [auto, manual, run]
@@ -17,8 +17,8 @@ steps:
     retry_limit: 2
     timeout: 1200000
     artifacts:
-      reads: ["04-draft-input.json"]
-      writes: ["05-draft.md"]
+      reads: ["03-draft-input.json"]
+      writes: ["04-draft.md"]
     depends_on: [bundle_draft_input]
 
   length_adjust:
@@ -37,6 +37,6 @@ steps:
       max_attempts: 2
       until: "word_count in [length.min, length.max]"
     artifacts:
-      reads: ["05-draft.md"]
-      writes: ["05-draft.md"]
+      reads: ["04-draft.md"]
+      writes: ["04-draft.md"]
     depends_on: [draft_writing]

@@ -25,4 +25,4 @@ schemas:
       count: "number?"
       style: "string?"
     output:
-      images: "Array<{index: number, position: string, file?: string, provider?: string, status: string, error?: string}>"
+      images: "Array<{index: number, position: string, scene: string, description?: string, prompt: string, success: boolean, pipeline?: string, file?: string, error?: string, attempts?: Array<{pipeline: string, ok: boolean, error?: string}>}>"

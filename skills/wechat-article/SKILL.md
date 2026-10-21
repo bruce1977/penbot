@@ -45,7 +45,7 @@ node skills/wechat-article/scripts/wechat-article.mjs manual --type ai-news \
 
 - 两个入口之后的步骤**完全一致**（资料 → 初稿 → 审稿 → 配图 → 发布），都支持 `--stage draft` 之类的提前停止。
 - `--type` 也可以不写在命令行：在 `.env` 里设 `PB_ARTICLE_TYPE=ai-news` 即可（命令行 `--type` 优先）。
-- 手动入口的提纲支持三种来源：`--outline-file outline.md`、`--outline "# 标题\n## 小节\n- 要点"`、或直接给 `03-outline.json`；标题可以从提纲的 `# 标题` 行推导，省略 `--title`。
+- 手动入口的提纲支持三种来源：`--outline-file outline.md`、`--outline "# 标题\n## 小节\n- 要点"`、或直接给 `02-outline.json`；标题可以从提纲的 `# 标题` 行推导，省略 `--title`。
 
 ### 文章目录与断点续跑
 
@@ -72,24 +72,22 @@ node skills/wechat-article/scripts/wechat-article.mjs draft --article <slug>
 每一步都能单独跑、单独检查，产物都追加到同一篇文章目录：
 
 ```bash
-# 1) 选题（自动选题；生成的目录名 = 标题 slug）
+# 1) 选题步：选题 → 判断类型 → 收集素材（自动选题；生成的目录名 = 标题 slug）
 node skills/wechat-article/scripts/wechat-article.mjs topic   --type ai-news
 
-# 2) 资料收集（本地目录 / WeKnora / 两者都要，见下）
-node skills/wechat-article/scripts/wechat-article.mjs sources --article <slug>
-
-# 3) 纲要
+# 2) 纲要
 node skills/wechat-article/scripts/wechat-article.mjs outline --article <slug>
 
-# 4) 准备初稿输入（标题 + 大纲 + 资料 → 04-draft-input.json）
+# 3) 准备初稿输入（标题 + 大纲 + 资料 → 03-draft-input.json）
 node skills/wechat-article/scripts/wechat-article.mjs bundle  --article <slug>
 
-# 5) 初稿（读 04-draft-input.json）
+# 4) 初稿（读 03-draft-input.json）
 node skills/wechat-article/scripts/wechat-article.mjs draft   --article <slug>
 ```
 
 - **手动选题只有一步**：`outline --type ai-news --topic "主题" --requirements "..."` 会跳过选题模型，直接生成纲要。
-- 实际顺序是 `topic → sources → outline → draft`；`sources` 需要选题（`01-topic.json` 或 `--topic`），`outline`/`draft` 需要素材（`02-sources.json`）。
+- **自动选题是辅助路径**（双窗口 + 词频热度表，一次模型调用出 3 个候选），设计取舍见 `docs/topic-selection.md`。
+- 实际顺序是 `topic（含素材收集）→ outline → draft`；素材正文与出处（origin/source/date/score）落 `01-step/sources/*.md`，`01-result.json` 的 `sources` 只留 `{index, title, link}`（`link` 相对文章目录），`outline`/`draft` 经 `loadSource` 按 `link` 回读。
 - 复用已有产物：`--topic-file` / `--sources-file` / `--outline-file` 指定具体文件，覆盖自动查找。
 
 ### 手动入口的提纲格式
@@ -119,7 +117,7 @@ node skills/wechat-article/scripts/wechat-article.mjs draft   --article <slug>
 - inline_1：正文配图说明
 ```
 
-- `## 结构` + 编号列表、`（约 400 字）` 标注、`## 反方观点`、`## 配图` 下的 `- prompt:` 行都兼容——也就是管线自己渲染的 `03-outline.md` 能原样喂回来。
+- `## 结构` + 编号列表、`（约 400 字）` 标注、`## 反方观点`、`## 配图` 下的 `- prompt:` 行都兼容——也就是管线自己渲染的 `02-outline.md` 能原样喂回来。
 - 小节字数没写时，会把该类型的目标字数均分到各小节。
 - 配图数量仍受类型配置约束（`--images` 可覆盖）。
 
@@ -141,7 +139,7 @@ node skills/wechat-article/scripts/wechat-article.mjs topics --type ai-news --co
 - 这一步只做选题与提纲，不检索 WeKnora、不写正文；资料收集在选定主题之后进行。
 - 不给 `--count` / `--output` / `--md` 时保持原行为：打印候选文章表格。
 
-## 初稿输入格式（`04-draft-input.json`）
+## 初稿输入格式（`03-draft-input.json`）
 
 写初稿前必须先准备好三样东西，它们全部装在一个 JSON 里，初稿阶段**只读这个文件**：
 
@@ -175,25 +173,39 @@ node skills/wechat-article/scripts/wechat-article.mjs topics --type ai-news --co
 }
 ```
 
-**提示词和校验规则都在 `config/prompts/draft.json`**，一个文件两段：`prompt`（system / user / retry）和 `schema`（一行一个字段）。改文案、调字段上限都不用动代码：
+**提示词在 `config/prompts/draft.yaml` 的 `draft_writing`**（`system` / `user` / `retry`），**校验规则在 `config/schemas/draft.yaml` 的 `draft_input`**（一行一个字段）。改文案、调字段上限都不用动代码：
 
-```jsonc
-{
-  "prompt": {
-    "system": "你是「{{type_name}}」栏目的作者……",
-    "user":   "# 任务\n……\n## 纲要\n{{outline}}\n## 可用素材\n{{materials}}\n……",
-    "retry":  "上一稿不合格（第 {{retry_tag}} 次尝试）：\n{{errors}}\n……\n## 原稿\n{{article}}"
-  },
-  "schema": {
-    "title": ["string", 1, 64],
-    "outline": ["array", 1, 12],
-    "outline[].heading": ["string", 1],
-    "outline[].points": ["array", 1, 8],
-    "materials": ["array", 1, 20],
-    "materials[].paragraphs": ["array", 1, 20],
+```yaml
+# config/prompts/draft.yaml
+prompts:
+  draft_writing:
+    system: "你是「{{type_name}}」栏目的作者……"
+    user: |
+      # 任务
+      ……
+      ## 纲要
+      {{outline}}
+      ## 可用素材
+      {{materials}}
+    retry: |
+      上一稿不合格（第 {{retry_tag}} 次尝试）：
+      {{errors}}
+      ……
+      ## 原稿
+      {{article}}
+```
+
+```yaml
+# config/schemas/draft.yaml
+schemas:
+  draft_input:
+    "title": ["string", 1, 64]
+    "outline": ["array", 1, 12]
+    "outline[].heading": ["string", 1]
+    "outline[].points": ["array", 1, 8]
+    "materials": ["array", 1, 20]
+    "materials[].paragraphs": ["array", 1, 20]
     "requirements?": "string"
-  }
-}
 ```
 
 schema 语法：`"string"` / `["string", 最短]` / `["string", 最短, 最长]` / `["array", 最少, 最多]` / `["number", 最小, 最大]` / `"boolean"`；键尾加 `?` 表示可选；`list[]` 校验数组元素，`list[].field` 校验对象数组的每个字段。
@@ -201,17 +213,17 @@ schema 语法：`"string"` / `["string", 最短]` / `["string", 最短, 最长]`
 用法：
 
 ```bash
-# 只做准备工作：选题 → 检索 → 纲要 → 打包成 04-draft-input.json
+# 只做准备工作：选题 → 检索 → 纲要 → 打包成 03-draft-input.json
 node skills/wechat-article/scripts/wechat-article.mjs bundle --article <slug>
 
 # 校验这份输入（硬错误 + 软警告逐条列出）；也可直接给已有文件
-node skills/wechat-article/scripts/wechat-article.mjs validate --input <article>/04-draft-input.json
+node skills/wechat-article/scripts/wechat-article.mjs validate --input <article>/03-draft-input.json
 
 # 用它写初稿（可以手改 JSON 后再跑；类型从文件推断，目录用 --article 指定）
-node skills/wechat-article/scripts/wechat-article.mjs draft --article <slug> --input <article>/04-draft-input.json
+node skills/wechat-article/scripts/wechat-article.mjs draft --article <slug> --input <article>/03-draft-input.json
 ```
 
-- `run` / `auto` / `manual` 也会在初稿前自动写出 `04-draft-input.json`，每一步都可审查、可手改。
+- `run` / `auto` / `manual` 也会在初稿前自动写出 `03-draft-input.json`，每一步都可审查、可手改。
 - **硬错误**（会中止）：缺 `title`、`outline` 为空或某节缺 `heading`/`points`、`materials` 为空或素材缺 `paragraphs`、字段超长或超项数上限。
 - **软警告**（不中止）：大纲字数与目标相差过大、某节没有要点、缺 `thesis`/`takeaway`/`requirements`。
 - 只给段落、没有整篇文章时，把段落放进 `paragraphs` 即可。
@@ -220,17 +232,16 @@ node skills/wechat-article/scripts/wechat-article.mjs draft --article <slug> --i
 
 | 命令 | 作用 |
 | --- | --- |
-| `auto` | **入口 1**：自动选题 + 自动纲要，然后往下写（等价于原来的 `run`） |
+| `auto` | **入口 1**：自动选题（3 个候选 + 评分，判断模型择一）+ 自动纲要，然后往下写（等价于原来的 `run`） |
 | `manual` | **入口 2**：用 `--title` + `--outline`/`--outline-file` 直接往下写，跳过选题与纲要模型 |
 | `run` | 完整管线（保留兼容，等同 `auto`） |
 | `topics` | 列出候选文章；`--count N --output <目录>` 生成 N 个候选主题（含提纲）的 Markdown |
 | `classify` | 只用判断模型（systemone）根据标题 + 提纲选类型，打印选择与得分 |
 | `kbs` | 列出 WeKnora 知识库（获取 `kb_ids`） |
-| `topic` | 只做选题（自动选题，或 `--topic` 手动记录；新文章目录按标题 slug 创建） |
-| `sources` | 只收集相关资料（本地目录 / WeKnora / 两者） |
+| `topic` | 选题步：选题 → 判断类型 → 收集素材（自动选题，或 `--topic` 手动记录；新文章目录按标题 slug 创建） |
 | `outline` | 只生成纲要（`--topic` / `--topic-file`，或复用文章目录里的选题） |
-| `bundle` | 只做准备工作：把标题 + 大纲 + 相关资料写成 `04-draft-input.json` |
-| `draft` | 只生成初稿（读 `04-draft-input.json`，或 `--input` 指定一份） |
+| `bundle` | 只做准备工作：把标题 + 大纲 + 相关资料写成 `03-draft-input.json` |
+| `draft` | 只生成初稿（读 `03-draft-input.json`，或 `--input` 指定一份） |
 | `review` | 对已有稿件执行核稿/评稿/修正循环 |
 | `illustrate` | 为已有稿件生成并替换配图 |
 | `publish` | 发布已有稿件到邮件 / 公众号草稿箱 |
@@ -243,13 +254,14 @@ node skills/wechat-article/scripts/wechat-article.mjs draft --article <slug> --i
 - `--defaults <path>` 全局默认配置，默认 `skills/wechat-article/config/defaults.yaml`
 - `--models <path>` 模型总表，默认 `skills/wechat-article/config/models.yaml`
 - `--steps <path>` 步骤配置，默认 `skills/wechat-article/config/steps.yaml`
-- `--type <id>` 文章类型 id；省略时依次取 `PB_ARTICLE_TYPE` → 判断模型自动分类 → `classifier.default_type`
+- `--type <id>` 文章类型 id；**仅作回退提示**——正常定权交给判断模型（System One），分类不可用时才按 `--type` → `PB_ARTICLE_TYPE` → `classifier.default_type` 兜底
 - `--topic <text>` 手动主题（省略则自动选题；手动时**跳过选题模型**）
+- `--from-proposal <n>` 复用文章目录 `01-step/proposal.json` 里第 n 个候选（需配合 `--article`）
 - `--requirements <text>` 手动补充写作要求
-- `--topic-file <path>` 复用已有选题 JSON（如 `01-topic.json`）
-- `--sources-file <path>` 复用已有素材 JSON（如 `02-sources.json`）
-- `--outline-file <path>` `manual` / `classify` 的提纲文件（Markdown 或 `03-outline.json`）
-- `--input <path>` 初稿输入 JSON（标题 + 大纲 + 资料，如 `04-draft-input.json`）；`draft` / `run` 用，跳过前置步骤
+- `--topic-file <path>` 复用已有选题 JSON（如 `01-result.json`）
+- `--sources-file <path>` 复用已有素材 JSON（数组，直接并入 `01-result.json` 的 `sources`，跳过检索）
+- `--outline-file <path>` `manual` / `classify` 的提纲文件（Markdown 或 `02-outline.json`）
+- `--input <path>` 初稿输入 JSON（标题 + 大纲 + 资料，如 `03-draft-input.json`）；`draft` / `run` 用，跳过前置步骤
 - `--knowledge-source <s>` 覆盖知识来源：`local` | `weknora` | `both`
 - `--article <slug>` 选择/续跑 `draft/<slug>/` 这篇文章；`latest` = 最近一篇；分步命令省略时自动选中唯一一篇
 - `--file <path>` `review`/`illustrate`/`publish` 直接指定稿件文件（`--article <path>` 仍兼容）
@@ -259,7 +271,7 @@ node skills/wechat-article/scripts/wechat-article.mjs draft --article <slug> --i
 - `--rounds <n>` 审稿循环最大轮次（1-5，默认取配置 `review.max_rounds`）
 - `--length-attempts <n>` 初稿篇幅自动扩写/压缩的最大次数（默认 2，0 表示关闭）
 - `--images <n>` 配图数量（1-5）
-- `--stage <name>` `run` 的终止阶段：`topic|sources|outline|bundle|draft|review|illustrate|publish`
+- `--stage <name>` `run` 的终止阶段：`topic|outline|bundle|draft|review|illustrate|publish`（素材收集属于 `topic` 步，不再单列阶段）
 - `--mock` 用 mock 模型（不发真实网络请求，用于验证流程）
 - `--verbose` 输出调试日志
 
@@ -280,32 +292,37 @@ node skills/wechat-article/scripts/wechat-article.mjs draft --article <slug> --i
 一篇文章 = `$BASE_OUTPUT_FOLDER/draft/<slug>/` 一个目录：
 
 ```
-01-topic.json / 01-topic.md              选题
-02-sources.json                          命中的知识库素材
-03-outline.json / 03-outline.md          纲要
-04-draft-input.json                      初稿输入（标题 + 大纲 + 资料）
-05-draft.md                              初稿
-06-review/round-N/{before,after-correct,after-revise}.md + correct.json + score.json
-06-reviewed.md                           审稿后的稿件
-06-polished.md                           去 AI 化后的稿件（de_ai 接入后）
-07-images.json / 07-illustrated.md       配图元数据与替换后的稿件
-08-final.md                              终稿（发布用）
-08-final.html                            邮件用 HTML（启用邮件时生成）
-09-publish.json                          发布结果与状态
+01-result.json                             选题步结果（标题 + 类型 + 择题过程 + sources 链接条目；02–08 迁移前下游与元信息都读它）
+01-step/topic.md                           选题的人类可读版
+01-step/proposal.json                      自动选题的全部候选 + 热度表（仅自动选题时生成，可用 --from-proposal 复用）
+01-step/sources/<n>-<slug>.md              每条素材一份：frontmatter 记 title/origin/source/date/score，正文只放摘录段（不整篇复制）
+01-step/web-search/<slug>.md                 外部检索结果（每组关键字一份，本地素材不足时才产生）
+01-step/llm/<label>.<model>.json           本步 LLM/API 调用的 request+response 留痕（重跑覆盖）
+02-outline.json / 02-outline.md          纲要
+03-draft-input.json                      初稿输入（标题 + 大纲 + 资料）
+04-draft.md                              初稿
+05-review/round-N/{before,after-correct,after-revise}.md + correct.json + score.json
+05-reviewed.md                           审稿后的稿件
+05-polished.md                           去 AI 化后的稿件（de_ai 接入后）
+06-images.json / 06-illustrated.md       配图元数据与替换后的稿件
+07-final.md                              终稿（发布用）
+07-final.html                            邮件用 HTML（启用邮件时生成）
+08-publish.json                          发布结果与状态
 images/                                  生成的图片
-state.json                               管线状态（文章身份 + 各阶段）
 pipeline.log                             运行日志
 ```
 
+> 没有 `state.json`：文章身份、类型、进度全部从产物文件推导（文件存在 = 该阶段完成）。选题步已收敛为「根目录一个 `01-result.json` + `01-step/` 中间文件」，02–08 后续逐步采用同样布局。
+
 ### 发布成功后的归档
 
-只有 `09-publish.json` 的 `status` 为 `published`（至少一个渠道**真实投递成功**）才会归档：
+只有 `08-publish.json` 的 `status` 为 `published`（至少一个渠道**真实投递成功**）才会归档：
 
 1. 终稿复制到本地知识库的 pipeline 待入库目录（`defaults.publish.archive.knowledge_dir`，即 `KNOWLEDGE_PIPELINE_DIR`；失败只记录，不阻塞）；
 2. 整个文章目录打包到 `published/<YYYYMMDD>-<slug>.zip`；
 3. 删除 `draft/<slug>/`。
 
-`skipped`（未启用发布 / `auto_publish=false`）、`dry_run`、`partial`、`failed` 都留在 `draft/`，修好后可重跑。归档是幂等的：zip 路径先写进 `09-publish.json`，重跑时已存在的 zip 直接复用。
+`skipped`（未启用发布 / `auto_publish=false`）、`dry_run`、`partial`、`failed` 都留在 `draft/`，修好后可重跑。归档是幂等的：zip 路径先写进 `08-publish.json`，重跑时已存在的 zip 直接复用。
 
 ## 流程节点（`config/steps/`）
 
@@ -313,7 +330,7 @@ pipeline.log                             运行日志
 
 | 阶段文件 | 节点 |
 | --- | --- |
-| `10-topic.yaml` | `classify_type` → `select_topic` → `gather_materials` |
+| `10-topic.yaml` | `select_topic` → `classify_type` → `gather_materials` |
 | `20-outline.yaml` | `outline` → `bundle_draft_input` |
 | `30-draft.yaml` | `draft_writing` → `length_adjust` |
 | `40-review.yaml` | `review` → `scoring` |
@@ -372,7 +389,7 @@ schemas:
       thesis: string
 ```
 
-`prompts/draft.json` 是初稿输入的特殊模板（同时含校验 schema），不参与 id 注册；`draft.draft_writing` 通过 `template: prompts/draft.json` 引用它。
+初稿提示词在 `prompts/draft.yaml` 的 `draft_writing`，初稿输入校验规则在 `schemas/draft.yaml` 的 `draft_input`，都按普通 id 注册。
 
 节点顺序就是正常执行顺序：
 
@@ -393,7 +410,7 @@ schemas:
 | `publish` | 发布 | `builtin:publish_article` | `none`（渠道 API） |
 | `archive` | 归档 | `builtin:archive_article` | `none`（本地脚本） |
 
-> `de_ai` 先固定契约（读 `06-reviewed.md`，写 `06-polished.md`），执行层接入前不会改变现有产物链。
+> `de_ai` 先固定契约（读 `05-reviewed.md`，写 `05-polished.md`），执行层接入前不会改变现有产物链。
 
 ### handler
 
@@ -432,10 +449,14 @@ opencode:            # OpenCode CLI agent
     command: opencode
     agent: wechat-article-writer
 
-systemone:           # System One 决策模型
-  classifier:
+systemone:           # System One 决策模型（两段式判断）
+  classifier:        # 一次判断（轻量）
     base_url: "${SYSTEMONE_BASE_URL}"
-    model: "${SYSTEMONE_MODEL:-jev-latest}"
+    model: "${SYSTEMONE_MODEL1:-tev1}"
+  classifier-deep:   # 二次判断（重模型），一次置信度低于 escalate_below 时使用
+    base_url: "${SYSTEMONE_BASE_URL}"
+    model: "${SYSTEMONE_MODEL2:-nimble}"
+    timeout_ms: 30000
 ```
 
 - `llm.*`：`provider` 写 `ollama` 或 `openai`；`remote` 可以指向 DeepSeek 等兼容端点。
@@ -532,7 +553,7 @@ types:
 - `review`：`max_rounds`、`pass_score`、`correct_cn`（核稿服务）
 - `image_count`：`1-5`、`3` 或 `{ min, max, default, cover }`
 - `image_position_format`：正文配图占位符模板，默认 `[[img:{index}]]`
-- `topic`：`keywords`、`exclude_keywords`、`lookback_days`、`candidates`
+- `topic`：`keywords`、`exclude_keywords`、`candidate_days`、`fresh_days`、`max_candidates`、`proposals`（旧字段 `lookback_days`、`candidates` 作为回退；机制见 `docs/topic-selection.md`）
 - `model` / `steps`：写作模型与节点覆盖（`prompt` / `schema` 写注册表 id）
 
 新增类型：在 `config/types/` 加一个 YAML，再把 `id: 文件名` 写进 `article-types.yaml` 的 `types:`，跑 `validate`。类型专用提示词/数据结构放 `config/prompts/<id>.yaml` 和 `config/schemas/<id>.yaml`，然后在 `steps` 里用 id 覆盖。
@@ -544,10 +565,12 @@ types:
 ```yaml
 classifier:
   enabled: true
+  model: systemone.classifier          # 一次判断（轻量模型）
+  deep_model: systemone.classifier-deep # 二次判断（重模型）；留空 = 不升级
+  escalate_below: 0.65                  # 一次置信度低于该值时二次判断
   base_url: "${SYSTEMONE_BASE_URL}"      # 例：https://routellm.abacus.ai/v1
   endpoint: "/v1/systemone"
-  api_key: "${SYSTEMONE_API_KEY}"
-  model: "${SYSTEMONE_MODEL:-jev-latest}"
+  api_key: "${SYSTEMONE_API_KEY}"        # 可选：端点鉴权时才填，留空不发送 Authorization
   question: article_type
   min_confidence: 0.5
   default_type: ai-news
@@ -571,12 +594,16 @@ classifier:
 
 响应取 `answers.article_type.choice` / `probabilities` / `confidence`；`base_url` 已带 `/v1` 时不会重复拼接。
 
-- `manual` 入口有标题 + 提纲，未显式给 `--type` 时会先调用判断模型。
-- `auto` 入口只有在提供了 `--topic` 时才会尝试分类；否则直接用 `classifier.default_type`。
-- 未配置 `SYSTEMONE_*`、请求失败或置信度低于 `min_confidence` 时，回退到 `classifier.default_type`；429/503 会按 `Retry-After` 重试。
+- 两段式判断：先用轻量模型（`classifier.model`）判一次；置信度低于 `escalate_below`（默认 0.65）且配置了 `deep_model` 时，用重模型（`classifier.deep_model`）再判一次并采用其结果；二次判断失败时保留一次结果。`deep_model` 留空则始终单段。
+- `manual` / `--topic` 等已有标题或提纲的入口：直接调用判断模型定类。
+- `auto` 入口**选题在前、分类在后**：先用所有启用类型知识库目录的并集做选题，再用定好的标题 + 主题调用判断模型定类，之后才进入后续阶段（见 `docs/topic-selection.md`）。
+- 类型优先级：断点续跑（`01-result.json` 的 `type`）> `--input` 里的 `type` > 判断模型 > `--type`/`PB_ARTICLE_TYPE` 回退提示 > `classifier.default_type`。`--type` 只在分类不可用时兜底，不再预先定类。
+- 未配置 `SYSTEMONE_BASE_URL`、请求失败或置信度低于 `min_confidence` 时，回退到 `--type`/环境变量提示，再到 `classifier.default_type`；429/503 会按 `Retry-After` 重试。`SYSTEMONE_API_KEY` 是可选项，端点不鉴权时留空即可。
 - 单独验证：`classify --title "..." --outline-file outline.md`；`--mock` 不发请求。
 
 ## 资料收集（本地目录为主）
+
+资料收集是选题步（01）的最后一个节点，不单独成阶段：每条素材正文落 `01-step/sources/*.md`，`01-result.json` 的 `sources` 只留链接条目，外部检索原文进 `01-step/web-search/<slug>.md`。
 
 当前流程只读本地知识库目录（`knowledge_base_path`）。WeKnora 作为可选能力保留在 `defaults.knowledge`，默认关闭（`PB_USE_WEKNORA=false`）；类型文件不需要配置 `weknora`。
 
@@ -595,7 +622,8 @@ classifier:
 | `llm.large` | ollama | 更大的本地模型，默认 `qwen3.6:35b`，质量更好、更慢 |
 | `llm.remote` | openai | 任意 OpenAI 兼容端点（`PB_LLM_BASE_URL` / `PB_LLM_API_KEY`） |
 | `opencode.writer` | opencode | 以 `opencode run --format json --file <prompt>` 调用写作代理 |
-| `systemone.classifier` | systemone | 自动分类，走 `/v1/systemone` |
+| `systemone.classifier` | systemone | 自动分类一次判断（轻量），走 `/v1/systemone` |
+| `systemone.classifier-deep` | systemone | 一次置信度不足时的二次判断（重模型） |
 
 - `none` 是保留值，表示纯本地脚本，不调模型。
 - `--mock` 会跳过真实模型调用，不需要配置 mock 模型。
@@ -644,7 +672,8 @@ classifier:
 | `KNOWLEDGE_PIPELINE_DIR` | 发布成功后终稿的待入库目录，默认 `D:/knowledge/pipeline` |
 | `BASE_OUTPUT_FOLDER` | 文章根目录（下面自动建 `draft/` 与 `published/`，默认 `output/wechat-article`） |
 | `PB_ARTICLE_TYPE` | 默认文章类型 id（命令行 `--type` 优先；未设置时交给判断模型） |
-| `SYSTEMONE_BASE_URL` / `SYSTEMONE_API_KEY` / `SYSTEMONE_MODEL` | 判断模型（System One `/v1/systemone`，默认 `jev-latest`）；留空则回退 `classifier.default_type` |
+| `SYSTEMONE_BASE_URL` / `SYSTEMONE_MODEL1` / `SYSTEMONE_MODEL2` | 判断模型（System One `/v1/systemone`）：`MODEL1` 一次判断（默认 `tev1`），`MODEL2` 二次判断（默认 `nimble`）；留空 base_url 则回退 `classifier.default_type` |
+| `SYSTEMONE_API_KEY` | 判断模型鉴权 key，**可选**：配置了才发送 `Authorization: Bearer`，端点不鉴权时留空 |
 | `PB_USE_WEKNORA` | WeKnora 总开关，默认 `false`（只用本地知识库目录） |
 
 配置里支持 `${VAR}` 与 `${VAR:-默认值}` 展开。

@@ -46,7 +46,7 @@ function copyToKnowledge({ config, type, dir, slug, title, stamp, archive, logge
  *   2. 整个 article 目录打包到 published/<YYYYMMDD>-<slug>.zip
  *   3. 删除 draft/<slug>
  *
- * 幂等：zip 路径先写进 09-publish.json，重跑时已存在的 zip 直接复用；
+ * 幂等：zip 路径先写进 08-publish.json，重跑时已存在的 zip 直接复用；
  * 目录还剩着就只补做未完成的步骤。
  */
 export function archiveArticle({ config, type, dir, slug, publish, logger }) {

@@ -1,7 +1,7 @@
 /**
  * Tiny prompt-template engine.
  *
- * A template file looks like this (see config/prompts/draft.json):
+ * A template object looks like this (prompt + compact schema):
  *
  *   {
  *     "prompt": {

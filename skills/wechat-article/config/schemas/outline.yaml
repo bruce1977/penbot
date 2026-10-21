@@ -23,9 +23,19 @@ schemas:
   bundle_draft_input:
     input:
       type: "ArticleType"
+      topic: "Topic"
       outline: "Outline"
       sources: "Array<Source>"
       requirements: "string?"
     output:
-      prompt: "{ system: string, user: string, retry: string }"
-      schema: "Record<string, unknown>"
+      type: "string"
+      title: "string"
+      thesis: "string"
+      audience: "string"
+      hook: "string"
+      requirements: "string"
+      outline: "Array<{heading: string, points: string[], target_words?: number}>"
+      counterpoint: "string"
+      takeaway: "string"
+      materials: "Array<{title: string, date?: string, source?: string, paragraphs: string[]}>"
+      images: "Array<{position: string, description: string, prompt?: string}>"

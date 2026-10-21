@@ -55,7 +55,7 @@ export function loadSteps(stepsPath = DEFAULT_STEPS_PATH, { root = process.cwd()
  * 读取 config/prompts/*.yaml、config/schemas/*.yaml。
  * 每个文件用顶层 prompts:/schemas: 包一层；id 由「文件名（去扩展名）+ 配置项 key」组成，
  * 例如 prompts/topic.yaml 里的 classify_type → topic.classify_type。
- * 没有这一层的文件（例如 prompts/draft.json）会被跳过。
+ * 没有这一层的文件会被跳过。
  */
 function loadRegistryDir(configDir, dirName, key) {
   const dir = path.join(configDir, dirName);
@@ -436,6 +436,11 @@ export function getStep(steps, name) {
   if (steps.byName) return steps.byName.get(name) || null;
   if (Array.isArray(steps)) return steps.find((step) => step.step_name === name) || null;
   return null;
+}
+
+/** 按 id 取提示词原文块（config/prompts/*.yaml 注册表），未注册返回 {}。 */
+export function promptById(steps, id) {
+  return steps?.prompts?.[id] || {};
 }
 
 export function stepNames(steps) {
