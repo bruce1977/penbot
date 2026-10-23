@@ -1,12 +1,9 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "skills": [
-    "skills"
-  ],
   "commands": {
     "wechat-article": {
       "description": "运行微信公众号文章自动化管线：选题 → 检索 → 纲要 → 初稿 → 核稿/评稿/修正 → 配图 → 发布",
-      "template": "使用 wechat-article 技能执行公众号文章管线。参数：$ARGUMENTS。\n\n优先运行脚本完成机械流程（两个入口，后续步骤一致）：\n- 自动选题 + 自动纲要：`node skills/wechat-article/scripts/wechat-article.mjs auto --config skills/wechat-article/config/article-types.yaml ...`\n- 手动标题 + 提纲：`node skills/wechat-article/scripts/wechat-article.mjs manual --title \"...\" --outline-file outline.md ...`\n\n模型定义在 `skills/wechat-article/config/models.yaml`；流程节点、处理器和默认提示词在 `skills/wechat-article/config/steps/`（入口 `steps.yaml`）。需要看类型覆盖后的配置时运行 `node skills/wechat-article/scripts/wechat-article.mjs steps --type <id>`。\n\n没有给 --type 时依次取 .env 的 PB_ARTICLE_TYPE、判断模型（SYSTEMONE_*）自动分类、classifier.default_type。只在脚本需要模型判断时调用本地模型或 opencode；不要手工重写脚本已经生成的中间产物。开始前先读取 `skills/wechat-article/SKILL.md`。"
+      "template": "编排由脚本完成，你只负责运行它，不要手工重写脚本已生成的中间产物。参数：$ARGUMENTS。\n\n两个入口：\n- 自动选题 + 自动纲要：`node scripts/wechat-article.mjs auto ...`\n- 手动标题 + 提纲：`node scripts/wechat-article.mjs manual --title \"...\" --outline-file outline.md ...`\n\n模型总表在 `config/models.yaml`；流程节点、处理器和提示词在 `config/wechat-article/`（入口 `steps.yaml`，提示词注册表 `prompts/`）。类型覆盖后的有效配置：`node scripts/wechat-article.mjs steps --type <id>`。完整用法见 `docs/wechat-article/USAGE.md`。\n\n没有给 --type 时依次取 .env 的 PB_ARTICLE_TYPE、判断模型（SYSTEMONE_*）自动分类、classifier.default_type。"
     }
   },
   "agents": {

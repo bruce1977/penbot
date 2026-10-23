@@ -1,0 +1,100 @@
+# AI 深度观点
+# 字段说明见 config/types/README.md
+id: ai-insight
+type: AI 深度观点
+enabled: true
+description: 围绕 AI 领域的一个判断展开，用知识库中的事实和案例支撑，强调观点密度与可读性。
+
+knowledge_base_path: D:/knowledge/obsidian/ai
+
+style:
+  persona: 长期跟踪 AI 产业的观察者，既懂技术也懂落地，不贩卖焦虑。
+  tone: 冷静、克制、有判断，允许少量口语化表达。
+  audience: 关注 AI 产品、创业与职业机会的从业者。
+  title_style: 结论前置或反差提问，不超过 30 字，不用夸张感叹号。
+  structure:
+    - "开篇：用一个具体场景或数据抛出冲突"
+    - "展开：2-3 个分论点，每段一个证据或案例"
+    - "转折：指出反方观点或容易被忽略的限制"
+    - "收束：给出可执行的判断或观察指标"
+  dos:
+    - 每个分论点至少有一个来自知识库的事实、数据或案例
+    - 关键概念首次出现时用一句话解释
+    - 段落控制在 5 行以内，适配手机阅读
+    - 在结尾给读者一个可带走的判断
+  donts:
+    - 不写空泛的行业套话和正确的废话
+    - 不编造数据、机构名、论文名或采访
+    - 不使用震惊体、标题党、绝对化断言
+    - 不在正文中堆砌链接和参考列表
+
+word_limit:
+  min: 1500
+  max: 2200
+  target: 1800
+
+pass_score: 82
+scoring_criteria:
+  - id: thesis
+    name: 观点质量
+    weight: 25
+    description: 是否有清晰、非共识但有依据的核心判断。
+    criteria:
+      - 开篇 3 段内亮出核心判断
+      - 判断具体可证伪，不是口号
+      - 能回应一个合理的反方观点
+  - id: evidence
+    name: 论据与知识库使用
+    weight: 25
+    description: 事实、数据和案例是否可靠，是否真正用到了本地知识库。
+    criteria:
+      - 关键论断有来源或案例支撑
+      - 没有编造事实
+      - 知识库素材被消化而非整段搬运
+  - id: structure
+    name: 结构与节奏
+    weight: 20
+    description: 行文是否有推进感，段落是否适配手机阅读。
+    criteria:
+      - 段落不超过 5 行
+      - 每节有明确小标题或过渡
+      - 结尾收束有力
+  - id: readability
+    name: 表达与可读性
+    weight: 20
+    description: 语言是否准确、顺畅、有画面感。
+    criteria:
+      - 术语有解释
+      - 没有长句堆叠
+      - 至少 3 句可被单独引用的判断句
+  - id: compliance
+    name: 合规与事实风险
+    weight: 10
+    description: 是否存在敏感表述、夸大承诺或侵权风险。
+    criteria:
+      - 无绝对化疗效/收益承诺
+      - 无未经证实的爆料
+      - 引用他人观点标明出处
+
+image_count:
+  min: 2
+  max: 4
+  default: 3
+  cover: true
+image_position_format: "[[img:{index}]]"
+
+topic:
+  keywords: [AI, 大模型, Agent, 智能体, OpenAI, Anthropic, 开源模型]
+  candidate_days: 15
+  fresh_days: 7
+  max_candidates: 40
+  proposals: 3
+
+review:
+  max_rounds: 3
+  pass_score: 82
+
+prompts:
+  outline_extra: "纲要需要明确：核心判断、三个支撑论据、一个反方视角、读者可执行的行动建议。"
+  draft_extra: "标题不超过 30 字。开篇 150 字内必须出现具体场景、数字或冲突。"
+  revise_extra: "优先加强观点与论据的咬合度，删掉不影响论证的段落。"

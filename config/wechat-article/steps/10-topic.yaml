@@ -1,0 +1,79 @@
+# 选题阶段：选题 → 判断类型 → 收集素材（auto 入口选题在前，定类在后；手动入口直接定类）
+#
+# key = step_name。模型调用统一写法（标准见根目录 AGENTS.md）：
+#   models: { <调用名>: { id: <models.yaml 模型 id>, options: { 调用级覆盖 } } }
+# options 未配置的参数吃 models.yaml 端点默认；提示词和数据结构只引用 id：
+# config/prompts/、config/schemas/。
+
+steps:
+  select_topic:
+    label: 选题
+    description: 双窗口筛选候选（文件日期 + 采集日期），生成词频热度表，一次模型调用提炼 3 个候选主题；手动入口可跳过。
+    stage: topic
+    enabled: true
+    modes: [auto, run]
+    handler: builtin:select_topic
+    models:
+      # 写作模型生成候选主题（llm 模板 options：retry_limit / timeout / temperature / max_tokens）。
+      # retry_limit = 结构化输出调用的总尝试上限（含首轮，1 = 不修复重试）。
+      select:
+        id: llm.local
+        options:
+          retry_limit: 2
+          # timeout = 本调用总限时（ms），覆盖 models.yaml profile 的 timeout_ms。
+          timeout: 900000
+      # 判断模型从候选主题中择一（systemone 模板 options：deep / escalate_below / min_confidence）。
+      best:
+        id: systemone.classifier
+        options:
+          # 一次判断置信度低于 escalate_below 时，用 deep 指向的重模型再判一次。
+          deep: systemone.classifier-deep
+          escalate_below: 0.65
+    prompt: topic.select_topic
+    schema: topic.select_topic
+    artifacts:
+      # 候选文章直接来自知识库目录，不经过文章产物。
+      reads: []
+      writes: ["01-result.json", "01-step/topic.md", "01-step/proposal.json"]
+    depends_on: []
+
+  classify_type:
+    label: 判断文章类型
+    description: 根据标题 + 提纲，用 System One 决策模型选择最合适的文章类型。
+    stage: type
+    enabled: true
+    modes: [auto, manual, run]
+    handler: builtin:classify_type
+    models:
+      # 判断模型调用（System One）：端点/密钥默认在 models.yaml systemone.classifier，
+      # 这里只放该调用的行为参数。
+      classify:
+        id: systemone.classifier
+        options:
+          deep: systemone.classifier-deep
+          escalate_below: 0.65
+          # 最终置信度低于该值时按 defaults.yaml classifier.default_type 兜底。
+          min_confidence: 0.5
+    prompt: topic.classify_type
+    schema: topic.classify_type
+    artifacts:
+      # 标题和提纲由命令行传入；定类结果并入 01-result.json 的 type 字段。
+      reads: []
+      writes: ["01-result.json#type"]
+    depends_on: []
+
+  gather_materials:
+    label: 收集素材
+    description: 按主题关键词扫描本地知识库，截取相关段落并排序；不足时用 opencode websearch 补充外部检索。
+    stage: sources
+    enabled: true
+    modes: [auto, manual, run]
+    handler: builtin:gather_materials
+    # 无模型调用（websearch 是 opencode 工具节点，检索模型在 defaults.yaml
+    # knowledge.web-search.model；闸门与超时同段）。
+    schema: topic.gather_materials
+    artifacts:
+      # 素材收集属于选题步：数组并入 01-result.json 的 sources 字段，不另开产物编号。
+      reads: ["01-result.json"]
+      writes: ["01-result.json#sources"]
+    depends_on: [select_topic]

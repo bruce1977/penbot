@@ -1,0 +1,20 @@
+# 配图阶段（05）：按纲要 image_plan 生成封面和正文图
+#
+# key = step_name。提示词和数据结构只引用 id：config/prompts/、config/schemas/。
+
+steps:
+  image_generation:
+    label: 生成配图
+    description: 根据纲要的 image_plan 生成封面和正文图，替换正文里的配图标记。
+    stage: illustrate
+    enabled: true
+    modes: [auto, manual, run, illustrate]
+    handler: builtin:generate_images
+    # 无模型调用：图片通道、尺寸、并发和失败策略统一在 defaults.yaml illustrations 里配置。
+    prompt: revision.image_generation
+    schema: revision.image_generation
+    artifacts:
+      # de_ai 接线后 reads 第一项改为 04-step/polished.md。
+      reads: ["03-step/reviewed.md", "02-step/outline.json"]
+      writes: ["05-step/images.json", "05-step/illustrated.md", "05-step/images/", "05-result.json"]
+    depends_on: [revision]

@@ -1,0 +1,85 @@
+# 模型总表
+#
+# 所有模型按类型分组，steps 节点只引用模型 id：
+#   models:
+#     <调用名>:
+#       id: llm.local            # 或 systemone.classifier
+#       options: { ... }         # 调用级覆盖（可选）
+#
+# 当前两类（= 调用模板，模板 id 前缀决定 options 白名单，见 AGENTS.md 统一标准）：
+#   llm        文本模型（Ollama / OpenAI 兼容端点）
+#              options：retry_limit / timeout / temperature / max_tokens
+#   systemone  System One 决策模型
+#              options：deep / escalate_below / min_confidence
+#
+# 注意：这里配置的是端点级默认值（base_url / timeout_ms / temperature…）。
+# 调用级参数以 steps 节点 models.<调用名>.options 为准：节点 timeout（ms）覆盖
+# 本文件的 timeout_ms，因为不同提示词、不同模型的响应时间不一致。
+#
+# 新增模型：在对应分类下加子项，id = <分类>.<子项>。
+# 后续增加 reranker 时，直接加 reranker: 段并为其定义调用模板。
+#
+# 字段统一用小写：base_url / model / api_key；大写 BASE_URL / MODEL_NAME /
+# API_KEY 也兼容，但同一个模型里只写一种。
+
+version: 1
+
+llm:
+  local:
+    provider: ollama
+    base_url: "${LOCAL_LLM_BASE_URL:-http://localhost:11434}"
+    model: "${LOCAL_LLM_BASE_MODEL:-qwen3.5:9b}"
+    api_key: "${LOCAL_LLM_API_KEY}"
+    timeout_ms: 600000
+    temperature: 0.7
+    num_ctx: 32768
+    max_tokens: 4096
+
+  small:
+    # 暂无节点引用；作为 --model 备选（轻量替换 llm.local 时用）。
+    provider: ollama
+    base_url: "${LOCAL_LLM_BASE_URL:-http://localhost:11434}"
+    model: "${LOCAL_LLM_SMALL_MODEL:-qwen3.5:4b}"
+    api_key: "${LOCAL_LLM_API_KEY}"
+    timeout_ms: 600000
+    temperature: 0.7
+    num_ctx: 32768
+    max_tokens: 4096
+
+  large:
+    provider: ollama
+    base_url: "${LOCAL_LLM_BASE_URL:-http://localhost:11434}"
+    model: "${LOCAL_LLM_LARGE_MODEL:-qwen3.6:35b}"
+    api_key: "${LOCAL_LLM_API_KEY}"
+    timeout_ms: 1200000
+    temperature: 0.7
+    num_ctx: 32768
+    max_tokens: 4096
+
+  remote:
+    # 暂无节点引用；作为 --model 备选（本地算力不足时切云端）。
+    provider: openai
+    base_url: "${PB_LLM_BASE_URL:-https://api.deepseek.com}"
+    model: "${PB_LLM_MODEL:-deepseek-chat}"
+    api_key: "${PB_LLM_API_KEY}"
+    timeout_ms: 300000
+    temperature: 0.7
+    max_tokens: 4096
+
+systemone:
+  # 一次判断（轻量模型）；置信度低于节点 options.escalate_below 时升级到 deep 指向的二次判断
+  classifier:
+    base_url: "${SYSTEMONE_BASE_URL}"
+    endpoint: "/v1/systemone"
+    api_key: "${SYSTEMONE_API_KEY}"
+    model: "${SYSTEMONE_MODEL1:-tev1}"
+    timeout_ms: 60000
+    max_retries: 2
+  # 二次判断（重模型）；base_url / api_key 与一次判断相同，可在本节点覆盖
+  classifier-deep:
+    base_url: "${SYSTEMONE_BASE_URL}"
+    endpoint: "/v1/systemone"
+    api_key: "${SYSTEMONE_API_KEY}"
+    model: "${SYSTEMONE_MODEL2:-nimble}"
+    timeout_ms: 120000
+    max_retries: 2

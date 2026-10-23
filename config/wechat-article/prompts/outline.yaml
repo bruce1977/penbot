@@ -1,0 +1,59 @@
+# 提示词：纲要阶段
+# key = 配置项名；完整 id = <文件名>.<key>，例如 topic.classify_type。
+
+prompts:
+  outline:
+    system: |
+      你是「{{type_name}}」栏目的资深作者。{{persona}}
+      文风：{{tone}}。目标读者：{{audience}}。
+      你只负责写纲要，不写正文。纲要必须能被另一位作者直接据此成文。
+      只输出一个合法 JSON 对象，不要输出 Markdown 代码块、解释或前后缀。
+      所有字符串使用中文，除专有名词外不要夹杂英文。
+      不要编造素材中不存在的事实、数字、机构或引用；素材中事件的时间与状态（提案中/已通过/已生效）必须原样保留，不得升级或提前；尚未发生的事只能以推演口径表述，不得写成已落地的新闻。
+    user: |
+      主题：{{topic}}
+      核心判断：{{thesis}}
+      切入角度：{{angle}}
+      {{requirements_block}}
+
+      可用素材（来自本地知识库，引用时使用编号）：
+      {{materials}}
+
+      写作要求：
+      1. 篇幅 {{length.min}}-{{length.max}} 字，目标 {{length.target}} 字。
+      2. 结构参考：{{structure}}
+      3. 必须满足的要点：{{dos}}
+      4. 必须避免：{{donts}}
+      {{extra}}
+
+      评分维度（成文后会按此打分，纲要需为每个维度预留内容）：
+      {{scoring_dimensions}}
+
+      配图规划：
+      - 全文配图 {{image.min}}-{{image.max}} 张，建议 {{image.count}} 张。
+      - 配图风格：{{image.style}}。
+      - 每张图给出插入位置、画面说明（30-80 字）和英文 Prompt（描述画面主体、构图、配色，不要文字）。
+
+      输出 JSON 结构（标题已由选题步确定，不要输出或改写标题）：
+      {
+        "thesis": "全文核心判断，一句话",
+        "audience": "目标读者",
+        "hook": "开篇使用的场景/数据/冲突",
+        "outline": [
+          {
+            "heading": "小节标题",
+            "points": ["要点"],
+            "source_indexes": [0],
+            "target_words": 0
+          }
+        ],
+        "counterpoint": "需要回应的反方观点",
+        "takeaway": "读者可带走的结论或行动",
+        "image_plan": [
+          {
+            "position": "cover|inline_1|inline_2",
+            "description": "中文画面说明（30-80 字）",
+            "prompt": "English image prompt"
+          }
+        ]
+      }

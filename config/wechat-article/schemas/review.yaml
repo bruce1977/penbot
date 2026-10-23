@@ -1,0 +1,41 @@
+# 输入/输出结构：审稿阶段
+# key = 配置项名；完整 id = <文件名>.<key>，例如 topic.classify_type。
+
+schemas:
+  review:
+    input:
+      article: "string"
+      round: "number"
+    output:
+      article: "string（修正后）"
+      issues: "Array<{type: string, original: string, corrected: string, suggestion?: string}>"
+      channel: "correct-cn|llm|none"
+
+  scoring:
+    input:
+      article: "string"
+      word_count: "number"
+      round: "number"
+      scoring_criteria: "Array<{id: string, name: string, weight: number, description?: string}>"
+    # 紧凑 DSL（见 lib/template.mjs）：models.jsonValidated 校验模型输出的标准；
+    # 尾项字符串是给人看的备注，不作为提示词来源（结构说明在 prompts/review.yaml）；
+    # total 加权一致性等域内修正仍由 normalizeScore() 负责。
+    output:
+      dimensions: ["array", 1]
+      "dimensions[].id": ["string", 1, "维度 id"]
+      "dimensions[].name": ["string", 1, "维度名"]
+      "dimensions[].score": ["number", 0, 100]
+      "dimensions[].comment": ["string", 1, "具体扣分理由，引用原文片段"]
+      total: ["number", 0, 100]
+      verdict: ["string", 1, "pass|revise"]
+      strengths: ["array", 0, 3]
+      "strengths[]": ["string", 1, "优点"]
+      issues: ["array", 0]
+      "issues[].severity": ["string", 1, "high|medium|low"]
+      "issues[].dimension": ["string", 1, "维度 id"]
+      "issues[].location": ["string", 1, "所在小节或原文片段"]
+      "issues[].problem": ["string", 1, "问题描述"]
+      "issues[].fix": ["string", 1, "可直接执行的修改建议"]
+      must_fix: ["array", 0, 3]
+      "must_fix[]": ["string", 1, "本轮必须修改的问题"]
+      suggested_title?: ["string", 0, "如果标题不够好，给出更好的标题，否则留空"]

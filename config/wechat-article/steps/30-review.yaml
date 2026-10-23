@@ -1,0 +1,83 @@
+# 审稿阶段：核稿 → 修正 → 评稿 → 判定（循环，直到判定 done 或达到最大轮次）
+#
+# 每轮的中间文件收进 03-step/round-<n>/；阶段完成时写 03-step/reviewed.md（终稿）
+# 和 03-result.json（轮次、评分、判定、结论）。
+# 篇幅不在本阶段单独设节点：修正环节内置字数校验——返回稿由本地函数计字，
+# 不在区间就带原因重试（--length-attempts，默认 3 次），重试耗尽仍不合格则中断管线。
+# 是否继续修改由 scoring 节点的 check 判断调用（systemone）决定；判定不可用时
+# 回退 total >= pass_score 规则。循环轮次单源 = type.review.max_rounds（defaults.yaml）。
+# retry_limit 只对结构化修复重试的调用生效（score）；核稿兜底与修正是纯文本
+# 生成，不配。核稿服务参数单源 defaults.yaml defaults.review.correct_cn.*。
+# key = step_name。模型调用统一写 models: { <调用名>: { id, options } }
+# （标准见根目录 AGENTS.md）。提示词和数据结构只引用 id：config/prompts/、config/schemas/。
+
+steps:
+  review:
+    label: 核稿
+    description: 先走中文校对接口，接口不可用时用模型兜底；只修错别字和敏感词。
+    stage: review
+    enabled: true
+    modes: [auto, manual, run, review]
+    handler: builtin:review_article
+    models:
+      # 核稿服务不可用时的模型兜底校对调用（纯文本生成，无修复重试）。
+      # 核稿服务本身的参数单源在 defaults.yaml defaults.review.correct_cn.*。
+      correct:
+        id: llm.local
+        options:
+          timeout: 180000
+    prompt: review.review
+    schema: review.review
+    artifacts:
+      reads: ["02-step/draft.md", "03-step/round-<n-1>/after-revise.md"]
+      writes: ["03-step/round-<n>/correct.json", "03-step/round-<n>/after-correct.md"]
+    depends_on: [draft_writing]
+
+  revision:
+    label: 修正
+    description: 按核稿改动点（首轮）与上一轮评分意见修改稿件，含篇幅要求；返回稿本地计字，不合格带原因重试，重试耗尽中断流程。
+    stage: review
+    enabled: true
+    modes: [auto, manual, run, review]
+    handler: builtin:revise_article
+    models:
+      # 纯文本改写调用，无修复重试；篇幅不合格由代码带原因重新调用（上限 --length-attempts）。
+      revise:
+        id: llm.local
+        options:
+          timeout: 900000
+    prompt: revision.revision
+    schema: revision.revision
+    artifacts:
+      reads: ["03-step/round-<n>/after-correct.md"]
+      writes: ["03-step/round-<n>/after-revise.md", "03-step/round-<n>-diff.md?"]
+    depends_on: [review]
+
+  scoring:
+    label: 评稿
+    description: 按类型评分维度打分，输出总分、问题和修改建议；check 判断模型据此决定是否需要再改一轮。
+    stage: review
+    enabled: true
+    modes: [auto, manual, run, review]
+    handler: builtin:score_article
+    models:
+      score:
+        id: llm.local
+        options:
+          retry_limit: 2
+          timeout: 900000
+      # 循环去留判定（continue/done）；端点默认在 models.yaml systemone.*，
+      # 行为参数（escalate_below / min_confidence / deep）在本节点；
+      # 问句文案在 prompts/review.yaml 的 check（id review.check，代码取）。
+      check:
+        id: systemone.classifier
+        options:
+          deep: systemone.classifier-deep
+          escalate_below: 0.65
+          min_confidence: 0.5
+    prompt: review.scoring
+    schema: review.scoring
+    artifacts:
+      reads: ["03-step/round-<n>/after-revise.md"]
+      writes: ["03-step/round-<n>/score.json", "03-step/round-<n>/check.json", "03-step/reviewed.md", "03-result.json"]
+    depends_on: [revision]

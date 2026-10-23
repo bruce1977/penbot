@@ -1,0 +1,61 @@
+# 输入/输出结构：选题阶段
+# key = 配置项名；完整 id = <文件名>.<key>，例如 topic.classify_type。
+
+schemas:
+  classify_type:
+    input:
+      title: "string"
+      outline: "string?"
+      types: "Array<{id: string, description?: string}>"
+    output:
+      type: "string"
+      confidence: "number(0..1)"
+      probabilities: "Record<string, number>?"
+      source: "classifier|default|manual"
+
+  select_topic:
+    input:
+      type: "ArticleType"
+      mode: "auto|manual"
+      # 候选只给标题 + 距今天数 + 新采集标记；时效由代码算好，模型不推断。
+      candidates: "Array<{title: string, days_ago: number, fresh: boolean}>"
+      heatmap: "string"
+      # 已写过的文章（published/ 归档 + draft/ 在写），用于避免重复选题。
+      written: "Array<{title: string, date?: string, type?: string}>"
+      count: "number?"
+      user_topic: "string?"
+      requirements: "string?"
+    # 紧凑 DSL（见 lib/template.mjs）：models.jsonValidated 校验模型原始输出的标准。
+    # 尾项字符串是给人看的字段备注，校验忽略，也不作为提示词来源——
+    # 给模型看的输出结构说明维护在 prompts/topic.yaml（select_topic）里。
+    # 事件级查重（duplicate_of 回填、source_hints 必须命中候选标题）仍由
+    # validateProposals() 做域校验，不在这个形状 schema 里。hint 匹配不上会被
+    # 丢弃（source_hints 可能收缩到 2 以下，落盘件与模型原始输出的差异由 warn 日志暴露）。
+    # 最终写哪个由 systemone 择题判定（topic.select_best，choice = 编号）；
+    # 判定结果记在 01-step/proposal.json 的 picked，选定主题 → 01-result.json。
+    output:
+      topics: ["array", 1]
+      "topics[].topic": ["string", 1, 64, "一句话主题（不超过 64 字）"]
+      "topics[].title": ["string", 1, 64, "拟定文章标题（不超过 64 字）"]
+      "topics[].thesis": ["string", 1, "核心判断，一句话，必须可证伪"]
+      "topics[].angle": ["string", 1, "切入角度，说明与常见报道的差异"]
+      "topics[].rationale": ["string", 1, "为什么现在写这个主题（80 字内，引用给定的天数/篇数）"]
+      "topics[].score": ["number", 0, 100]
+      "topics[].keywords": ["array", 1, 8]
+      "topics[].keywords[]": ["string", 1, "检索关键词"]
+      "topics[].source_hints": ["array", 2]
+      "topics[].source_hints[]": ["string", 1, "候选列表中的原标题"]
+      "topics[].title_candidates": ["array", 1]
+      "topics[].title_candidates[]": ["string", 1, "备选标题"]
+
+  gather_materials:
+    input:
+      topic: "Topic"
+      keywords: "string[]"
+      knowledge_dirs: "string[]"
+      max_sources: "number?"
+      lookback_days: "number?"
+    # 输出数组并入 01-result.json 的 sources 字段（不再单独成文件）。
+    # 素材正文经 landSources 落 01-step/sources/*.md，链接条目只有三个字段；
+    # 下游读取统一走 loadSource（相对 link 以文章目录为 baseDir 回读）。
+    output: "Array<{index: number, title: string, link: string}>"

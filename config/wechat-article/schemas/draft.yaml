@@ -1,0 +1,40 @@
+# 输入/输出结构：初稿阶段
+# key = 配置项名；完整 id = <文件名>.<key>，例如 topic.classify_type。
+
+schemas:
+  draft_writing:
+    input:
+      draft_input: "DraftInput（见 02-step/draft-input.json）"
+    output:
+      article: "string（Markdown，含 frontmatter 和配图标记）"
+
+  # bundle_draft_input 的产物结构：output 为紧凑校验 DSL（由 draft-input.mjs
+  # 读取，validateDraftInput 的唯一标准）；input 是文档性描述。
+  # 完整 id：draft.draft_input
+  draft_input:
+    input:
+      topic: "01-result.json（标题、判断、受众等）"
+      outline: "02-step/outline.json"
+      sources: "01-result.json#sources"
+    output:
+      "type": ["string", 1]
+      "title": ["string", 1, 64]
+      "thesis?": ["string", 0, 200]
+      "audience?": "string"
+      "hook?": "string"
+      "requirements?": "string"
+      "outline": ["array", 1, 12]
+      "outline[].heading": ["string", 1]
+      "outline[].points": ["array", 1, 8]
+      "outline[].target_words?": ["number", 0, 2000]
+      "counterpoint?": "string"
+      "takeaway?": "string"
+      "materials": ["array", 1, 20]
+      "materials[].title": ["string", 1]
+      "materials[].paragraphs": ["array", 1, 20]
+      "materials[].date?": "string"
+      "materials[].source?": "string"
+      "images?": ["array", 0, 6]
+      "images[].position": ["string", 1]
+      "images[].description": ["string", 1]
+      "images[].prompt?": "string"

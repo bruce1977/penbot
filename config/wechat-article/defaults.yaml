@@ -1,0 +1,145 @@
+# 全局默认配置
+#
+# 这里放与“具体类型”和“具体步骤”都无关的运行时默认值：
+#   - project：文章根目录
+#   - classifier：判断模型的行为参数（开关/问题名/兜底类型；调用配置在 steps 节点）
+#   - defaults：所有文章类型共享的默认值（review / knowledge / illustrations / publish）
+#
+# 模型定义在 config/models.yaml；类型清单在 config/article-types.yaml；
+# 流程节点在 config/steps.yaml。
+# 加载顺序：defaults.yaml → models.yaml → article-types.yaml（可覆盖）→ config/types/*.yaml。
+
+version: 2
+
+project:
+  # 文章根目录：只认环境变量/配置，命令行不能覆盖
+  base_output_folder: "${BASE_OUTPUT_FOLDER:-output/wechat-article}"
+
+# ---------------------------------------------------------------------------
+# 判断模型（System One 决策模型）：根据「标题 + 提纲」自动选择文章类型
+#
+# 这里只留行为参数（开关 / 问题名 / 兜底类型）。
+# 模型本身与各调用的升级/置信度参数在 steps 节点（10-topic.yaml）：
+#   classify_type.models.classify（定类）、select_topic.models.best（择题），
+# options 未配置的参数吃 models.yaml systemone.* 端点默认。
+#
+# 走 System One 协议：POST {base_url}/v1/systemone
+#   body:     { model, state, questions: { article_type: { type: choice, ... } } }
+#   response: { answers: { article_type: { choice, probabilities, confidence } } }
+# 兼容 TypeSafe Jev、基石智算 Laya、vLLM /v1/systemone。
+# 判断模型不可用时自动回退 default_type。
+# ---------------------------------------------------------------------------
+classifier:
+  enabled: true
+  # questions 里的问题名，答案会从 answers.<question> 读取
+  question: article_type
+  # 选题判定（select_topic.models.best）的问题名
+  topic_question: topic_pick
+  # 审稿循环去留判定（scoring.models.check）的问题名
+  check_question: review_check
+  # 判断失败/置信度不足时用哪个类型
+  default_type: ai-news
+
+# ---------------------------------------------------------------------------
+# 文章类型默认值：所有类型先吃这里，再被 config/types/<id>.yaml 覆盖
+# ---------------------------------------------------------------------------
+defaults:
+  # 模型末位回退（--model > 节点 models.<调用名>.id > type.model）。
+  # 正常情况下各步骤模型都配在 steps 节点，这里只在节点没配时兜底。
+  model: llm.large
+
+  review:
+    # 评稿模型在 steps/30-review.yaml scoring.models.score；这里只留审稿循环参数。
+    max_rounds: 3
+    pass_score: 80
+    correct_cn:
+      enabled: true
+      base_url: "${PB_PYCORRECTOR_API_URL:-https://correct-api.myehome.top}"
+      endpoint: "/api/pipeline"
+      api_key: "${PB_PYCORRECTOR_API_KEY}"
+      auth_header: Authorization
+      enable_audit: false
+      enable_final_suggestion: false
+      apply: issues
+      timeout_ms: 180000
+      fallback_llm: true
+
+  knowledge:
+    source: local
+    use_weknora: "${PB_USE_WEKNORA:-false}"
+    max_sources: 8
+    excerpt_chars: 1800
+    lookback_days: 365
+    max_file_bytes: 400000
+    weknora:
+      base_url: "${WEKNORA_BASE_URL}"
+      api_key: "${WEKNORA_API_KEY}"
+      auth_header: X-API-Key
+      match_count: 8
+      timeout_ms: 30000
+    # 通道 2：充分性闸门判定本地不足时，用 opencode websearch 补外部素材。
+    # websearch 不是模型调用：model 是 opencode 侧配置的 provider/model（与
+    # config/models.yaml 无关），默认跟随环境变量 OPENCODE_DEFAULT_MODEL。
+    # 类型文件可覆盖（如随笔类设 enabled: false 关掉出门检索）。
+    web-search:
+      enabled: true
+      model: "${OPENCODE_DEFAULT_MODEL:-ollama-local/qwen3.5:9b}"
+      max_queries: 2      # 最多几组关键字（标题一组 + 关键词一组）
+      max_per_query: 3    # 每组结果解析取几条
+      max_sources: 6      # 最多并入几条外部素材
+      excerpt_chars: 800  # 外部结果摘录截断
+      timeout_ms: 600000  # 单组检索超时
+      gate:
+        min_hits_ratio: 0.5     # 命中数 < max_sources × 该比例 → 不足
+        min_excerpt_chars: 3000 # 本地摘录总字数下限
+        min_hint_coverage: 0.5  # source_hints 覆盖率下限
+        fresh_days: 90          # 无任何命中在此窗口内 → 不足
+
+  illustrations:
+    min: 1
+    max: 5
+    cover: true
+    concurrency: 2
+    on_failure: comment
+    # 配图标记模板：{index} 会被替换成 1..N
+    position_format: "[[img:{index}]]"
+    style: "扁平化科技插画，干净留白，克制的蓝紫与暖橙配色，适合微信公众号阅读，不要出现文字"
+    negative_prompt: "photorealistic, 3d render, oil painting, western fantasy, anime style, manga, chibi, too many details, cluttered composition, bright neon colors, over-saturated, soft focus, blurry, deformed hands, extra limbs, signature, watermark, text, words, logo"
+    scenes:
+      wechat-cover: { width: 900, height: 383 }
+      wechat-cover-thumb: { width: 500, height: 500 }
+      article-inline: { width: 1080, height: 810 }
+    modelscope:
+      enabled: true
+      base_url: https://api-inference.modelscope.cn
+      api_key: "${PB_MODEL_IMAGE_API_KEY}"
+      model: Tongyi-MAI/Z-Image-Turbo
+      timeout_ms: 90000
+      poll_interval_ms: 5000
+      max_polls: 18
+    pollinations:
+      enabled: true
+      base_url: https://image.pollinations.ai
+      model: turbo
+      timeout_ms: 90000
+
+  publish:
+    auto_publish: false
+    archive:
+      enabled: true
+      # 终稿统一落到本地知识库的 pipeline 目录，由后续入库脚本扫描处理；空 = 跳过复制
+      knowledge_dir: "${KNOWLEDGE_PIPELINE_DIR:-D:/knowledge/pipeline}"
+      filename: "{date}-{slug}.md"
+    email:
+      enabled: false
+      to: ["jiangyifeng@myehome.cn"]
+      from: "${PB_RESEND_FROM:-penbot@myehome.cn}"
+      api_key: "${PB_RESEND_API_KEY}"
+      subject: "{title}"
+    wechat:
+      enabled: false
+      theme: default
+      highlight: solarized-light
+      env_file: .env
+      command: npx --yes @wenyan-md/cli
+      dry_run: false

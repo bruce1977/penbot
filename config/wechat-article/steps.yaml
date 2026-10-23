@@ -1,0 +1,30 @@
+# 流程节点总入口
+#
+# 节点按大步骤拆到 config/steps/，文件编号 = 该阶段产物编号（NN-step/、NN-result.json）：
+#   10-topic.yaml      判断类型 / 选题 / 收集素材
+#   20-draft.yaml      生成纲要 / 组装初稿输入 / 写初稿
+#   30-review.yaml     核稿 / 修正 / 评稿+判定（每轮：核稿 → 修正 → 评稿 → 判定）
+#   40-polish.yaml     去 AI 化（配置就绪，运行时暂未接线）
+#   50-illustrate.yaml 生成配图
+#   60-publish.yaml    发布 / 归档
+#
+# 节点配置用 key → value：key 是 step_name，value 是步骤参数。
+# 模型调用统一写在节点里（统一标准见根目录 AGENTS.md）：
+#   models:
+#     <调用名>: { id: <config/models.yaml 模型 id>, options: { 调用级覆盖 } }
+# options 未配置的参数吃 models.yaml 端点默认；无模型调用的节点不写 models 段。
+# 提示词和数据结构不在这里配置，节点只写 id：
+#   config/prompts/<命名空间>.yaml
+#   config/schemas/<命名空间>.yaml
+#
+# 这个文件只保留 phases：阶段名 → 阶段文件。
+
+version: 2
+
+phases:
+  topic: steps/10-topic.yaml
+  draft: steps/20-draft.yaml
+  review: steps/30-review.yaml
+  polish: steps/40-polish.yaml
+  illustrate: steps/50-illustrate.yaml
+  publish: steps/60-publish.yaml

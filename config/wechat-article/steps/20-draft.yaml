@@ -1,0 +1,68 @@
+# 初稿阶段：生成纲要 → 组装初稿输入 → 写初稿
+#
+# 三个节点同属 draft 阶段，中间文件收进 02-step/，02-result.json 是本阶段唯一对外产物。
+# 篇幅不在本阶段调整：初稿只管按纲要写完，字数由审稿阶段的修正环节校验（30-review.yaml）。
+# key = step_name。模型调用统一写 models: { <调用名>: { id, options } }。
+# 提示词和数据结构只引用 id：config/prompts/、config/schemas/。
+#
+# 运行时单源（统一标准见 AGENTS.md）：
+#   - 模型调用统一写 models: { <调用名>: { id, options } }；
+#     options 未配置的参数吃 models.yaml 端点默认；
+#   - retry_limit：结构化输出调用的总尝试上限（含首轮，1 = 不修复重试）；
+#   - timeout：本调用总限时（ms），覆盖 models.yaml profile 的 timeout_ms。
+
+steps:
+  outline:
+    label: 生成纲要
+    description: 把主题、素材和类型要求整理成可逐节写作的纲要。
+    stage: draft
+    enabled: true
+    modes: [auto, manual, run, draft]
+    handler: builtin:generate_outline
+    models:
+      outline:
+        id: llm.large
+        options:
+          retry_limit: 2
+          timeout: 1200000
+    prompt: outline.outline
+    schema: outline.outline
+    artifacts:
+      # 素材在 01-result.json 的 sources 字段里（选题步已收齐）。
+      reads: ["01-result.json"]
+      writes: ["02-step/outline.json", "02-step/outline.md"]
+    depends_on: [gather_materials]
+
+  bundle_draft_input:
+    label: 组装初稿输入
+    description: 把标题、大纲、素材和类型要求组装成 02-step/draft-input.json，并校验 schema。
+    stage: draft
+    enabled: true
+    modes: [auto, manual, run, draft]
+    handler: builtin:build_draft_input
+    # 纯本地组装，无模型调用；schema 校验在代码内，失败直接报错不重试。
+    schema: draft.draft_input
+    artifacts:
+      reads: ["01-result.json", "02-step/outline.json"]
+      writes: ["02-step/draft-input.json"]
+    depends_on: [outline, gather_materials]
+
+  draft_writing:
+    label: 写初稿
+    description: 按 02-step/draft-input.json 的数据写完整 Markdown 初稿；提示词和校验规则分别来自 draft.draft_writing / draft.draft_input。
+    stage: draft
+    enabled: true
+    modes: [auto, manual, run, draft]
+    handler: builtin:write_draft
+    models:
+      # 纯文本生成，无修复重试；模型失败时降级为分节生成（generateDraftBySections）。
+      draft:
+        id: llm.large
+        options:
+          timeout: 1200000
+    prompt: draft.draft_writing
+    schema: draft.draft_writing
+    artifacts:
+      reads: ["02-step/draft-input.json"]
+      writes: ["02-step/draft.md", "02-result.json"]
+    depends_on: [bundle_draft_input]

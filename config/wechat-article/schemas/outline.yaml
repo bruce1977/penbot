@@ -1,0 +1,32 @@
+# 输入/输出结构：纲要阶段
+# key = 配置项名；完整 id = <文件名>.<key>，例如 topic.classify_type。
+# output 用紧凑 DSL（见 lib/template.mjs）：脚本校验模型输出的标准
+# （validateTemplateSchema）。尾项字符串是给人看的字段备注，校验忽略，
+# 不作为提示词来源——给模型看的输出结构说明维护在 prompts/outline.yaml 里。
+
+schemas:
+  outline:
+    input:
+      type: "ArticleType"
+      topic: "Topic"
+      sources: "Array<Source>"
+      requirements: "string?"
+      max_chars: "number?"
+    output:
+      # title/alternatives 不在纲要契约里：标题单源 = 01 选题步（suggested_title 是 03 审稿的改进点）
+      thesis: ["string", 1, "全文核心判断，一句话"]
+      audience: ["string", 1, "目标读者"]
+      hook: ["string", 1, "开篇使用的场景/数据/冲突"]
+      outline: ["array", 2, 12]
+      "outline[].heading": ["string", 1, 24, "小节标题"]
+      "outline[].points": ["array", 1, 8]
+      "outline[].points[]": ["string", 1, "要点"]
+      "outline[].source_indexes?": ["array", 0]
+      "outline[].source_indexes[]": ["number"]
+      "outline[].target_words?": ["number", 50, 2000]
+      counterpoint: ["string", 1, "需要回应的反方观点"]
+      takeaway: ["string", 1, "读者可带走的结论或行动"]
+      image_plan: ["array", 1, 6]
+      "image_plan[].position": ["string", 1, "cover|inline_1|inline_2"]
+      "image_plan[].description": ["string", 1, "中文画面说明（30-80 字）"]
+      "image_plan[].prompt": ["string", 1, "English image prompt"]
