@@ -16,13 +16,16 @@
 # 调用级参数以 steps 节点 models.<调用名>.options 为准：节点 timeout（ms）覆盖
 # 本文件的 timeout_ms，因为不同提示词、不同模型的响应时间不一致。
 #
+# 还有第三类可选 provider：agent CLI（provider: opencode，当前无节点引用，只作
+# --model 备选）。它不走 HTTP，必填字段是 timeout_ms 与 instruction——发给 CLI 的
+# 那句任务说明只维护在这里，代码不铺副本；instruction 里的 {prompt_file_name}
+# 由脚本换成附件文件名。
+#
 # 新增模型：在对应分类下加子项，id = <分类>.<子项>。
 # 后续增加 reranker 时，直接加 reranker: 段并为其定义调用模板。
 #
 # 字段统一用小写：base_url / model / api_key；大写 BASE_URL / MODEL_NAME /
 # API_KEY 也兼容，但同一个模型里只写一种。
-
-version: 1
 
 llm:
   local:
@@ -34,6 +37,8 @@ llm:
     temperature: 0.7
     num_ctx: 32768
     max_tokens: 4096
+    # 流式响应的块间隔上限（ms）：超过它就判定连接死了并中断，不等总限时耗尽。
+    stream_idle_ms: 120000
 
   small:
     # 暂无节点引用；作为 --model 备选（轻量替换 llm.local 时用）。
@@ -45,6 +50,8 @@ llm:
     temperature: 0.7
     num_ctx: 32768
     max_tokens: 4096
+    # 流式响应的块间隔上限（ms）：超过它就判定连接死了并中断，不等总限时耗尽。
+    stream_idle_ms: 120000
 
   large:
     provider: ollama
@@ -55,6 +62,8 @@ llm:
     temperature: 0.7
     num_ctx: 32768
     max_tokens: 4096
+    # 流式响应的块间隔上限（ms）：超过它就判定连接死了并中断，不等总限时耗尽。
+    stream_idle_ms: 120000
 
   remote:
     # 暂无节点引用；作为 --model 备选（本地算力不足时切云端）。
@@ -65,6 +74,8 @@ llm:
     timeout_ms: 300000
     temperature: 0.7
     max_tokens: 4096
+    # 流式响应的块间隔上限（ms）：超过它就判定连接死了并中断，不等总限时耗尽。
+    stream_idle_ms: 120000
 
 systemone:
   # 一次判断（轻量模型）；置信度低于节点 options.escalate_below 时升级到 deep 指向的二次判断

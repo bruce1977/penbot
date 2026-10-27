@@ -23,8 +23,10 @@ import {
 import { parseJsonFromText, extractAgentText } from "../../scripts/lib/models.mjs";
 import {
   ARTIFACT,
+  buildEnvelope,
   createArticle,
   detectStartStage,
+  fileFromResult,
   listArticles,
   listWrittenArticles,
   openArticle,
@@ -111,8 +113,12 @@ test("extractAgentText concatenates NDJSON text parts and raises errors", () => 
 
 test("normalizeConfig normalizes weights, dirs and numeric ranges", () => {
   const dir = tempDir("wa-cfg-");
-  const config = normalizeConfig(rawConfig(dir), dir);
-  const type = config.types[0];
+  const raw = rawConfig(dir);
+  // expandEnv 之后这些值都是字符串；加载期归成数字，缺值不注入默认。
+  raw.defaults.review.max_rounds = "3";
+  raw.defaults.knowledge = { max_sources: "8", excerpt_chars: "1800", max_file_bytes: 400000 };
+  raw.defaults.illustrations = { min: "1", max: "5" };
+  const type = normalizeConfig(raw, dir).types[0];
   assert.equal(type.id, "t1");
   const [a, b] = type.scoring.dimensions;
   assert.equal(a.weight, 0.25);
@@ -122,6 +128,104 @@ test("normalizeConfig normalizes weights, dirs and numeric ranges", () => {
   assert.equal(type.illustrations.min, 1);
   assert.equal(type.illustrations.max, 5);
   assert.equal(type.knowledge.max_sources, 8);
+
+  // 没写就没有：加载期铺同值默认等于允许 defaults.yaml 说谎（改了配置不生效）。
+  const bare = normalizeConfig(rawConfig(dir), dir).types[0];
+  assert.equal(bare.review.max_rounds, undefined);
+  assert.equal(bare.knowledge.max_sources, undefined);
+  assert.equal(bare.illustrations.min, undefined);
+  // 通过线只解析一次：scoring.pass_score 是 review.pass_score 的别名，不是第二条链。
+  assert.equal(type.scoring.pass_score, type.review.pass_score);
+});
+
+test("publish 投递开关把 env 字符串归成真布尔", () => {
+  const dir = tempDir("wa-cfg-");
+  const raw = rawConfig(dir);
+  raw.defaults.publish = {
+    auto_publish: "${PB_AUTO_PUBLISH:-false}",
+    email: { enabled: "true", to: ["a@x.com"] },
+    wechat: { enabled: "0" },
+  };
+  const config = normalizeConfig(raw, dir);
+  // doctor 读 defaults 段、运行时读类型合并后的 publish，两边口径必须一致。
+  assert.equal(config.defaults.publish.auto_publish, false);
+  assert.equal(config.defaults.publish.email.enabled, true);
+  const publish = config.types[0].publish;
+  assert.equal(publish.auto_publish, false);
+  assert.equal(publish.email.enabled, true);
+  assert.equal(publish.wechat.enabled, false);
+  assert.deepEqual(publish.email.to, ["a@x.com"]);
+});
+
+test("PB_EMAIL_ENABLED 抬起 defaults.yaml 的邮件开关", () => {
+  process.env.PB_EMAIL_ENABLED = "true";
+  try {
+    const config = loadConfig(DEFAULT_CONFIG_REL, { root: PROJECT_ROOT });
+    assert.equal(config.defaults.publish.email.enabled, true);
+    assert.equal(config.types[0].publish.email.enabled, true);
+  } finally {
+    delete process.env.PB_EMAIL_ENABLED;
+  }
+  const off = loadConfig(DEFAULT_CONFIG_REL, { root: PROJECT_ROOT });
+  assert.equal(off.types[0].publish.email.enabled, false);
+});
+
+test("PB_* 抬起的可变阈值在加载期归成数字/布尔", () => {
+  const lifted = {
+    PB_REVIEW_ROUNDS: "2",
+    PB_PASS_SCORE: "90",
+    PB_KNOWLEDGE_MAX_SOURCES: "5",
+    PB_WEB_SEARCH_ENABLED: "false",
+    PB_IMAGE_CONCURRENCY: "1",
+  };
+  for (const [key, value] of Object.entries(lifted)) process.env[key] = value;
+  try {
+    const config = loadConfig(DEFAULT_CONFIG_REL, { root: PROJECT_ROOT });
+    // doctor 读 defaults 段：这里的口径必须和类型合并后的值一致，且都是真类型。
+    assert.equal(config.defaults.review.max_rounds, 2);
+    assert.equal(config.defaults.illustrations.concurrency, 1);
+    for (const type of config.types) {
+      // 一个 PB_PASS_SCORE 统一四类：不设时各类型吃自己的 ${PB_PASS_SCORE:-78|82}。
+      assert.equal(type.review.max_rounds, 2, type.id);
+      assert.equal(type.review.pass_score, 90, type.id);
+      assert.equal(type.scoring.pass_score, 90, type.id);
+      assert.equal(type.knowledge.max_sources, 5, type.id);
+      // weknora.match_count 不在 defaults.yaml 写死，由 max_sources 推导。
+      assert.equal(type.knowledge.weknora.match_count, 5, type.id);
+      // "false" 必须归成真布尔，否则真值判断会把它当成开。
+      assert.equal(type.knowledge["web-search"].enabled, false, type.id);
+      assert.equal(type.illustrations.concurrency, 1, type.id);
+    }
+  } finally {
+    for (const key of Object.keys(lifted)) delete process.env[key];
+  }
+  const base = loadConfig(DEFAULT_CONFIG_REL, { root: PROJECT_ROOT });
+  const news = findType(base, "ai-news");
+  assert.equal(news.review.max_rounds, 3);
+  assert.equal(news.review.pass_score, 78);
+  assert.equal(findType(base, "tech-explainer").review.pass_score, 82);
+  assert.equal(news.knowledge["web-search"].enabled, true);
+  assert.equal(news.illustrations.concurrency, 2);
+  assert.equal(news.knowledge.weknora.match_count, 8);
+});
+
+test("类型文件不复制 defaults 的轮次与裸通过线（同值副本会掩盖 .env）", () => {
+  const typesDir = path.join(PROJECT_ROOT, "config", "wechat-article", "types");
+  for (const file of fs.readdirSync(typesDir).filter((name) => name.endsWith(".yaml"))) {
+    const text = fs.readFileSync(path.join(typesDir, file), "utf8");
+    assert.doesNotMatch(text, /^\s*max_rounds:/m, `${file} 的轮次单源 defaults.yaml`);
+    assert.doesNotMatch(text, /^pass_score:\s*\d+\s*$/m, `${file} 的 pass_score 要写成 env 形式`);
+  }
+});
+
+test("env 抬起的不是数字就抛错，不静默退回默认值", () => {
+  const dir = tempDir("wa-cfg-");
+  const raw = rawConfig(dir);
+  raw.defaults.review = { max_rounds: "three" };
+  assert.throws(() => normalizeConfig(raw, dir), /review\.max_rounds 必须是数字/);
+  const raw2 = rawConfig(dir);
+  raw2.types[0].pass_score = "很高";
+  assert.throws(() => normalizeConfig(raw2, dir), /pass_score 必须是数字/);
 });
 
 test("loadConfig reads the YAML base config and config/types/*.yaml", () => {
@@ -141,6 +245,10 @@ test("loadConfig reads the YAML base config and config/types/*.yaml", () => {
   assert.equal(config.classifier.topic_question, "topic_pick");
   assert.equal(config.classifier.check_question, "review_check");
   assert.equal(path.isAbsolute(config.project.base_output_folder), true);
+  // defaults.yaml 的三个投递开关写成 ${PB_*:-false}，加载后必须是真布尔（默认全关）。
+  assert.equal(config.types[0].publish.auto_publish, false);
+  assert.equal(config.types[0].publish.email.enabled, false);
+  assert.equal(config.types[0].publish.wechat.enabled, false);
 });
 
 test("models.yaml groups llm / systemone and resolves model ids", () => {
@@ -211,6 +319,19 @@ test("loadConfig accepts a types map keyed by type id", () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test("类型层的 review.model 是加载期错误：审稿环节的模型调用单源在 steps 节点", () => {
+  const dir = tempDir("wa-review-model-");
+  try {
+    const base = rawConfig(dir);
+    const withModel = { ...base, types: [{ ...base.types[0], review: { model: "llm.local" } }] };
+    assert.throws(() => normalizeConfig(withModel, process.cwd()), /review\.model 已废弃/);
+    // 正常类型（不写 review.model）继续加载
+    assert.equal(normalizeConfig(base, process.cwd()).types.length, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("loadConfig reads defaults.yaml before the article-types registry", () => {
   const dir = tempDir("wa-split-");
   const typesDir = path.join(dir, "types");
@@ -232,7 +353,6 @@ test("loadConfig reads defaults.yaml before the article-types registry", () => {
   fs.writeFileSync(
     path.join(dir, "defaults.yaml"),
     stringifyYaml({
-      version: 2,
       project: { base_output_folder: "out" },
       models: { local: { provider: "mock" } },
       classifier: { enabled: false, default_type: "t1" },
@@ -366,13 +486,24 @@ test("validateConfig reports missing knowledge dirs and unknown models", () => {
 test("normalizeConfig resolves knowledge.source and WeKnora defaults", () => {
   const dir = tempDir("wa-cfg-");
   const raw = rawConfig(dir);
-  raw.defaults.knowledge = { weknora: { base_url: "http://wk/api/v1", api_key: "k" } };
+  // auth_header / timeout_ms 单源 defaults.yaml：加载期不再注入 "X-API-Key"/30000 副本，
+  // 缺了由 knowledge.mjs 在真正发请求前抛错点名配置路径。
+  raw.defaults.knowledge = {
+    weknora: { base_url: "http://wk/api/v1", api_key: "k", auth_header: "X-API-Key", timeout_ms: 30000 },
+  };
   raw.types[0].knowledge = { source: "weknora", weknora: { kb_ids: "kb1" } };
   const type = normalizeConfig(raw, dir).types[0];
   assert.equal(type.knowledge.source, "weknora");
   assert.deepEqual(type.knowledge.weknora.kb_ids, ["kb1"]);
   assert.equal(type.knowledge.weknora.base_url, "http://wk/api/v1");
   assert.equal(type.knowledge.weknora.auth_header, "X-API-Key");
+  assert.equal(type.knowledge.weknora.timeout_ms, 30000);
+  // match_count 是继承（与本地检索同一个上限），不是同值默认。
+  assert.equal(type.knowledge.weknora.match_count, undefined);
+
+  const bare = normalizeConfig(rawConfig(dir), dir).types[0];
+  assert.equal(bare.knowledge.weknora.auth_header, undefined);
+  assert.equal(bare.knowledge.weknora.timeout_ms, undefined);
 });
 
 test("normalizeConfig degrades a WeKnora source when base_url is missing", () => {
@@ -472,8 +603,11 @@ test("detectStartStage follows the artifact chain, publish status decides archiv
   write(ARTIFACT.reviewed);
   assert.equal(detectStartStage(dir), "review");
   write(ARTIFACT.review);
-  assert.equal(detectStartStage(dir), "illustrate");
-  write(ARTIFACT.illustrated);
+  assert.equal(detectStartStage(dir), "compose");
+  // 组稿阶段内：润色稿只是分支进度，composed.md 才算 04 完成
+  write(ARTIFACT.polished);
+  assert.equal(detectStartStage(dir), "compose");
+  write(ARTIFACT.composed);
   assert.equal(detectStartStage(dir), "publish");
   write(ARTIFACT.final);
   assert.equal(detectStartStage(dir), "publish");
@@ -494,33 +628,72 @@ test("openArticle auto-selects the only article and refuses to guess between sev
   assert.ok(listArticles(config).length === 2);
 });
 
-test("01-result.json 驱动文章元信息与已写清单（旧 01-topic.json 回退）", () => {
+test("01-result.json 的信封驱动文章元信息与已写清单", () => {
   const config = storeConfig();
   const { dir } = createArticle(config, { title: "新布局文章", type: { id: "ai-news" } });
   fs.writeFileSync(
     path.join(dir, ARTIFACT.topic),
     JSON.stringify({
-      step: "topic",
+      stage: "topic",
+      generated_at: "2026-10-20T02:00:00.000Z",
       title: "新布局文章",
       topic: "一句话主题",
-      type: { id: "ai-insight", source: "classifier", confidence: 0.8 },
-      picked: { index: 1 },
-      generated_at: "2026-10-20T02:00:00.000Z",
+      type: "ai-insight",
+      files: { topicMd: "01-step/topic.md", proposal: null },
+      sources: [],
     }),
     "utf8",
   );
   const meta = readArticleMeta(dir);
   assert.equal(meta.title, "新布局文章");
   assert.equal(meta.type, "ai-insight");
+  assert.equal(meta.startedAt, "2026-10-20T02:00:00.000Z");
 
   const written = listWrittenArticles(config).filter((w) => w.title === "新布局文章");
   assert.equal(written.length, 1);
   assert.equal(written[0].type, "ai-insight");
   assert.equal(written[0].date, "2026-10-20");
+});
 
-  const legacyDir = createArticle(config, { title: "旧布局文章", type: { id: "ai-news" } }).dir;
-  fs.writeFileSync(path.join(legacyDir, "01-topic.json"), JSON.stringify({ title: "旧布局文章", topic: "旧主题", type: "ai-news" }), "utf8");
-  const legacy = readArticleMeta(legacyDir);
-  assert.equal(legacy.title, "旧布局文章");
-  assert.equal(legacy.type, "ai-news");
+test("buildEnvelope 只从上一步的 result 顺延 title/type，并把 files 累积下去", () => {
+  const dir = tempDir("wa-env-");
+  fs.writeFileSync(
+    path.join(dir, ARTIFACT.topic),
+    JSON.stringify({ stage: "topic", title: "T", type: "ai-news", files: { topicMd: "01-step/topic.md" } }),
+    "utf8",
+  );
+  const draft = buildEnvelope(dir, "draft", { files: { draft: "02-step/draft.md" } });
+  assert.equal(draft.stage, "draft");
+  assert.ok(draft.generated_at);
+  // 01 已给出的标题与类型不许被后续步骤改写
+  assert.equal(draft.title, "T");
+  assert.equal(draft.type, "ai-news");
+  assert.deepEqual(draft.files, { topicMd: "01-step/topic.md", draft: "02-step/draft.md" });
+
+  // 独立命令可以只有散落稿件（没有上一步 result）：这时才吃调用方给的兜底值
+  const orphan = tempDir("wa-env-");
+  const review = buildEnvelope(orphan, "review", { title: "散落稿", type: "ai-insight", files: { reviewed: "03-step/reviewed.md" } });
+  assert.equal(review.title, "散落稿");
+  assert.equal(review.type, "ai-insight");
+  assert.deepEqual(review.files, { reviewed: "03-step/reviewed.md" });
+  for (const d of [dir, orphan]) fs.rmSync(d, { recursive: true, force: true });
+});
+
+test("fileFromResult 从上一步的 result#files 取产物路径，取不到返回 null", () => {
+  const dir = tempDir("wa-files-");
+  fs.writeFileSync(
+    path.join(dir, ARTIFACT.draft),
+    JSON.stringify({ stage: "draft", files: { draft: "02-step/draft.md", outline: "02-step/outline.json" } }),
+    "utf8",
+  );
+  // 相对文章根目录的路径原样返回，由调用方 join(dir, rel)
+  assert.equal(fileFromResult(dir, "draft", "draft"), "02-step/draft.md");
+  assert.equal(fileFromResult(dir, "draft", "outline"), "02-step/outline.json");
+  // 地图里没有这个键 / 这一步还没跑 → null，调用方决定怎么回退
+  assert.equal(fileFromResult(dir, "draft", "reviewed"), null);
+  assert.equal(fileFromResult(dir, "review", "reviewed"), null);
+  // 空串不算路径（配置说谎时不能把 "" 当成有效产物）
+  fs.writeFileSync(path.join(dir, ARTIFACT.draft), JSON.stringify({ files: { draft: "" } }), "utf8");
+  assert.equal(fileFromResult(dir, "draft", "draft"), null);
+  fs.rmSync(dir, { recursive: true, force: true });
 });

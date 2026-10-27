@@ -16,10 +16,13 @@
     "test:outline": "node --test tests/wechat-article/outline.test.mjs",
     "test:draft": "node --test tests/wechat-article/draft.test.mjs",
     "test:review": "node --test tests/wechat-article/review.test.mjs",
+    "test:compose": "node --test tests/wechat-article/compose.test.mjs",
     "test:publish": "node --test tests/wechat-article/publish.test.mjs"
   },
   "dependencies": {
+    "@opencode/cli": "^2.1.4",
     "@opencode/client": "^2.1.1",
+    "@wenyan-md/cli": "^2.0.12",
     "markdown-it": "^15.0.3",
     "yaml": "^2.9.1"
   },

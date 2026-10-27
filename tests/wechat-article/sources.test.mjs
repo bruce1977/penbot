@@ -18,7 +18,7 @@ import {
   loadSource,
   sourceExcerpts,
 } from "../../scripts/lib/knowledge.mjs";
-import { parseSearchMarkdown, buildSearchQueries, gatherWebSearch } from "../../scripts/lib/web-search.mjs";
+import { parseSearchMarkdown, buildSearchQueries, gatherWebSearch, resolveOpencodeBin } from "../../scripts/lib/web-search.mjs";
 import { tempDir } from "./helpers.mjs";
 
 /* ------------------------------------------------------------------ */
@@ -115,7 +115,16 @@ function weknoraType(overrides = {}) {
       source: "weknora",
       max_sources: 6,
       excerpt_chars: 500,
-      weknora: { base_url: "http://wk/api/v1", api_key: "k", kb_ids: ["kb1"], match_count: 6 },
+      // auth_header / timeout_ms 是端点必填项（单源 defaults.yaml，缺了请求发不出去），
+      // 单元测试要跑到 searchWeKnora 就必须把它们喂进来。
+      weknora: {
+        base_url: "http://wk/api/v1",
+        api_key: "k",
+        kb_ids: ["kb1"],
+        match_count: 6,
+        auth_header: "X-API-Key",
+        timeout_ms: 30000,
+      },
       ...overrides,
     },
   };
@@ -136,23 +145,24 @@ test("searchWeKnora normalizes hits, strips image noise and parses frontmatter",
   const restore = stubFetch(async (url, init) => {
     assert.match(String(url), /\/knowledge-bases\/kb1\/hybrid-search$/);
     assert.deepEqual(JSON.parse(init.body), { query_text: "Agent", match_count: 6 });
+    const payload = {
+      data: [
+        {
+          knowledge_id: "k1",
+          knowledge_title: "标题一",
+          content: "![](resource://abc) 正文 A",
+          score: 0.02,
+          knowledge_description: "一段摘要",
+          knowledge_custom_metadata: "date: 2025-01-20T10:00:00+08:00\nkeywords: AI, Agent",
+        },
+        { knowledge_id: "k1", knowledge_title: "标题一", content: "正文 B", score: 0.05 },
+      ],
+    };
     return {
       ok: true,
       status: 200,
-      json: async () => ({
-        data: [
-          {
-            knowledge_id: "k1",
-            knowledge_title: "标题一",
-            content: "![](resource://abc) 正文 A",
-            score: 0.02,
-            knowledge_description: "一段摘要",
-            knowledge_custom_metadata: "date: 2025-01-20T10:00:00+08:00\nkeywords: AI, Agent",
-          },
-          { knowledge_id: "k1", knowledge_title: "标题一", content: "正文 B", score: 0.05 },
-        ],
-      }),
-      text: async () => "",
+      json: async () => payload,
+      text: async () => JSON.stringify(payload),
     };
   });
   try {
@@ -174,7 +184,15 @@ test("searchWeKnora logs and skips failing knowledge bases", async () => {
   const warnings = [];
   const restore = stubFetch(async () => ({ ok: false, status: 500, text: async () => "boom" }));
   try {
-    const type = weknoraType({ weknora: { base_url: "http://wk/api/v1", api_key: "k", kb_ids: ["kb1"] } });
+    const type = weknoraType({
+      weknora: {
+        base_url: "http://wk/api/v1",
+        api_key: "k",
+        kb_ids: ["kb1"],
+        auth_header: "X-API-Key",
+        timeout_ms: 30000,
+      },
+    });
     const hits = await searchWeKnora(type, "Agent", { logger: { warn: (m) => warnings.push(m) } });
     assert.deepEqual(hits, []);
     assert.equal(warnings.length, 1);
@@ -186,18 +204,19 @@ test("searchWeKnora logs and skips failing knowledge bases", async () => {
 
 test("collectSources interleaves local and WeKnora when source=both", async () => {
   const dir = kbDir(6);
+  const payload = {
+    data: [1, 2, 3].map((i) => ({
+      knowledge_id: `w${i}`,
+      knowledge_title: `远端 ${i}`,
+      content: `远端内容 ${i}`,
+      score: 0.03 - i * 0.01,
+    })),
+  };
   const restore = stubFetch(async () => ({
     ok: true,
     status: 200,
-    json: async () => ({
-      data: [1, 2, 3].map((i) => ({
-        knowledge_id: `w${i}`,
-        knowledge_title: `远端 ${i}`,
-        content: `远端内容 ${i}`,
-        score: 0.03 - i * 0.01,
-      })),
-    }),
-    text: async () => "",
+    json: async () => payload,
+    text: async () => JSON.stringify(payload),
   }));
   try {
     const type = weknoraType({ source: "both", max_sources: 6 });
@@ -293,6 +312,18 @@ test("assessSourceSufficiency treats missing hints and thresholds via gate confi
 /* 通道 2：Markdown 解析 / 关键字构造 / 落地编排                          */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 通道 2 的阈值单源 defaults.yaml defaults.knowledge.web-search，gatherWebSearch 逐项要求
+ * （和真实运行时一样：缺一项就抛错点名配置路径）。单元测试跑到编排层必须自带完整一份。
+ */
+const SEARCH_CFG = {
+  max_queries: 2,
+  max_per_query: 3,
+  max_sources: 6,
+  excerpt_chars: 800,
+  timeout_ms: 180000,
+};
+
 const SEARCH_MD = [
   "# 外部检索：DeepSeek V4.1 本地部署 2026",
   "",
@@ -337,7 +368,8 @@ test("gatherWebSearch stays home when the gate says local is enough", async () =
     topic: { title: "T", source_hints: [] },
     localSources: [1, 2, 3, 4].map(() => gateSource("S")),
     articleDir: tempDir("wa-ext-"),
-    cfg: { max_sources: 6 },
+    maxSources: 8,
+    cfg: { ...SEARCH_CFG, max_sources: 6 },
     now: GATE_NOW,
     searchImpl: async () => { called += 1; return []; },
   });
@@ -351,7 +383,8 @@ test("gatherWebSearch lands markdown + index.json and returns web entries", asyn
     topic: { title: "DeepSeek V4.1 免费跑起来", keywords: ["本地部署"], source_hints: [] },
     localSources: [gateSource("旧", { days: 400, chars: 100 })],
     articleDir: dir,
-    cfg: { max_queries: 1, max_sources: 2, max_per_query: 2, excerpt_chars: 300 },
+    maxSources: 8,
+    cfg: { ...SEARCH_CFG, max_queries: 1, max_sources: 2, max_per_query: 2, excerpt_chars: 300 },
     model: "ollama-local/qwen3.5:9b",
     now: GATE_NOW,
     searchImpl: async (queries) => queries.map((q) => ({ query: q, markdown: SEARCH_MD })),
@@ -367,6 +400,39 @@ test("gatherWebSearch lands markdown + index.json and returns web entries", asyn
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test("gatherWebSearch 的单组超时来自配置，不吃代码默认值", async () => {
+  const dir = tempDir("wa-ext-");
+  let seen = null;
+  await gatherWebSearch({
+    topic: { title: "T", keywords: ["K"] },
+    localSources: [],
+    articleDir: dir,
+    maxSources: 8,
+    cfg: { ...SEARCH_CFG, timeout_ms: 45000 },
+    now: GATE_NOW,
+    searchImpl: async (queries, opts) => {
+      seen = opts.timeoutMs;
+      return queries.map((q) => ({ query: q, markdown: SEARCH_MD }));
+    },
+  });
+  assert.equal(seen, 45000);
+  fs.rmSync(dir, { recursive: true, force: true });
+
+  // 阈值缺了就是缺了：抛错点名 defaults.yaml 的配置路径，不静默吃 DEFAULT_SEARCH_TIMEOUT_MS。
+  await assert.rejects(
+    () => gatherWebSearch({
+      topic: { title: "T", keywords: ["K"] },
+      localSources: [],
+      articleDir: dir,
+      maxSources: 8,
+      cfg: { ...SEARCH_CFG, timeout_ms: undefined },
+      now: GATE_NOW,
+      searchImpl: async () => [],
+    }),
+    /web-search\.timeout_ms/,
+  );
+});
+
 test("gatherWebSearch records failed queries in index.json without throwing", async () => {
   const dir = tempDir("wa-ext-");
   const logs = [];
@@ -374,7 +440,8 @@ test("gatherWebSearch records failed queries in index.json without throwing", as
     topic: { title: "T", keywords: ["K"] },
     localSources: [],
     articleDir: dir,
-    cfg: { max_queries: 2 },
+    maxSources: 8,
+    cfg: { ...SEARCH_CFG, max_sources: 4 },
     now: GATE_NOW,
     logger: { info: (m) => logs.push(m), warn: (m) => logs.push(m) },
     searchImpl: async (queries) => queries.map((q, i) => (i === 0 ? { query: q, markdown: "", error: "serve 起不来" } : { query: q, markdown: SEARCH_MD })),
@@ -387,10 +454,22 @@ test("gatherWebSearch records failed queries in index.json without throwing", as
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test("resolveOpencodeBin 优先本仓库 node_modules/.bin，缺失才退回 PATH", () => {
+  const dir = tempDir("wa-bin-");
+  const name = process.platform === "win32" ? "opencode.cmd" : "opencode";
+  // 没装成本地依赖 → 交给 PATH 上的全局 opencode
+  assert.equal(resolveOpencodeBin(dir), "opencode");
+  const local = path.join(dir, "node_modules", ".bin", name);
+  fs.mkdirSync(path.dirname(local), { recursive: true });
+  fs.writeFileSync(local, "@echo off\n");
+  // 装了 → 用锁死版本的本地可执行文件，不再受全局版本影响
+  assert.equal(resolveOpencodeBin(dir), local);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 /* ------------------------------------------------------------------ */
 /* 素材落地：01-step/sources/*.md + result.json 只留链接                  */
 /* ------------------------------------------------------------------ */
-
 test("landSources writes one MD per material and returns {index,title,link} entries", () => {
   const dir = tempDir("wa-land-");
   const slim = landSources(dir, [

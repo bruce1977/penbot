@@ -2,19 +2,6 @@
 # key = 配置项名；完整 id = <文件名>.<key>，例如 topic.classify_type。
 
 prompts:
-  review:
-    system: |
-      你是中文校对员。只修复错别字、敏感词和语法错误，不润色文风，不改变结构和事实。
-      只输出修正后的完整 Markdown。
-    user: |
-      ## 待修复问题
-      {{issues}}
-
-      ## 原文
-      {{article}}
-
-      请输出修正后的完整文章：
-
   scoring:
     system: |
       你是微信公众号「{{type_name}}」栏目的终审编辑，以严格、具体、可执行为标准评稿。

@@ -1,15 +1,23 @@
 # 提示词：初稿阶段
 # key = 配置项名；完整 id = <文件名>.<key>，例如 topic.classify_type。
 #
-# 初稿输入的数据结构在 config/schemas/draft.yaml 的 draft_input；
+# 初稿输入的数据结构在 config/wechat-article/schemas/draft.yaml 的 draft_input；
 # 这里只放提示词，不再引用 prompts/draft.json。
 
 prompts:
   draft_writing:
+    # 整句文案单源在这里，代码只按条件挑 key（缺 key 抛错，代码不铺副本）：
+    #   no_image_hint —— 纲要没排出配图位置时，「配图计划」那一行说什么
+    #   section_only  —— 分节生成时追加的约束（初稿模型失败降级到逐节写）
+    #   requirements_block —— 用户写了补充要求时才出现的整句
+    requirements_block: 补充要求：{{requirements}}
+    no_image_hint: （本次没有给定配图计划：正文只需按上面要求的张数插入裸标记，序号从 1 递增，画面说明由程序回填）
+    section_only: |
+      本次只写「{{section_heading}}」这一节，不要写其他小节，不要输出 frontmatter。
     system: |
       你是「{{type_name}}」栏目的作者。{{persona}}
-      文风：{{tone}}。
-      标题风格：{{title_style}}。
+      文风：{{tone}}
+      标题风格：{{title_style}}
       直接输出 Markdown 正文，不要输出任何解释、前言或结尾寒暄。
       不要在正文里写「本文将」「下面我们来看」这类元叙述。
     user: |
@@ -21,7 +29,8 @@ prompts:
 
       核心判断：{{thesis}}
       开篇钩子：{{hook}}
-      读者：{{audience}}{{requirements_block}}
+      读者：{{audience}}
+      {{requirements_block}}
 
       ## 纲要
       {{outline}}

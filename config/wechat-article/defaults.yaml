@@ -9,8 +9,6 @@
 # 流程节点在 config/steps.yaml。
 # 加载顺序：defaults.yaml → models.yaml → article-types.yaml（可覆盖）→ config/types/*.yaml。
 
-version: 2
-
 project:
   # 文章根目录：只认环境变量/配置，命令行不能覆盖
   base_output_folder: "${BASE_OUTPUT_FOLDER:-output/wechat-article}"
@@ -42,6 +40,11 @@ classifier:
 
 # ---------------------------------------------------------------------------
 # 文章类型默认值：所有类型先吃这里，再被 config/types/<id>.yaml 覆盖
+#
+# 运行时可翻转的开关/阈值一律写成 ${PB_*:-默认值}：无人值守跑管线时只改 .env，
+# 这个文件保持不动（口径与 publish 的三个投递开关一致）。
+# expandEnv 替换出来的是字符串，加载期 scripts/lib/config.mjs 统一归一：
+# 布尔走 toBool，数字走 Number + 有限性检查，代码里不再留同值兜底。
 # ---------------------------------------------------------------------------
 defaults:
   # 模型末位回退（--model > 节点 models.<调用名>.id > type.model）。
@@ -50,45 +53,49 @@ defaults:
 
   review:
     # 评稿模型在 steps/30-review.yaml scoring.models.score；这里只留审稿循环参数。
-    max_rounds: 3
-    pass_score: 80
+    # 轮次上限 1-5（加载期 clamp）；单篇想临时改再用 --rounds。
+    max_rounds: "${PB_REVIEW_ROUNDS:-3}"
+    # 通过线只是**没有类型覆盖时**的默认值：types/<id>.yaml 的顶层 pass_score 优先。
+    pass_score: "${PB_PASS_SCORE:-80}"
     correct_cn:
       enabled: true
       base_url: "${PB_PYCORRECTOR_API_URL:-https://correct-api.myehome.top}"
-      endpoint: "/api/pipeline"
+      # 两个规则端点并行调用，只采集候选：错别字候选交给修正模型核实，敏感词只留痕。
+      correct_endpoint: "/api/correct"
+      sensitive_endpoint: "/api/sensitive/check"
       api_key: "${PB_PYCORRECTOR_API_KEY}"
       auth_header: Authorization
-      enable_audit: false
-      enable_final_suggestion: false
-      apply: issues
-      timeout_ms: 180000
-      fallback_llm: true
+      timeout_ms: 30000
+      # 单次调用内的 HTTP 重试次数（(尝试) 标注，不推轮次）。
+      retries: 1
 
   knowledge:
     source: local
     use_weknora: "${PB_USE_WEKNORA:-false}"
-    max_sources: 8
+    # 本地素材最多取几条（类型文件可覆盖；闸门判「够不够」也以此为分母）。
+    max_sources: "${PB_KNOWLEDGE_MAX_SOURCES:-8}"
     excerpt_chars: 1800
-    lookback_days: 365
     max_file_bytes: 400000
     weknora:
       base_url: "${WEKNORA_BASE_URL}"
       api_key: "${WEKNORA_API_KEY}"
       auth_header: X-API-Key
-      match_count: 8
+      # match_count 不在这写死：加载期由上面的 knowledge.max_sources 推导
+      # （同一个条数上限，PB_KNOWLEDGE_MAX_SOURCES 一改两边都变），类型文件要单独调再写。
       timeout_ms: 30000
     # 通道 2：充分性闸门判定本地不足时，用 opencode websearch 补外部素材。
     # websearch 不是模型调用：model 是 opencode 侧配置的 provider/model（与
     # config/models.yaml 无关），默认跟随环境变量 OPENCODE_DEFAULT_MODEL。
     # 类型文件可覆盖（如随笔类设 enabled: false 关掉出门检索）。
     web-search:
-      enabled: true
+      # 出门检索总开关（.env PB_WEB_SEARCH_ENABLED=false 即只用本地素材）。
+      enabled: "${PB_WEB_SEARCH_ENABLED:-true}"
       model: "${OPENCODE_DEFAULT_MODEL:-ollama-local/qwen3.5:9b}"
       max_queries: 2      # 最多几组关键字（标题一组 + 关键词一组）
       max_per_query: 3    # 每组结果解析取几条
       max_sources: 6      # 最多并入几条外部素材
       excerpt_chars: 800  # 外部结果摘录截断
-      timeout_ms: 600000  # 单组检索超时
+      timeout_ms: 180000  # 单组检索超时（实测单组 40–170s）；各组并行，所以这也是外部检索的总时长上限
       gate:
         min_hits_ratio: 0.5     # 命中数 < max_sources × 该比例 → 不足
         min_excerpt_chars: 3000 # 本地摘录总字数下限
@@ -99,47 +106,83 @@ defaults:
     min: 1
     max: 5
     cover: true
-    concurrency: 2
+    # 同时在飞的配图请求数；跑满限速或想降载时改 .env 的 PB_IMAGE_CONCURRENCY。
+    # 张数不吃 .env：由纲要的 image_plan 小节规划决定，单次想指定用 --images
+    # （类型里的 image_count 区间是类型身份，不是运行时旋钮）。
+    concurrency: "${PB_IMAGE_CONCURRENCY:-2}"
     on_failure: comment
     # 配图标记模板：{index} 会被替换成 1..N
     position_format: "[[img:{index}]]"
     style: "扁平化科技插画，干净留白，克制的蓝紫与暖橙配色，适合微信公众号阅读，不要出现文字"
     negative_prompt: "photorealistic, 3d render, oil painting, western fantasy, anime style, manga, chibi, too many details, cluttered composition, bright neon colors, over-saturated, soft focus, blurry, deformed hands, extra limbs, signature, watermark, text, words, logo"
+    # 两种尺寸：文章封面 + 正文插图（第 1 张固定封面，其余正文）。
+    # width/height 进图片模型的请求参数；composition 进配图提示词的 {{composition}}
+    # （模板见 prompts/revision.yaml → image_generation）。
     scenes:
-      wechat-cover: { width: 900, height: 383 }
-      wechat-cover-thumb: { width: 500, height: 500 }
-      article-inline: { width: 1080, height: 810 }
+      wechat-cover: { width: 900, height: 383, composition: "wide banner composition, subject placed off-center, clear empty area for a headline overlay" }
+      article-inline: { width: 1080, height: 810, composition: "4:3 framing, one clear focal subject with supporting details" }
+    # 通道顺序：主通道先出图，只有它失败才降级到备用通道（不是并发抢跑）。
+    # ModelScope 质量明显更好（实测扁平插画无文字残留），设为唯一主选。
+    primary: modelscope
+    fallback: [pollinations]
     modelscope:
       enabled: true
       base_url: https://api-inference.modelscope.cn
       api_key: "${PB_MODEL_IMAGE_API_KEY}"
       model: Tongyi-MAI/Z-Image-Turbo
-      timeout_ms: 90000
+      # 单次 HTTP 请求（提交/轮询/下载）限时 2 分钟
+      timeout_ms: 120000
       poll_interval_ms: 5000
-      max_polls: 18
+      # 异步任务轮询上限：单张实测 10-45s，按 1-2 分钟预算给 24 次
+      max_polls: 24
     pollinations:
       enabled: true
       base_url: https://image.pollinations.ai
       model: turbo
       timeout_ms: 90000
+      # 免费档（无 key）实测：每 IP 45 秒 1 张，且同时只允许 1 张在飞；
+      # ref/referrer/model 参数都不另开配额，所以只能进程内排队，不能靠它做并发。
+      min_interval_ms: 45000
+      max_retries: 2
 
   publish:
-    auto_publish: false
+    # 三个投递开关都可以由 .env 抬起：无人值守跑管线时改 .env，不用动配置也不用带 flag。
+    # expandEnv 替换出来的是字符串，加载期（config.mjs）统一归成真布尔——
+    # 读取端用的是 === true / 真值判断，不归一就会让 "false" 当成开。
+    auto_publish: "${PB_AUTO_PUBLISH:-false}"
     archive:
-      enabled: true
-      # 终稿统一落到本地知识库的 pipeline 目录，由后续入库脚本扫描处理；空 = 跳过复制
+      # 归档环节整体开关在 steps 节点 archive.enabled（关掉 = 不入库、不打包、不删 draft）。
+      # 这里只管知识库入库：knowledge_dir 留空 = 跳过复制，仍照常打包与清理。
+      # 终稿统一落到本地知识库的 pipeline 目录，由后续入库脚本扫描处理。
       knowledge_dir: "${KNOWLEDGE_PIPELINE_DIR:-D:/knowledge/pipeline}"
       filename: "{date}-{slug}.md"
     email:
-      enabled: false
+      enabled: "${PB_EMAIL_ENABLED:-false}"
       to: ["jiangyifeng@myehome.cn"]
       from: "${PB_RESEND_FROM:-penbot@myehome.cn}"
       api_key: "${PB_RESEND_API_KEY}"
       subject: "{title}"
+      # 投递端点、单次请求限时与重试次数：sendEmail 只读这三项，代码里不留同值副本
+      # （原来 base_url 硬在代码里、timeout_ms 硬写 30000、retries 兜 2，配置根本没有后两项）。
+      base_url: https://api.resend.com
+      timeout_ms: 30000
+      # 单次投递的 HTTP 重试次数（留痕里是 (尝试) 标注，不推轮次）。
+      retries: 2
     wechat:
-      enabled: false
+      enabled: "${PB_WECHAT_ENABLED:-false}"
       theme: default
       highlight: solarized-light
       env_file: .env
+      # @wenyan-md/cli 已写进 package.json dependencies，npx 会优先用本地 node_modules/.bin/wenyan，
+      # 版本被 lockfile 锁住、断网也能跑；改成别的命令串（如全局安装）时这里覆盖即可。
       command: npx --yes @wenyan-md/cli
       dry_run: false
+      # 凭据：管线用 WECHAT_MP_APP_ID / WECHAT_MP_APP_SECRET，spawn 时自动映射成
+      # wenyan CLI 实际读取的 WECHAT_APP_ID / WECHAT_APP_SECRET（CLI 的环境变量只认这两个名字）。
+      # app_id: ""            # 可选：有值时额外用 --app-id 传给 CLI；publish 没有 --app-secret
+      #                       # 参数，secret 只能走环境变量或 CLI 自己的 credential.json。
+      # 公众号后台有 IP 白名单：本机 IP 不在名单时取 access_token 直接失败（errcode 40164）。
+      # 绕过方式是走 CLI 的远程发布服务端，需要自建：
+      #   server: https://api.yourdomain.com
+      #   api_key: "${WENYAN_SERVER_KEY}"   # 密钥进命令行，日志与留痕一律打码
+      # 代码已支持这两个键（--server/--api-key），留空即按本机直连微信 API。

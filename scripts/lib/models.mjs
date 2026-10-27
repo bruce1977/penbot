@@ -6,6 +6,19 @@ import { ensureDir } from "./fsx.mjs";
 import { validateTemplateSchema } from "./template.mjs";
 
 /**
+ * 端点参数单源 config/models.yaml：缺字段直接抛并点名，代码里不留第二份默认值。
+ * 旧版这里同时有 timeout_ms 300000 / temperature 0.7 / stream_idle_ms 120000 的副本，
+ * 与 models.yaml 的 600000·1200000 是两份真相——「改配置不生效」就是这样发生的。
+ */
+function needProfile(profile, key) {
+  const value = profile?.[key];
+  if (value === undefined || value === null || value === "") {
+    throw new Error(`模型 ${profile?.id} 缺少 ${key}：config/models.yaml`);
+  }
+  return value;
+}
+
+/**
  * Unified text model interface.
  *
  * Profiles come from config.models:
@@ -15,33 +28,37 @@ import { validateTemplateSchema } from "./template.mjs";
  * LLM HTTP calls stream: Node fetch (undici) default headersTimeout/bodyTimeout
  * is 300s, and non-stream responses send no headers until generation finishes —
  * any call over 5 minutes would die with UND_ERR_HEADERS_TIMEOUT. Streaming also
- * gives a chunk gap guard (abort when data stalls > stream_idle_ms, default 120s),
- * so dead connections surface fast; profile.timeout_ms stays the overall cap.
+ * gives a chunk gap guard (abort when data stalls > stream_idle_ms), so dead
+ * connections surface fast; profile.timeout_ms stays the overall cap.
  */
 export function createModelClient(config, logger, recorder) {
   const cache = new Map();
 
   function getProfile(name) {
-    const id = name || config.defaults?.model || "llm.local";
-    if (cache.has(id)) return cache.get(id);
-    let key = id;
+    // 调用方必须点名模型（steps 节点 models.<调用名>.id，或 --model / type.model 的回退）：
+    // 这里不兜一个默认 id，否则配置想指 35b、代码悄悄用 9b。
+    if (!name) throw new Error("模型调用没有指定模型 id：steps 节点 models.<调用名>.id");
+    if (cache.has(name)) return cache.get(name);
+    let key = name;
     let raw = config.models?.[key];
     // 兼容旧写法：model: local → llm.local
-    if (!raw && !String(id).includes(".")) {
-      key = `llm.${id}`;
+    if (!raw && !String(name).includes(".")) {
+      key = `llm.${name}`;
       raw = config.models?.[key];
     }
-    if (!raw) throw new Error(`Unknown model id "${id}"`);
-    const profile = { id: key, timeout_ms: 300000, temperature: 0.7, ...raw };
+    if (!raw) throw new Error(`Unknown model id "${name}"`);
+    // 端点参数（base_url / timeout_ms / temperature / num_ctx / max_tokens / stream_idle_ms）
+    // 单源 config/models.yaml：这里不铺代码副本，缺了由 needProfile 抛错点名。
+    const profile = { id: key, ...raw };
     // BASE_URL / MODEL_NAME / API_KEY may arrive under either spelling.
     profile.base_url = profile.base_url || profile.baseUrl || "";
     profile.model = profile.model || profile.model_name || profile.modelName || "";
     profile.api_key = profile.api_key || profile.apiKey || "";
-    cache.set(id, profile);
+    cache.set(name, profile);
     return profile;
   }
 
-  async function complete(profileName, { system, prompt, format, temperature, maxTokens, timeout, label, slot, fallback }) {
+  async function complete(profileName, { system, prompt, format, temperature, maxTokens, timeout, label, slot, fallback, attempt }) {
     const profile = getProfile(profileName);
     const started = Date.now();
     logger?.debug(`model ${profile.id} (${profile.provider}) -> ${label || "text"}`);
@@ -52,6 +69,7 @@ export function createModelClient(config, logger, recorder) {
         label: label || profile.id,
         slot,
         fallback,
+        attempt,
         provider: profile.provider,
         model: profile.model || profile.command || "mock",
         duration_ms: Date.now() - started,
@@ -95,7 +113,8 @@ export function createModelClient(config, logger, recorder) {
    * 带 schema 校验的 JSON 调用（schema = 紧凑 DSL，见 lib/template.mjs）。
    *   - 硬错误（字段缺失/类型不符/项数不足）→ 把失败原因加在原提示词前部重试；
    *     必须改动提示词文本，否则网关缓存会命中上次的错误输出原样返回。
-   *     重试的区分交给 llm 日志的编号（NN-step/llm/M-label，M 按步骤内执行顺序递增）。
+   *     重试的区分交给调用留痕的编号（NN-step/api/子步骤号_轮次(尝试)-label，
+   *     同一逻辑调用的第 N 次尝试标 (N)，见 lib/io-record.mjs）。
    *   - 越界 warnings 只记日志，不触发重试。
    *   - attempts 用尽仍失败 → throw，由调用方走既有降级路径。
    */
@@ -108,7 +127,7 @@ export function createModelClient(config, logger, recorder) {
             .map((e, i) => `${i + 1}. ${e}`)
             .join("\n")}\n\n${prompt}`
         : prompt;
-      const result = await json(profileName, { system, prompt: callPrompt, label, slot, timeout, temperature, maxTokens });
+      const result = await json(profileName, { system, prompt: callPrompt, label, slot, timeout, temperature, maxTokens, attempt });
       const report = schema ? validateTemplateSchema(result, schema) : { ok: true, errors: [], warnings: [] };
       const errors = [...report.errors, ...(validate ? validate(result) || [] : [])];
       for (const warning of report.warnings) logger?.warn(`输出越界（${callLabel}）：${warning}`);
@@ -176,17 +195,17 @@ async function readNdjsonContent(res, { idleMs }) {
 }
 
 async function callOllama(profile, { system, prompt, format, temperature, maxTokens, timeout }) {
-  const cap = Number(timeout) > 0 ? Number(timeout) : profile.timeout_ms || 300000;
-  const base = (profile.base_url || "http://localhost:11434").replace(/\/+$/, "");
+  const cap = Number(timeout) > 0 ? Number(timeout) : Number(needProfile(profile, "timeout_ms"));
+  const base = needProfile(profile, "base_url").replace(/\/+$/, "");
   const body = {
-    model: profile.model,
+    model: needProfile(profile, "model"),
     stream: true,
     think: false,
     messages: [...(system ? [{ role: "system", content: system }] : []), { role: "user", content: prompt }],
     options: {
-      temperature: temperature ?? profile.temperature ?? 0.7,
-      num_ctx: profile.num_ctx || 32768,
-      num_predict: maxTokens ?? profile.max_tokens ?? 4096,
+      temperature: temperature ?? Number(needProfile(profile, "temperature")),
+      num_ctx: Number(needProfile(profile, "num_ctx")),
+      num_predict: maxTokens ?? Number(needProfile(profile, "max_tokens")),
     },
   };
   if (format === "json") body.format = "json";
@@ -205,7 +224,7 @@ async function callOllama(profile, { system, prompt, format, temperature, maxTok
       throw new Error(`Ollama HTTP ${res.status}: ${detail.slice(0, 500)}`);
     }
     const content = await readNdjsonContent(res, {
-      idleMs: profile.stream_idle_ms || 120000,
+      idleMs: Number(needProfile(profile, "stream_idle_ms")),
     });
     if (!content.trim()) {
       throw new Error(`Ollama returned empty content (model=${profile.model})`);
@@ -220,19 +239,19 @@ async function callOllama(profile, { system, prompt, format, temperature, maxTok
 }
 
 async function callOpenAI(profile, { system, prompt, temperature, maxTokens, format, timeout }) {
-  const cap = Number(timeout) > 0 ? Number(timeout) : profile.timeout_ms || 300000;
-  const base = (profile.base_url || "").replace(/\/+$/, "");
+  const cap = Number(timeout) > 0 ? Number(timeout) : Number(needProfile(profile, "timeout_ms"));
+  const base = needProfile(profile, "base_url").replace(/\/+$/, "");
   const url = /\/chat\/completions$/.test(base)
     ? base
     : base.endsWith("/v1")
       ? `${base}/chat/completions`
       : `${base}/v1/chat/completions`;
   const body = {
-    model: profile.model,
+    model: needProfile(profile, "model"),
     stream: true,
     messages: [...(system ? [{ role: "system", content: system }] : []), { role: "user", content: prompt }],
-    temperature: temperature ?? profile.temperature ?? 0.7,
-    max_tokens: maxTokens ?? profile.max_tokens ?? 4096,
+    temperature: temperature ?? Number(needProfile(profile, "temperature")),
+    max_tokens: maxTokens ?? Number(needProfile(profile, "max_tokens")),
   };
   if (format === "json") body.response_format = { type: "json_object" };
 
@@ -253,7 +272,7 @@ async function callOpenAI(profile, { system, prompt, temperature, maxTokens, for
       const detail = await res.text().catch(() => "");
       throw new Error(`OpenAI-compatible HTTP ${res.status}: ${detail.slice(0, 500)}`);
     }
-    const content = await readSseContent(res, { idleMs: profile.stream_idle_ms || 120000 });
+    const content = await readSseContent(res, { idleMs: Number(needProfile(profile, "stream_idle_ms")) });
     if (!content.trim()) throw new Error("OpenAI-compatible API returned empty content");
     return content.trim();
   } catch (error) {
@@ -320,10 +339,13 @@ async function readSseContent(res, { idleMs }) {
 /**
  * Call an agent CLI that prints the answer.
  *
- * Default: `opencode run --format json --file <prompt-file> <instruction>`.
- * The JSON event stream is parsed and concatenated text parts are returned.
- * Any other CLI can be configured via profile.command with {prompt_file}
- * placeholder, or it will receive the prompt on stdin.
+ * The task sentence handed to the CLI is not a code default: profile.instruction
+ * (config/models.yaml) is required and may use `{prompt_file_name}` to name the
+ * attachment. `profile.args`, when set, replaces the default
+ * `run --format json --file <prompt-file>` argument list; `{prompt_file}` there is
+ * the full temp path. The JSON event stream is parsed and concatenated text parts
+ * are returned. A profile without `args` receives the prompt through `--file`;
+ * any other CLI can put `{prompt_file}` in `args` or read the prompt from stdin.
  */
 async function callOpencode(profile, { system, prompt, label }) {
   const command = profile.command || "opencode";
@@ -334,7 +356,10 @@ async function callOpencode(profile, { system, prompt, label }) {
   fs.writeFileSync(promptFile, fullPrompt, "utf8");
 
   const args = [];
-  const instruction = profile.instruction || `请完成附件 ${path.basename(promptFile)} 中的任务，严格按其中的输出格式返回，不要添加额外解释。`;
+  const instruction = String(needProfile(profile, "instruction")).replaceAll(
+    "{prompt_file_name}",
+    path.basename(promptFile),
+  );
   if (profile.args && Array.isArray(profile.args)) {
     args.push(...profile.args.map((a) => String(a).replace("{prompt_file}", promptFile)));
     args.push(instruction);
@@ -349,7 +374,7 @@ async function callOpencode(profile, { system, prompt, label }) {
   const started = Date.now();
   const result = await runProcess(command, args, {
     cwd: workdir,
-    timeoutMs: profile.timeout_ms || 600000,
+    timeoutMs: Number(needProfile(profile, "timeout_ms")),
     stdin: profile.args ? prompt : undefined,
     env: { ...process.env, ...(profile.env || {}) },
   });

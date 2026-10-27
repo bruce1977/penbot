@@ -1,8 +1,11 @@
-// 纲要阶段测试：parseOutlineMarkdown（渲染格式 / 用户手写提纲 / 选题文档）与小节标题规整
+// 纲要阶段测试：parseOutlineMarkdown（渲染格式 / 用户手写提纲 / 选题文档）、小节标题规整
+// 与纲要提示词的条件文案
 import test from "node:test";
 import assert from "node:assert/strict";
 
 import { parseOutlineMarkdown, ensureSectionHeadings, buildFrontmatter } from "../../scripts/lib/markdown.mjs";
+import { buildOutlinePrompt } from "../../scripts/lib/prompts.mjs";
+import { loadSteps } from "../../scripts/lib/steps.mjs";
 
 test("parseOutlineMarkdown reads the rendered outline format", () => {
   const md = [
@@ -114,4 +117,66 @@ test("ensureSectionHeadings 把与纲要同名的裸行升级成 ##", () => {
   // 正文里的同名句子不动
   const inline = ensureSectionHeadings("前面提到第一节，后面还有内容。", ["第一节"]);
   assert.equal(inline, "前面提到第一节，后面还有内容。");
+});
+
+/* ------------------------------------------------------------------ */
+/* 纲要提示词的条件文案（prompts/outline.yaml → outline.outline）        */
+/* ------------------------------------------------------------------ */
+
+const OUTLINE_PROMPT = loadSteps("config/wechat-article/steps.yaml").prompts["outline.outline"];
+
+function outlineCase(type, sources = []) {
+  return buildOutlinePrompt({
+    prompt: OUTLINE_PROMPT,
+    promptId: "outline.outline",
+    type: { id: "t", name: "栏目", length: { min: 800, max: 1300, target: 1000 }, illustrations: { min: 1, max: 3 }, ...type },
+    topic: { topic: "主题", thesis: "判断", angle: "角度" },
+    sources,
+  });
+}
+
+test("buildOutlinePrompt 的素材与配图整句从注册表取，缺 key 抛错", () => {
+  assert.match(outlineCase({}).prompt, /全文配图 1-3 张，按小节内容自行决定张数/);
+  assert.match(outlineCase({ illustrations: { min: 1, max: 3, count: 2 } }).prompt, /全文配图 1-3 张，建议 2 张/);
+  assert.match(outlineCase({}).prompt, /（无可用素材，请基于常识谨慎写作/);
+  // 用户补充要求那句也在注册表里；没带补充要求时整行留空
+  const withRequirements = buildOutlinePrompt({
+    prompt: OUTLINE_PROMPT,
+    promptId: "outline.outline",
+    type: { id: "t", name: "栏目", length: { min: 800, max: 1300, target: 1000 }, illustrations: { min: 1, max: 3 } },
+    topic: { topic: "主题" },
+    sources: [],
+    userRequirements: "别写融资",
+  });
+  assert.match(withRequirements.prompt, /用户补充要求：别写融资/);
+  assert.doesNotMatch(outlineCase({}).prompt, /用户补充要求/);
+  assert.throws(
+    () => buildOutlinePrompt({
+      prompt: { ...OUTLINE_PROMPT, requirements_block: "" },
+      promptId: "outline.outline",
+      type: { id: "t", name: "栏目", length: { min: 1, max: 2 }, illustrations: { min: 1, max: 3 } },
+      topic: { topic: "主题" },
+      sources: [],
+      userRequirements: "别写融资",
+    }),
+    /缺少提示词文案 outline\.outline\.requirements_block/,
+  );
+  // 张数区间也单源类型配置：缺了抛错点名配置路径，不垫「建议 3 张」
+  assert.throws(
+    () => outlineCase({ illustrations: { max: 3 } }, [{ index: 1, title: "素材", excerpts: ["段落"] }]),
+    /缺少配置项 类型 t 的 illustrations\.min/,
+  );
+  for (const key of ["no_materials", "image_plan_range", "image_plan_default"]) {
+    const broken = { ...OUTLINE_PROMPT, [key]: "" };
+    assert.throws(
+      () => buildOutlinePrompt({
+        prompt: broken,
+        promptId: "outline.outline",
+        type: { id: "t", name: "栏目", length: { min: 1, max: 2 }, illustrations: { min: 1, max: 3, count: key === "image_plan_default" ? 2 : undefined } },
+        topic: { topic: "主题" },
+        sources: [],
+      }),
+      new RegExp(`缺少提示词文案 outline\.outline\.${key}`),
+    );
+  }
 });

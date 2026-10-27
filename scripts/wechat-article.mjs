@@ -2,12 +2,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs, asNumber, asBool, asList } from "./lib/args.mjs";
-import { findProjectRoot, loadDotEnv, env } from "./lib/env.mjs";
+import { findProjectRoot, loadDotEnv, env, needConfig, needNumber } from "./lib/env.mjs";
 import { loadConfig, findType, listTypes, getModelProfile, validateConfig, validateWarnings, featurePaths } from "./lib/config.mjs";
 import { ensureDir, writeText, writeJson, readJson, readText, exists, uniqueDir, relativeTo, timestamp, slugify } from "./lib/fsx.mjs";
 import { createLogger } from "./lib/log.mjs";
 import { createModelClient } from "./lib/models.mjs";
-import { ARTIFACT, createArticle, detectStartStage, listWrittenArticles, openArticle, pickArticleFile, readArticleMeta, stageIndex } from "./lib/article-store.mjs";
+import { ARTIFACT, buildEnvelope, createArticle, detectStartStage, fileFromResult, listWrittenArticles, openArticle, pickArticleFile, readArticleMeta, stageIndex } from "./lib/article-store.mjs";
 import { archiveArticle } from "./lib/archive.mjs";
 import { indexKnowledge, pickRecent, searchKnowledge, searchWeKnora, collectSources, buildTerms, validateProposals, formatSources, landSources, extractExcerpts, daysAgo, isFreshlyCollected, termHeatmap, formatHeatmap } from "./lib/knowledge.mjs";
 import {
@@ -16,7 +16,7 @@ import {
   buildDraftPrompt,
   buildScorePrompt,
   buildRevisePrompt,
-  buildCorrectFallbackPrompt,
+  buildDeAiPrompt,
 } from "./lib/prompts.mjs";
 import {
   normalizeArticle,
@@ -32,58 +32,94 @@ import {
   splitFrontmatter,
   buildFrontmatter,
   stripCodeFence,
-  collectLocalImages,
+  relocateLocalImages,
+  verbatimOverlap,
+  missingNumbers,
 } from "./lib/markdown.mjs";
-import { createCorrector, applyCorrections } from "./lib/corrector.mjs";
-import { buildDraftInput, normalizeDraftInput, validateDraftInput, loadDraftTemplate, summarizeDraftInput } from "./lib/draft-input.mjs";
-import { generateImages, resolveImageCount, planImages } from "./comm/wechat-illustrate.mjs";
+import { createCorrector, summarizeSensitive } from "./lib/corrector.mjs";
+import { buildDraftInput, normalizeDraftInput, validateDraftInput, draftTemplateFromSteps, summarizeDraftInput } from "./lib/draft-input.mjs";
+import { composePrompt, generateImages, resolveImageCount, planImages, validateImageRecords } from "./comm/wechat-illustrate.mjs";
+import { validateProduced } from "./lib/template.mjs";
 import { sendEmail, publishToWechat, markdownToHtml, emailShell, bodyOnly, derivePublishStatus } from "./comm/wechat-publish.mjs";
-import { classifyArticle, classifyOrFallback, formatOutline, selectBestTopic, checkRevisionNeeded } from "./lib/classify.mjs";
+import { classifyArticle, classifyOrFallback, formatOutline, selectBestTopic, checkRevisionNeeded, needEndpointParam, needGateParam } from "./lib/classify.mjs";
 import { createRecorder } from "./lib/io-record.mjs";
 import {
   loadSteps,
   validateSteps,
   resolveStep,
   resolveSteps,
+  resolveCall,
   stepNames,
+  stepCallContract,
   promptById,
-  schemaById,
 } from "./lib/steps.mjs";
 
 const PROJECT_ROOT = findProjectRoot(process.cwd());
 // 本入口的功能路径布局（config/wechat-article/ + 全局 config/models.yaml）
 const PATHS = featurePaths("wechat-article");
 const VERSION = "1.0.0";
+/** 阶段名单源：既是 --stage / 分步命令的取值，也是节点 stage 的合法词汇。 */
+const PIPELINE_STAGES = ["topic", "draft", "review", "compose", "publish"];
+/** 入口支持"关掉即跳过"的节点；其他节点写 enabled 都是假开关，validate 报错。 */
+const SKIPPABLE_STEPS = ["de_ai", "image_generation", "publish", "archive"];
 /** 写初稿前必须准备好的东西：标题 + 大纲 + 相关资料（校验规则见 config/wechat-article/schemas/draft.yaml）。 */
 const DRAFT_INPUT_FILE = ARTIFACT.draftInput;
 
 /**
- * llm 调用的固化编号（写入 NN-step/llm/M-label(_F).<model>.json 的 slot 字段）：
- * 目录 = 所属步骤（NN-step），文件名 M = 本步骤内实际执行顺序（recorder 递增计数），
- * label = 调用名；slot = 同步骤内调用种类的固化 id（只记在 JSON 里，不进文件名）。
- * 分步/独立命令复用所属步骤的编号体系；管线调整步骤时必须同步本表归属。
+ * 步骤内每次外部调用（大模型 + 非模型 API：核稿、知识库检索、配图、邮件…）的固化编号：
+ * id = 该调用在**所属步骤内**的子步骤序号（按执行顺序 01 起），直接充当
+ * `NN-step/api/子步骤号_轮次(尝试)-label(_F).<模型|provider>.json` 的文件名主号
+ * （步骤号由目录 NN-step 提供，不进文件名；服务段无模型名时用 provider）；
+ * 轮次 = 该子步骤第几次「逻辑调用」（流程循环推进，如 2_1-revise → 2_2-revise）；
+ * 单次调用内的重复（校验重试/升级二判/HTTP 重试）以 (尝试) 标注，如 1_1(2)-correct，不占子步骤号；
+ * label = 调用名，同一步骤内不得重复；_F = 降级兜底。
+ * id 同时原样记在 JSON 的 slot 字段。分步/独立命令复用所属步骤的编号体系；
+ * 管线增删或调整步骤内调用时必须同步本表（含 label 归属）。
  */
-const LLM_SLOT = {
-  topic: { select: "01", best: "02", classify: "03", classify_deep: "04", web_search: "05" },
+const API_SLOT = {
+  topic: { knowledge: "01", select: "02", best: "03", classify: "04", web_search: "05" },
   draft: { outline: "01", draft: "02" },
-  review: { correct: "03", revise: "04", score: "05", check: "06" },
+  review: { correct: "01", sensitive: "02", revise: "03", score: "04", check: "05" },
+  compose: { de_ai: "01", generate: "02" },
+  publish: { email: "01", wechat: "02" },
 };
 
 /**
  * 步骤节点是调用的配置单源（steps/<NN-阶段>.yaml 的 models.<调用名>）：
- *   - model：节点 models.<label>.id > type.model（--model 是遗留全局覆盖，仅对 llm 调用生效）；
- *   - attempts：结构化输出调用的总尝试上限（options.retry_limit，缺省 2）；
- *   - timeout / temperature / maxTokens：options 覆盖，缺省吃 models.yaml 端点默认。
+ *   - model：--model（遗留全局覆盖）> rounds.<轮次>.id > levels.<档位>.id > models.<label>.id > type.model；
+ *   - rounds：按轮次覆盖，只有传入 round 的调用点（修正/评稿）会命中；id/options 逐字段合并；
+ *   - levels：按档位覆盖，只有传入 level 的调用点（de_ai）会命中；合并规则同 rounds；
+ *   - attempts：结构化输出调用的总尝试上限（options.retry_limit，带 schema 的调用必填）；
+ *   - timeout / temperature / maxTokens：合并后的 options 覆盖，缺省吃 models.yaml 端点默认。
  */
-function stepCallConfig({ config, type }, stepName, label, options = {}) {
+function stepCallConfig({ config, type }, stepName, label, options = {}, round = null, level = null) {
   const step = resolveStep(stepName, { steps: config?.steps, type });
   const call = step?.calls?.[label];
+  const resolved = resolveCall(call, round, level);
+  const contract = stepCallContract(step, label);
+  const schema = contract?.output_format || {};
+  const retryLimit = resolved.options.retry_limit;
+  // retry_limit（总尝试上限，含首轮）单源 steps 节点：它不是 models.yaml 的端点字段，
+  // 没有"吃端点默认"这条路；代码兜 2 等于允许配置说谎——节点写 3、实际只跑 2 次没人发现。
+  // 只有会做修复重试的调用（挂了校验契约的结构化输出）与去 AI 化（质量闸门重调）吃它，
+  // 纯文本单次调用不需要配，不强制它们写一个没人读的值。
+  // 判定用 schema_id（节点/调用声明的注册表 id），不是 output_format 非空——
+  // 纯文本节点的 output_format 是形状备注（脚本不校验），按非空判会逼它们配一个没人读的值。
+  if (contract?.schema_id && retryLimit === undefined) {
+    throw new Error(
+      `步骤 ${stepName}.${label} 有校验契约 ${contract.schema_id}（结构化调用），必须写 models.${label}.options.retry_limit（总尝试上限，含首轮；1 = 不做修复重试）`,
+    );
+  }
   return {
-    model: options.model || call?.model_id || type.model,
-    attempts: Math.max(1, call?.options?.retry_limit ?? 2),
-    timeout: call?.options?.timeout,
-    temperature: call?.options?.temperature,
-    maxTokens: call?.options?.max_tokens,
+    model: options.model || resolved.model_id || type.model,
+    attempts: retryLimit === undefined ? undefined : Math.max(1, Number(retryLimit)),
+    timeout: resolved.options.timeout,
+    temperature: resolved.options.temperature,
+    maxTokens: resolved.options.max_tokens,
+    // 提示词块与校验 DSL 单源 = 节点（多调用节点写在 models.<调用名>）。
+    prompt: contract?.prompt || {},
+    prompt_id: contract?.prompt_id || "",
+    schema: contract?.output_format || {},
   };
 }
 
@@ -91,50 +127,66 @@ function stepCallConfig({ config, type }, stepName, label, options = {}) {
  * systemone 判断调用的完整 cfg：models.yaml 端点默认 + 节点 options 覆盖
  * + defaults.yaml classifier.* 行为参数（enabled / question / default_type）。
  * 节点没配该调用时返回 null，调用方按“判断模型不可用”处理。
+ * 端点必填参数（model / endpoint / timeout_ms / max_retries）缺了就抛错点名
+ * config/models.yaml，代码不留同值副本；base_url 留空仍按「判断模型不可用」降级。
  */
 function systemOneCallConfig({ config, type }, stepName, label) {
   const step = resolveStep(stepName, { steps: config?.steps, type });
   const call = step?.calls?.[label];
   if (!call) return null;
   const behavior = config.classifier || {};
-  const profile = config.models?.[call.model_id] || {};
+  const modelId = call.model_id;
+  const profile = config.models?.[modelId] || {};
   const options = call.options || {};
+  const profileWhere = `config/models.yaml ${modelId}`;
   const cfg = {
     enabled: behavior.enabled !== false,
-    question: behavior.question || "article_type",
-    topic_question: behavior.topic_question || "topic_pick",
-    check_question: behavior.check_question || "review_check",
+    question: behavior.question,
+    topic_question: behavior.topic_question,
+    check_question: behavior.check_question,
     default_type: behavior.default_type || "",
     provider: "systemone",
-    model_id: call.model_id,
-    model: profile.model || "",
+    model_id: modelId,
+    model: needEndpointParam(profile, "model", profileWhere),
+    // 判定文案（state / instructions / criteria）来自节点 models.<调用名>.prompt。
+    prompt: stepCallContract(step, label)?.prompt || {},
+    prompt_id: stepCallContract(step, label)?.prompt_id || "",
     base_url: profile.base_url || "",
-    endpoint: profile.endpoint || "/v1/systemone",
+    endpoint: needEndpointParam(profile, "endpoint", profileWhere),
     api_key: profile.api_key || "",
-    timeout_ms: Number(profile.timeout_ms || 15000),
-    max_retries: Number(profile.max_retries ?? 2),
+    timeout_ms: Number(needEndpointParam(profile, "timeout_ms", profileWhere)),
+    max_retries: Number(needEndpointParam(profile, "max_retries", profileWhere)),
   };
   if (options.escalate_below !== undefined) cfg.escalate_below = Number(options.escalate_below);
   if (options.min_confidence !== undefined) cfg.min_confidence = Number(options.min_confidence);
   const deepProfile = options.deep ? config.models?.[options.deep] : null;
   if (deepProfile?.model && deepProfile.model !== cfg.model) {
+    const deepWhere = `config/models.yaml ${options.deep}`;
     cfg.deep = {
       model: deepProfile.model,
+      // base_url / api_key 缺省时沿用一次判断的端点与密钥（同一服务，属继承而非同值默认）
       base_url: deepProfile.base_url || cfg.base_url,
-      endpoint: deepProfile.endpoint || cfg.endpoint,
+      endpoint: needEndpointParam(deepProfile, "endpoint", deepWhere),
       api_key: deepProfile.api_key || cfg.api_key,
-      timeout_ms: Number(deepProfile.timeout_ms || cfg.timeout_ms),
-      max_retries: Number(deepProfile.max_retries ?? cfg.max_retries),
+      timeout_ms: Number(needEndpointParam(deepProfile, "timeout_ms", deepWhere)),
+      max_retries: Number(needEndpointParam(deepProfile, "max_retries", deepWhere)),
     };
   }
   return cfg;
 }
 
-/** 节点调用一览（validate / steps / doctor 展示用）："label=id label=id"，本地节点为 —。 */
+/** 节点调用一览（validate / steps / doctor 展示用）："label=id(R1:id,…)"，本地节点为 —。 */
 function callsLabel(step) {
   const calls = Object.values(step?.calls || {});
   if (!calls.length) return "—";
-  return calls.map((call) => `${call.label}=${call.model_id}`).join(" ");
+  return calls
+    .map((call) => {
+      const rounds = Object.entries(call.rounds || {})
+        .map(([round, override]) => `R${round}:${override.model_id || call.model_id}`)
+        .join(",");
+      return `${call.label}=${call.model_id}${rounds ? `(${rounds})` : ""}`;
+    })
+    .join(" ");
 }
 
 const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
@@ -157,19 +209,18 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   topic              选题步：选题 → 判断类型 → 收集素材（--topic 可手动指定主题）
   draft              初稿步：生成纲要 → 组装初稿输入 → 写初稿（读 02-step/draft-input.json，或 --input 指定一份）
   review             对已有稿件执行核稿 → 修正 → 评稿 → 判定循环（字数校验内置在修正里）
-  illustrate         为已有稿件生成并替换配图
+  compose            组稿步（04）：去 AI 化 + 生成配图，两路并发后组装成稿
   publish            发布已有稿件（邮件 / 公众号草稿）
   validate           校验配置文件（加 --input <file> 可同时校验初稿输入）
   doctor             检查环境与依赖
 
 阶段产物（存在即完成；续跑时看最后一个产物决定从哪继续，没有 state.json）:
   01-result.json（选题 + 类型 + sources）→ 02-result.json（纲要 + 初稿输入 + 初稿）
-  → 03-result.json（审稿循环）→ 05-result.json（配图）→ 06-result.json（发布）
+  → 03-result.json（审稿循环）→ 04-result.json（组稿：去 AI 化 + 配图）→ 05-result.json（发布）
   每步中间文件收进 NN-step/ 子目录：01-step/（topic.md、proposal.json、sources/、web-search/）、
   02-step/（outline.json/.md、draft-input.json、draft.md）、
-  03-step/（round-N/、reviewed.md）、05-step/（images.json、illustrated.md、images/）、
-  06-step/（final.md、final.html）；每步模型调用留痕在 NN-step/llm/，文本日志在 logs/pipeline.log
-  （04 = 去 AI 化，配置就绪但运行时暂未接线）
+  03-step/（round-N/、reviewed.md）、04-step/（polished.md、images.json、composed.md、images/）、
+  05-step/（final.md、final.html）；每步外部调用（模型 + API）留痕在 NN-step/api/，文本日志在 logs/pipeline.log
 
 两个入口（后续步骤完全一致，都可用 --stage 提前停止）:
   # 入口 1：自动选题 + 自动纲要
@@ -193,7 +244,7 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   --steps <path>         步骤配置，默认 config/wechat-article/steps.yaml
   --type <id>            文章类型 id（历史遗留，现仅作判断模型失败时的回退；定类由 systemone 完成）
   --article <slug>       选择/续跑 draft 下的文章；latest = 最近一篇；分步命令省略时自动选中唯一一篇
-  --file <path>          review/illustrate/publish 直接指定稿件文件（也可继续用 --article <path>）
+  --file <path>          review/compose/publish 直接指定稿件文件（也可继续用 --article <path>）
   --slug <name>          新建文章时覆盖目录名（默认取标题的 slug）
   --title <text>         手动入口的文章标题
   --outline-file <path>  手动入口 / classify 的提纲文件（.md 或 .json）；分步时也可复用自动生成的 02-step/outline.json
@@ -210,9 +261,10 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   --length-attempts <n>  修正稿字数校验不过时的重试次数（默认 3；重试耗尽仍不合格则中断流程）
   --knowledge-source <s> 覆盖知识来源：local | weknora | both
   --images <n>           配图数量（1-5）
+  --de-ai-level <l>      compose 去 AI 化档位：light | standard | deep（省略则用节点 handler_options.level）
   --count <n>            topics：生成多少个候选主题（含提纲，1-10）
   --md                   topics：把候选主题以 Markdown 打印到终端
-  --stage <name>         终止阶段：topic|draft|review|illustrate|publish
+  --stage <name>         终止阶段：${PIPELINE_STAGES.join("|")}
   --mock                 使用 mock 模型（不发真实请求，用于验证流程）
   --verbose              输出调试日志
   --help                 显示帮助
@@ -291,8 +343,8 @@ async function main() {
       return cmdPipeline(config, options, command);
     case "review":
       return cmdReviewOnly(config, options);
-    case "illustrate":
-      return cmdIllustrateOnly(config, options);
+    case "compose":
+      return cmdComposeOnly(config, options);
     case "publish":
       return cmdPublishOnly(config, options);
     default:
@@ -309,7 +361,7 @@ async function main() {
 function cmdValidate(config, options = {}) {
   const issues = validateConfig(config);
   const warnings = validateWarnings(config);
-  const stepReport = validateSteps(config.steps, { types: config.types });
+  const stepReport = validateSteps(config.steps, { types: config.types, stages: PIPELINE_STAGES, skippable: SKIPPABLE_STEPS });
   issues.push(...stepReport.errors);
   warnings.push(...stepReport.warnings);
   if (config.stepsError) issues.push(`步骤配置加载失败：${config.stepsError}`);
@@ -340,7 +392,7 @@ function cmdValidate(config, options = {}) {
   const classifyCfg = systemOneCallConfig({ config }, "classify_type", "classify");
   console.log(
     classifyCfg
-      ? `判断模型：${classifier.enabled ? "启用" : "禁用"}（classify=${classifyCfg.model || classifyCfg.model_id || "?"}${classifyCfg.deep ? ` → 二次 ${classifyCfg.deep.model}（< ${classifyCfg.escalate_below ?? 0.65}）` : ""} @ ${classifyCfg.base_url || "base_url 未配置"}，默认类型 ${classifier.default_type || "未设置"}）`
+      ? `判断模型：${classifier.enabled ? "启用" : "禁用"}（classify=${classifyCfg.model || classifyCfg.model_id || "?"}${classifyCfg.deep ? ` → 二次 ${classifyCfg.deep.model}（< ${classifyCfg.escalate_below ?? "未配置 escalate_below"}）` : ""} @ ${classifyCfg.base_url || "base_url 未配置"}，默认类型 ${classifier.default_type || "未设置"}）`
       : "判断模型：steps classify_type 未配置 classify 调用（不会自动分类）",
   );
   if (config.steps) {
@@ -381,7 +433,13 @@ function cmdValidate(config, options = {}) {
     const raw = readJson(file);
     const input = normalizeDraftInput(raw);
     const inputType = config.types.find((t) => t.id === input.type);
-    const report = validateDraftInput(raw, { schema: loadDraftTemplate(config.__dir).schema, type: inputType, advisory: true });
+    if (!config.steps) {
+      console.error(`\n未找到步骤配置：${config.stepsPath || PATHS.steps}（draft_input 的校验规则来自 bundle_draft_input 节点）`);
+      process.exitCode = 1;
+      return;
+    }
+    const { schema: draftInputSchema } = draftTemplateFromSteps({ steps: config.steps, type: inputType });
+    const report = validateDraftInput(raw, { schema: draftInputSchema, type: inputType, advisory: true });
     console.log(`\n初稿输入：${file}`);
     for (const line of summarizeDraftInput(input)) console.log(`  ${line}`);
     for (const warning of report.warnings) console.warn(`  [warn] ${warning}`);
@@ -430,20 +488,45 @@ function cmdSteps(config, options = {}) {
       console.log("模型调用：（无，本地节点）");
     }
     for (const call of calls) {
-      console.log(`模型调用：${call.label} → ${call.model_id}（${call.template}）${Object.keys(call.options).length ? ` ${JSON.stringify(call.options)}` : ""}`);
+      // 提示词/数据结构写在节点级（单调用节点）或调用级（多调用节点）：
+      // 按 stepCallContract 的解析结果打印，否则多调用节点看不见自己引用了哪些 id。
+      const contract = stepCallContract(step, call.label);
+      const ids = [
+        contract?.prompt_id && `prompt=${contract.prompt_id}`,
+        contract?.schema_id && `schema=${contract.schema_id}`,
+      ]
+        .filter(Boolean)
+        .join(" ");
+      console.log(`模型调用：${call.label} → ${call.model_id}（${call.template}）${ids ? ` ${ids}` : ""}${Object.keys(call.options).length ? ` ${JSON.stringify(call.options)}` : ""}`);
+      for (const [round, override] of Object.entries(call.rounds || {})) {
+        const opts = Object.keys(override.options).length ? ` ${JSON.stringify(override.options)}` : "";
+        console.log(`  轮次 ${round}：${override.model_id || call.model_id}${opts}`);
+      }
     }
     console.log(`依赖：${step.depends_on.join(", ") || "（无）"}`);
     console.log(`产物：读 ${step.artifacts.reads.join(", ") || "（无）"} → 写 ${step.artifacts.writes.join(", ") || "（无）"}`);
     if (step.prompt_id) console.log(`提示词 id：${step.prompt_id}`);
     if (step.schema_id) console.log(`数据结构 id：${step.schema_id}`);
+    if (step.result_schema) console.log(`result 本体校验契约：${step.result_schema}（落盘前跑，校验本步的 NN-result.json）`);
     if (step.handler_options && Object.keys(step.handler_options).length) {
       console.log(`\n处理参数：`);
       console.log(JSON.stringify(redactSecrets(step.handler_options), null, 2));
     }
-    console.log(`\n输入格式：`);
-    console.log(JSON.stringify(step.input_format, null, 2));
-    console.log(`\n输出格式：`);
-    console.log(JSON.stringify(step.output_format, null, 2));
+    // 引用了注册表 id 的输出格式才是脚本真跑的校验契约；内联的 input/output_format
+    // 只是形状备注（纯文本节点没有可校验的 JSON 形状）。打印时区分开，别让人以为都校验。
+    const formatBlock = (title, format) => {
+      if (!format || !Object.keys(format).length) return;
+      console.log(`\n${title}：`);
+      console.log(JSON.stringify(format, null, 2));
+    };
+    formatBlock("输入格式（形状备注，脚本不校验）", step.input_format);
+    formatBlock(`输出格式（${step.schema_id ? `校验契约 ${step.schema_id}` : "形状备注，脚本不校验"}）`, step.output_format);
+    formatBlock(`result 本体（校验契约 ${step.result_schema}）`, step.result_output_format);
+    for (const call of calls) {
+      if (!call.input_format && !call.output_format) continue;
+      formatBlock(`调用 ${call.label} 输入格式（形状备注，脚本不校验）`, call.input_format);
+      formatBlock(`调用 ${call.label} 输出格式（${call.schema_id ? `校验契约 ${call.schema_id}` : "形状备注，脚本不校验"}）`, call.output_format);
+    }
     if (Object.keys(step.prompt || {}).length) {
       console.log(`\n提示词：`);
       for (const [key, text] of Object.entries(step.prompt)) {
@@ -515,7 +598,7 @@ async function cmdDoctor(config, options) {
   add("全局默认", Boolean(config.__defaults_path), config.__defaults_path || `未找到 ${PATHS.defaults}`);
   add("模型总表", Boolean(config.__models_path), config.__models_path || `未找到 ${PATHS.models}`);
   if (config.steps) {
-    const report = validateSteps(config.steps, { types: config.types });
+    const report = validateSteps(config.steps, { types: config.types, stages: PIPELINE_STAGES, skippable: SKIPPABLE_STEPS });
     add(
       "步骤配置",
       report.errors.length === 0,
@@ -560,8 +643,12 @@ async function cmdDoctor(config, options) {
       add("知识来源 WeKnora", false, "缺少 base_url 或 api_key");
     } else {
       try {
+        // auth_header 单源 defaults.yaml defaults.knowledge.weknora（这里不留 "X-API-Key" 副本，
+        // 与检索侧 knowledge.mjs 同一口径）；缺项就报配置缺项，不用猜的头去探。
+        const authHeader = needConfig(wk.auth_header, "defaults.yaml defaults.knowledge.weknora.auth_header");
         const res = await fetch(`${wk.base_url.replace(/\/+$/, "")}/knowledge-bases`, {
-          headers: { [wk.auth_header || "X-API-Key"]: wk.api_key, "X-Request-ID": String(Date.now()) },
+          headers: { [authHeader]: wk.api_key, "X-Request-ID": String(Date.now()) },
+          // 探测预算（不是服务参数）：doctor 只列知识库，不等 defaults 的 timeout_ms
           signal: AbortSignal.timeout(10000),
         });
         const data = await res.json().catch(() => ({}));
@@ -580,11 +667,16 @@ async function cmdDoctor(config, options) {
     }
   }
 
-  const nodeLlmIds = (config.steps?.steps || [])
+  // 节点里出现的每个模型 id 都要能连通：默认调用 + 轮次覆盖 + 档位覆盖，
+  // llm 与 systemone（含升级用的 deep 判断模型）一视同仁。
+  const nodeModelIds = (config.steps?.steps || [])
     .flatMap((step) => Object.values(step.calls || {}))
-    .filter((call) => call.template === "llm")
-    .map((call) => call.model_id);
-  const modelIds = [...new Set([...nodeLlmIds, ...config.types.flatMap((t) => [t.model, t.review?.model]).filter(Boolean)])];
+    .flatMap((call) => [
+      call.model_id,
+      ...Object.values(call.rounds || {}).map((round) => round.model_id),
+      ...Object.values(call.levels || {}).map((level) => level.model_id),
+    ]);
+  const modelIds = [...new Set([...nodeModelIds, ...config.types.map((t) => t.model)].filter(Boolean))];
   for (const id of modelIds) {
     if (options.mock) {
       add(`模型 ${id}`, true, "mock 模式跳过");
@@ -592,8 +684,13 @@ async function cmdDoctor(config, options) {
     }
     const profile = getModelProfile(config, id);
     if (profile.provider === "ollama") {
+      // 端点地址单源 config/models.yaml：doctor 不兜一个 localhost 端口，否则检查的是代码里的地址
+      if (!profile.base_url) {
+        add(`模型 ${id}`, false, "缺少 base_url：config/models.yaml");
+        continue;
+      }
       try {
-        const res = await fetch(`${(profile.base_url || "http://localhost:11434").replace(/\/+$/, "")}/api/tags`, {
+        const res = await fetch(`${profile.base_url.replace(/\/+$/, "")}/api/tags`, {
           headers: profile.api_key ? { Authorization: `Bearer ${profile.api_key}` } : undefined,
           signal: AbortSignal.timeout(8000),
         });
@@ -614,37 +711,82 @@ async function cmdDoctor(config, options) {
 
   const correct = config.defaults?.review?.correct_cn || {};
   if (correct.enabled !== false && correct.base_url) {
+    // 端点与鉴权头只从 defaults.yaml 读：缺项就如实报"配置缺项"，不用代码猜的 /api/correct 去探
+    // （原来这里两份 `|| "/api/correct"`、一份 `|| "X-Auth-Key"`，后者还与 defaults.yaml 冲突）。
+    let endpoint;
     try {
-      const res = await fetch(`${correct.base_url.replace(/\/+$/, "")}${correct.endpoint || "/api/pipeline"}`, {
+      endpoint = needConfig(correct.correct_endpoint, "defaults.yaml defaults.review.correct_cn.correct_endpoint");
+      const headers = { "Content-Type": "application/json" };
+      if (correct.api_key) {
+        const authHeader = needConfig(correct.auth_header, "defaults.yaml defaults.review.correct_cn.auth_header");
+        if (String(authHeader).toLowerCase() === "authorization") headers.Authorization = `Bearer ${correct.api_key}`;
+        else headers[authHeader] = correct.api_key;
+      }
+      const url = `${correct.base_url.replace(/\/+$/, "")}${endpoint}`;
+      const res = await fetch(url, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(correct.api_key ? { [correct.auth_header || "X-Auth-Key"]: correct.api_key } : {}),
-        },
+        headers,
         body: JSON.stringify({ text: "这是一句用于连通性测试的中文。" }),
+        // 探测预算（不是服务参数）：doctor 只想知道端点通不通，不等 defaults 的 timeout_ms
         signal: AbortSignal.timeout(20000),
       });
-      add("核稿服务 correct-cn", res.ok, `${correct.base_url}${correct.endpoint} → HTTP ${res.status}`);
+      add("核稿服务 correct-cn", res.ok, `${url} → HTTP ${res.status}`);
     } catch (error) {
-      add("核稿服务 correct-cn", false, `${correct.base_url} → ${error.message}（将回退到模型校对）`);
+      add("核稿服务 correct-cn", false, error.message);
     }
   } else {
     add("核稿服务 correct-cn", true, "未启用");
   }
 
-  const ms = config.defaults?.illustrations?.modelscope;
-  const msKey = ms?.api_key || env("PB_MODEL_IMAGE_API_KEY") || env("PB_MODEL_API_KEY");
-  if (ms?.enabled !== false) add("配图 ModelScope", Boolean(msKey), msKey ? "已配置 key" : "缺少 PB_MODEL_IMAGE_API_KEY");
-  const poll = config.defaults?.illustrations?.pollinations;
-  add("配图 Pollinations", poll?.enabled !== false, poll?.base_url || "https://image.pollinations.ai");
+  const ill = config.defaults?.illustrations || {};
+  // 通道顺序与 key 都只从 defaults.yaml 读：primary 不兜 "modelscope"（副本会让 doctor 报出
+  // 一个配置里没写的顺序），PB_MODEL_API_KEY 这个旧别名也已删除（.env 里根本没有它，
+  // 留着只会让 doctor 显示绿色而真实运行取不到 key）。
+  const channelRole = (name) => (
+    ill.primary === name ? "主选"
+      : [].concat(ill.fallback || []).includes(name) ? "备用" : "未参与");
+  const ms = ill.modelscope;
+  const msKey = ms?.api_key;
+  if (ms?.enabled !== false) add(`配图 ModelScope（${channelRole("modelscope")}）`, Boolean(msKey), msKey ? "已配置 key" : "缺少 PB_MODEL_IMAGE_API_KEY");
+  const poll = ill.pollinations;
+  add(`配图 Pollinations（${channelRole("pollinations")}）`, poll?.enabled !== false && Boolean(poll?.base_url), poll?.base_url || "缺少 base_url：defaults.yaml illustrations.pollinations.base_url");
 
-  const email = config.defaults?.publish?.email;
-  if (email?.enabled) add("邮件 Resend", Boolean(email.api_key || env("PB_RESEND_API_KEY")), (email.api_key || env("PB_RESEND_API_KEY")) ? "已配置 key" : "缺少 PB_RESEND_API_KEY");
+  const pub = config.defaults?.publish || {};
+  // 凭据只看配置：defaults.yaml 已用 ${PB_RESEND_API_KEY} 把 .env 展开进来，
+  // 这里再 env() 一次等于给同一项开第二个读取口（配置删掉这行 doctor 照样报绿）。
+  const emailKey = pub.email?.api_key;
+  if (pub.email?.enabled) {
+    add("邮件 Resend", Boolean(emailKey), [
+      emailKey ? "已配置 key" : "缺少 PB_RESEND_API_KEY",
+      (pub.email.to || []).length ? `收件人 ${String((pub.email.to || []).length)} 个` : "未配置收件人",
+    ].join("；"));
+  } else {
+    add("邮件 Resend", true, "未启用（publish.email.enabled 或 --email 打开）");
+  }
 
-  const wechat = config.defaults?.publish?.wechat;
-  if (wechat?.enabled) {
+  if (pub.wechat?.enabled) {
     const hasId = Boolean(env("WECHAT_MP_APP_ID") || env("WECHAT_APP_ID"));
     add("公众号 Wenyan", hasId, hasId ? "已配置 WECHAT_MP_APP_ID" : "缺少 WECHAT_MP_APP_ID");
+  } else {
+    add("公众号 Wenyan", true, "未启用（publish.wechat.enabled 或 --wechat 打开）");
+  }
+
+  // 归档：知识库入库目录可写 + zip 落点存在（archive.enabled 整体开关看 steps 节点）
+  const knowledgeDir = pub.archive?.knowledge_dir;
+  if (!knowledgeDir) {
+    add("归档 知识库入库", true, "knowledge_dir 留空：只打包，不入库");
+  } else {
+    const target = path.resolve(PROJECT_ROOT, knowledgeDir);
+    if (!exists(target)) {
+      add("归档 知识库入库", true, `${target} 不存在，归档时创建`);
+    } else {
+      try {
+        fs.accessSync(target, fs.constants.W_OK);
+        add("归档 知识库入库", true, target);
+      } catch (error) {
+        add("归档 知识库入库", false, `${target} 不可写：${error.message}`);
+      }
+    }
   }
 
   console.table(checks);
@@ -670,7 +812,7 @@ async function cmdClassify(config, options) {
   const fallback = cfg.default_type || "";
 
   const chain = cfg.deep
-    ? `${cfg.model} → 二次 ${cfg.deep.model}（置信度 < ${cfg.escalate_below ?? 0.65} 时）`
+    ? `${cfg.model} → 二次 ${cfg.deep.model}（置信度 < ${cfg.escalate_below ?? "未配置 escalate_below"} 时）`
     : cfg.model || cfg.model_id;
   console.log(`判断模型：${chain} @ ${cfg.base_url || "（未配置）"}`);
   if (outline) console.log(`提纲：${outline.split(/\r?\n/).filter(Boolean).length} 行`);
@@ -683,7 +825,7 @@ async function cmdClassify(config, options) {
       console.log(`一次判断：${result.first.type}（置信度 ${result.first.confidence}，模型 ${result.first.model}）`);
     }
     if (result.reason) console.log(`理由：${result.reason}`);
-    const min = Number(cfg.min_confidence ?? 0.5);
+    const min = needGateParam(cfg, "min_confidence", "steps 节点 classify_type.models.classify.options");
     if (result.confidence < min) {
       console.log(`置信度低于 ${min}，实际运行会回退到 ${fallback || "（无默认类型，直接报错）"}`);
     }
@@ -706,8 +848,14 @@ async function cmdListKbs(config, options) {
     console.log("提示：WeKnora 已关闭（use_weknora=false / PB_USE_WEKNORA=false），此命令仅用于查看远端知识库列表，不影响管线。");
   }
   const headers = { "X-Request-ID": String(Date.now()) };
-  if (wk.api_key) headers[wk.auth_header || "X-API-Key"] = wk.api_key;
-  const res = await fetch(`${base}/knowledge-bases`, { headers, signal: AbortSignal.timeout(15000) });
+  if (wk.api_key) {
+    headers[needConfig(wk.auth_header, "defaults.yaml defaults.knowledge.weknora.auth_header")] = wk.api_key;
+  }
+  const res = await fetch(`${base}/knowledge-bases`, {
+    headers,
+    // 命令级探测预算（不是服务参数），列知识库不需要 defaults 的 timeout_ms
+    signal: AbortSignal.timeout(15000),
+  });
   if (!res.ok) throw new Error(`WeKnora HTTP ${res.status}`);
   const data = await res.json();
   const rows = (data.data || []).map((kb) => ({ id: kb.id, name: kb.name, docs: kb.knowledge_count, type: kb.type }));
@@ -723,7 +871,7 @@ async function cmdTopics(config, options) {
   const notes = needLocal
     ? indexKnowledge(type, {
         logger,
-        maxFileBytes: type.knowledge.max_file_bytes,
+        maxFileBytes: needNumber(type.knowledge.max_file_bytes, "defaults.yaml defaults.knowledge.max_file_bytes"),
         cacheDir: path.join(PROJECT_ROOT, ".temp", "wechat-article"),
       })
     : [];
@@ -837,14 +985,19 @@ function normalizeTopic(raw) {
   return topic;
 }
 
-/** 双窗口配置：大样本按文件日期，小样本按采集日期（mtime）。见 docs/topic-selection.md。 */
+/**
+ * 双窗口配置：大样本按文件日期，小样本按采集日期（mtime）。见 docs/topic-selection.md。
+ * 四个值单源 types/<id>.yaml 的 topic 段——代码里原来那份 15/7/40/3 与四个类型写的值一模一样，
+ * 属于"第二份真相"；旧字段 lookback_days / candidates 的回退也删了（没有任何类型再用它们）。
+ */
 function topicWindows(type) {
   const cfg = type.topic || {};
+  const where = (key) => `types/${type.id}.yaml 的 topic.${key}`;
   return {
-    candidateDays: asNumber(cfg.candidate_days) || asNumber(cfg.lookback_days) || 15,
-    freshDays: asNumber(cfg.fresh_days) || 7,
-    maxCandidates: asNumber(cfg.max_candidates) || asNumber(cfg.candidates) || 40,
-    proposals: clamp(asNumber(cfg.proposals) || 3, 1, 5),
+    candidateDays: needNumber(cfg.candidate_days, where("candidate_days")),
+    freshDays: needNumber(cfg.fresh_days, where("fresh_days")),
+    maxCandidates: needNumber(cfg.max_candidates, where("max_candidates")),
+    proposals: clamp(needNumber(cfg.proposals, where("proposals")), 1, 5),
   };
 }
 
@@ -890,9 +1043,10 @@ async function generateProposals({ config, type, pool, count, models, logger, mo
 
   let rawTopics = [];
   const input = buildTopicInput(type, pool);
-  const topicDsl = schemaById(config.steps, "topic.select_topic").output;
+  const call = stepCallConfig({ config, type }, "select_topic", "select", options);
   const prompt = buildTopicPrompt({
-    prompt: promptById(config.steps, "topic.select_topic"),
+    prompt: call.prompt,
+    promptId: call.prompt_id,
     type,
     candidates: input.candidates,
     heatmap: input.heatmapText,
@@ -902,16 +1056,15 @@ async function generateProposals({ config, type, pool, count, models, logger, mo
     count,
   });
   try {
-    const call = stepCallConfig({ config, type }, "select_topic", "select", options);
     const result = await models.jsonValidated(call.model, {
       ...prompt,
-      schema: topicDsl,
+      schema: call.schema,
       attempts: call.attempts,
       timeout: call.timeout,
       temperature: call.temperature,
       maxTokens: call.maxTokens,
       label: "topic",
-      slot: LLM_SLOT.topic.select,
+      slot: API_SLOT.topic.select,
     });
     rawTopics = Array.isArray(result.topics) ? result.topics : [result];
   } catch (error) {
@@ -954,9 +1107,10 @@ async function generateProposals({ config, type, pool, count, models, logger, mo
 async function generateProposalOutline({ type, topic, pool, models, logger, options, requirements, steps }) {
   const sources = topicSourcesFromPool(topic, pool);
   logger.info(`  参考素材：${sources.map((s) => s.title).join(" / ") || "（无）"}`);
-  const outlineDsl = schemaById(steps, "outline.outline").output;
+  const call = stepCallConfig({ config: { steps }, type }, "outline", "outline", options);
   const prompt = buildOutlinePrompt({
-    prompt: promptById(steps, "outline.outline"),
+    prompt: call.prompt,
+    promptId: call.prompt_id,
     type,
     topic,
     sources,
@@ -966,16 +1120,15 @@ async function generateProposalOutline({ type, topic, pool, models, logger, opti
 
   let outline;
   try {
-    const call = stepCallConfig({ config: { steps }, type }, "outline", "outline", options);
     outline = await models.jsonValidated(call.model, {
       ...prompt,
-      schema: outlineDsl,
+      schema: call.schema,
       attempts: call.attempts,
       timeout: call.timeout,
       temperature: call.temperature,
       maxTokens: call.maxTokens,
       label: "outline",
-      slot: LLM_SLOT.draft.outline,
+      slot: API_SLOT.draft.outline,
     });
   } catch (error) {
     logger.warn(`提纲模型失败（${error.message}），使用规则提纲`);
@@ -1102,7 +1255,7 @@ async function cmdPipeline(config, options, command) {
 
   // 文章目录：--article <slug> 指定/续跑；manual 与 --input 直接新建；
   // 其余分步命令要求 draft/ 下已有文章（只有一篇时自动选中）。
-  const stepCommands = ["topic", "draft", "review", "illustrate", "publish"];
+  const stepCommands = PIPELINE_STAGES;
   let article = existing;
   if (article) {
     // 续跑已有文章，后面按最后一个产物判断从哪开始。
@@ -1130,7 +1283,7 @@ async function cmdPipeline(config, options, command) {
     logger,
     verbose,
     outputDir: article?.dir || "",
-    draftTemplate: loadDraftTemplate(config.__dir),
+    draftTemplate: draftTemplateFromSteps({ steps: config.steps, type }),
     mock,
     stamp,
     options,
@@ -1197,7 +1350,7 @@ async function cmdPipeline(config, options, command) {
       if (needLocal && earlyMissing) {
         ctx.notes = indexKnowledge(type, {
           logger,
-          maxFileBytes: type.knowledge.max_file_bytes,
+          maxFileBytes: needNumber(type.knowledge.max_file_bytes, "defaults.yaml defaults.knowledge.max_file_bytes"),
           cacheDir: path.join(PROJECT_ROOT, ".temp", "wechat-article"),
         });
         if (ctx.notes.length === 0) throw new Error(`知识库为空：${type.knowledge_dirs.join(", ")}`);
@@ -1226,8 +1379,8 @@ async function cmdPipeline(config, options, command) {
           logger,
           mock,
           recorder,
-          slot: LLM_SLOT.topic.classify,
-          deepSlot: LLM_SLOT.topic.classify_deep,
+          // 升级二判属同一子步骤的「尝试」（(2) 标注），与一次判断共用 slot
+          slot: API_SLOT.topic.classify,
         });
         let typeId = "";
         let source = outcome.source;
@@ -1283,24 +1436,30 @@ async function cmdPipeline(config, options, command) {
       sources = landSources(article.dir, gathered);
       ctx.sources = sources;
 
-      // 01 步对外只有 01-result.json（标题 + 类型 + 素材）；候选、人读版等中间文件收进 01-step/
+      // 01 步对外只有 01-result.json（信封 + 选题字段 + 素材链接）；候选、人读版收进 01-step/。
+      // 信封在这里诞生：title/type 从这里起，之后每一步只顺延、不再重新发明。
       ensureDir(path.join(article.dir, "01-step"));
-      const classification = ctx.state.classification || null;
-      const topicResult = {
-        step: "topic",
-        slug: article.slug,
-        generated_at: new Date().toISOString(),
-        ...topic,
-        type: {
-          id: type.id,
-          name: type.name,
-          source: ctx.state.typeSource,
-          confidence: classification?.confidence,
-          reason: classification?.reason,
+      const topicResult = validateResult(
+        {
+          ...buildEnvelope(article.dir, "topic", {
+            title: topic.title || topic.topic,
+            type: type.id,
+            files: {
+              topicMd: ARTIFACT.topicMd,
+              proposal: selection.proposals ? ARTIFACT.topicProposal : null,
+            },
+          }),
+          // 只带下游要读的选题字段；score / title_candidates 是择题过程，留在 01-step/proposal.json
+          topic: topic.topic || "",
+          thesis: topic.thesis || "",
+          angle: topic.angle || "",
+          rationale: topic.rationale || "",
+          keywords: topic.keywords || [],
+          source_hints: topic.source_hints || [],
+          sources,
         },
-        picked: selection.proposals?.picked || null,
-        sources,
-      };
+        { step: "select_topic", config, type, file: ARTIFACT.topic, logger },
+      );
       writeJson(path.join(article.dir, ARTIFACT.topic), topicResult);
       writeText(path.join(article.dir, ARTIFACT.topicMd), renderTopicMarkdown(topic));
       if (selection.proposals) {
@@ -1348,13 +1507,15 @@ async function cmdPipeline(config, options, command) {
 
     // Stage 2 续：写初稿（仍属合并后的 draft 阶段，日志继续落 02-step/）
     let articleText;
-    const draftFile = path.join(article.dir, ARTIFACT.draftMd);
+    // 从更晚的阶段续跑时，初稿路径只认 02-result.json#files.draft；本阶段内复用完产物才回退固定名。
+    const draftRel = (fullPipeline && resumeIndex > stageIndex("draft") && fileFromResult(article.dir, "draft", "draft")) || ARTIFACT.draftMd;
+    const draftFile = path.join(article.dir, draftRel);
     const draftReused = fullPipeline && (resumeIndex > stageIndex("draft") || (resume && exists(draftFile)));
     if (draftReused) {
       articleText = readText(draftFile);
       ctx.article = articleText;
       ctx.state.stages.draft = { ok: true, reused: true, file: draftFile };
-      logger.info(`续跑：复用 ${ARTIFACT.draftMd}`);
+      logger.info(`续跑：复用 ${draftRel}`);
     } else {
       if (!ctx.draftInput) throw new Error(`缺少 ${ARTIFACT.draftInput}，先跑 topic/draft 或用 --input 给一份初稿输入`);
       articleText = await generateDraft(ctx, ctx.draftInput);
@@ -1364,89 +1525,89 @@ async function cmdPipeline(config, options, command) {
       ctx.state.stages.draft = { ok: true, words: countWords(articleText), sections: (ctx.outline?.outline || []).length, file: draftFile };
     }
     const draftStage = ctx.outline || { outline: [], image_plan: [] };
-    writeJson(path.join(article.dir, ARTIFACT.draft), {
-      step: "draft",
-      slug: article.slug,
-      generated_at: new Date().toISOString(),
-      title: draftStage.title || ctx.topic?.title || article.slug,
+    writeJson(path.join(article.dir, ARTIFACT.draft), validateResult({
+      ...buildEnvelope(article.dir, "draft", {
+        title: ctx.topic?.title || draftStage.title || "",
+        type: type.id,
+        files: {
+          outline: ARTIFACT.outline,
+          outlineMd: ARTIFACT.outlineMd,
+          draftInput: ARTIFACT.draftInput,
+          draft: ARTIFACT.draftMd,
+        },
+      }),
       sections: (draftStage.outline || []).length,
       images_planned: (draftStage.image_plan || []).length,
       words: countWords(articleText),
-      files: {
-        outline: ARTIFACT.outline,
-        outline_md: ARTIFACT.outlineMd,
-        draft_input: ARTIFACT.draftInput,
-        draft: ARTIFACT.draftMd,
-      },
-    });
+    }, { step: "draft_writing", config, type, file: ARTIFACT.draft, logger }));
     if (stopStage === "draft") return finish(ctx);
 
     // Stage 3: review loop ---------------------------------------------
     recorder.setStepDir(path.join(article.dir, "03-step"));
     if (fullPipeline && resumeIndex > stageIndex("review")) {
-      articleText = readText(path.join(article.dir, ARTIFACT.reviewed));
-      ctx.state.stages.review = { ok: true, reused: true, file: path.join(article.dir, ARTIFACT.reviewed) };
-      logger.info(`续跑：复用 ${ARTIFACT.reviewed}`);
+      // 跨步读取只认 03-result.json#files；地图里没有（旧产物/散落稿件）才回退到固定文件名。
+      const reviewedRel = fileFromResult(article.dir, "review", "reviewed") || ARTIFACT.reviewed;
+      articleText = readText(path.join(article.dir, reviewedRel));
+      ctx.state.stages.review = { ok: true, reused: true, file: path.join(article.dir, reviewedRel) };
+      logger.info(`续跑：复用 ${reviewedRel}`);
     } else {
       const reviewed = await reviewLoop(ctx, articleText);
       articleText = reviewed.article;
       ctx.article = articleText;
       ctx.review = reviewed.history;
-      const reviewedFile = finishReviewStage(ctx, article.slug, reviewed);
-      logger.step(`审稿完成：${reviewed.history.length} 轮，最终 ${reviewed.final.total ?? "n/a"} 分 → ${ARTIFACT.reviewed}`);
+      const reviewedFile = finishReviewStage(ctx, reviewed);
+      logger.step(`审稿完成：${reviewed.history.length} 轮，综合评分 ${reviewed.final.composite_score ?? "n/a"}（通过线 ${reviewed.pass_score}）→ ${ARTIFACT.reviewed}`);
       ctx.state.stages.review = {
         ok: true,
         rounds: reviewed.history.length,
-        score: reviewed.final.total,
+        score: reviewed.final.composite_score,
         passed: reviewed.passed,
         file: reviewedFile,
       };
     }
     if (stopStage === "review") return finish(ctx);
 
-    // Stage 4: illustrations ------------------------------------------
-    recorder.setStepDir(path.join(article.dir, "05-step"));
-    if (fullPipeline && resumeIndex > stageIndex("illustrate")) {
-      articleText = readText(path.join(article.dir, ARTIFACT.illustrated));
-      ctx.images = readJsonSafe(path.join(article.dir, ARTIFACT.images)) || [];
-      ctx.state.stages.illustrate = { ok: true, reused: true, file: path.join(article.dir, ARTIFACT.illustrated) };
-      logger.info(`续跑：复用 ${ARTIFACT.illustrated}`);
+    // Stage 4: 组稿（去 AI 化 + 配图，两路并发）--------------------
+    recorder.setStepDir(path.join(article.dir, "04-step"));
+    if (fullPipeline && resumeIndex > stageIndex("compose")) {
+      const composedRel = fileFromResult(article.dir, "compose", "composed") || ARTIFACT.composed;
+      const imagesRel = fileFromResult(article.dir, "compose", "images") || ARTIFACT.images;
+      articleText = readText(path.join(article.dir, composedRel));
+      ctx.images = readJsonSafe(path.join(article.dir, imagesRel)) || [];
+      ctx.state.stages.compose = { ok: true, reused: true, file: path.join(article.dir, composedRel) };
+      logger.info(`续跑：复用 ${composedRel}`);
     } else {
-      const illustrated = await illustrateArticle(ctx, articleText);
-      articleText = illustrated.article;
+      const composed = await composeArticle(ctx, articleText);
+      articleText = composed.article;
       ctx.article = articleText;
-      ctx.images = illustrated.images;
-      const illustratedFile = path.join(article.dir, ARTIFACT.illustrated);
-      writeText(illustratedFile, articleText);
-      writeJson(path.join(article.dir, ARTIFACT.illustrate), {
-        step: "illustrate",
-        slug: article.slug,
-        generated_at: new Date().toISOString(),
-        images: illustrated.images.map((i) => ({ index: i.index, success: i.success, pipeline: i.pipeline || null })),
-        file: ARTIFACT.illustrated,
-      });
-      logger.step(`配图完成：${illustrated.images.filter((i) => i.success).length}/${illustrated.images.length} → ${ARTIFACT.illustrated}`);
-      ctx.state.stages.illustrate = {
+      ctx.images = composed.images;
+      const composedFile = finishComposeStage(ctx, composed);
+      ctx.state.stages.compose = {
         ok: true,
-        images: illustrated.images.map((i) => ({ index: i.index, success: i.success, pipeline: i.pipeline || null })),
-        file: illustratedFile,
+        polish: { ok: composed.polish.ok, fallback: Boolean(composed.polish.fallback), model: composed.polish.model || null },
+        images: composed.images.map((i) => ({ index: i.index, success: i.success, pipeline: i.pipeline || null })),
+        file: composedFile,
       };
     }
-    if (stopStage === "illustrate") return finish(ctx);
+    if (stopStage === "compose") return finish(ctx);
 
     // Stage 5: publish + archive --------------------------------------
-    recorder.setStepDir(path.join(article.dir, "06-step"));
+    recorder.setStepDir(path.join(article.dir, "05-step"));
     let publishResult = null;
     if (fullPipeline && resumeIndex > stageIndex("publish")) {
       publishResult = readJsonSafe(path.join(article.dir, ARTIFACT.publish));
       logger.info("续跑：发布已完成，继续归档");
     } else {
-      publishResult = await publishArticle(ctx, articleText, { stage: "final" });
+      publishResult = await publishArticle(ctx, articleText);
       ctx.publish = publishResult;
       ctx.state.stages.publish = publishResult;
     }
 
-    if (publishResult?.status === "published") {
+    // 归档整体开关单源在 steps 节点 archive.enabled；
+    // 知识库入库与否由 defaults.publish.archive.knowledge_dir 是否为空决定。
+    if (!stepEnabled("archive", config, type)) {
+      logger.info("归档环节已关闭（steps 节点 archive.enabled=false）：产物留在 draft/，不打包不删除");
+    } else if (publishResult?.status === "published") {
       const archived = archiveArticle({
         config,
         type,
@@ -1535,7 +1696,14 @@ async function buildCandidates(ctx, notes) {
   // WeKnora-only: use a keyword search to fetch candidate documents.
   const query = (type.topic.keywords || []).join(" ") || type.name;
   try {
-    const hits = await searchWeKnora(type, query, { logger, limit: type.topic.candidates || 15 });
+    const hits = await searchWeKnora(type, query, {
+      logger,
+      // 候选池上限单源 types/<id>.yaml 的 topic.max_candidates（本地路径用的同一个值）；
+      // 原来读的是早废弃的 topic.candidates 别名，还配了 `|| 15` 的兜底，两个都没有配置来源。
+      limit: topicWindows(type).maxCandidates,
+      recorder: ctx.recorder,
+      slot: API_SLOT.topic.knowledge,
+    });
     const today = new Date().toISOString().slice(0, 10);
     return hits.map((hit) => {
       const excerpt = (hit.excerpts || []).join(" ");
@@ -1592,10 +1760,10 @@ async function mergeWebSearchSources(ctx, topic, local) {
       articleDir: outputDir,
       cfg,
       model: cfg.model,
-      maxSources: Number(type.knowledge?.max_sources) || 8,
+      maxSources: type.knowledge.max_sources,
       logger,
       recorder: ctx.recorder,
-      slot: LLM_SLOT.topic.web_search,
+      slot: API_SLOT.topic.web_search,
     });
     if (!webSearch.length) return local;
     return [...local, ...webSearch].map((item, i) => ({ ...item, index: i + 1 }));
@@ -1721,9 +1889,10 @@ async function selectTopic(ctx, candidates) {
     };
   }
 
-  const topicDsl = schemaById(ctx.config.steps, "topic.select_topic").output;
+  const call = stepCallConfig(ctx, "select_topic", "select", options);
   const prompt = buildTopicPrompt({
-    prompt: promptById(ctx.config.steps, "topic.select_topic"),
+    prompt: call.prompt,
+    promptId: call.prompt_id,
     type,
     candidates: input.candidates,
     heatmap: input.heatmapText,
@@ -1732,18 +1901,17 @@ async function selectTopic(ctx, candidates) {
     userRequirements: requirements,
     count: proposalCount,
   });
-  const call = stepCallConfig(ctx, "select_topic", "select", options);
   let topics = [];
   try {
     const result = await models.jsonValidated(call.model, {
       ...prompt,
-      schema: topicDsl,
+      schema: call.schema,
       attempts: call.attempts,
       timeout: call.timeout,
       temperature: call.temperature,
       maxTokens: call.maxTokens,
       label: "topic",
-      slot: LLM_SLOT.topic.select,
+      slot: API_SLOT.topic.select,
     });
     const raw = Array.isArray(result.topics) ? result.topics : [result];
     topics = validateProposals(raw.map(normalizeTopic).filter((t) => t.topic), input.candidates, written, logger);
@@ -1797,7 +1965,7 @@ async function selectTopic(ctx, candidates) {
       topics,
       logger,
       recorder: ctx.recorder,
-      slot: LLM_SLOT.topic.best,
+      slot: API_SLOT.topic.best,
     });
     if (verdict.ok) {
       picked = verdict;
@@ -1864,9 +2032,10 @@ async function generateOutline(ctx, sources) {
     };
   }
 
-  const outlineDsl = schemaById(ctx.config.steps, "outline.outline").output;
+  const call = stepCallConfig(ctx, "outline", "outline", options);
   const prompt = buildOutlinePrompt({
-    prompt: promptById(ctx.config.steps, "outline.outline"),
+    prompt: call.prompt,
+    promptId: call.prompt_id,
     type,
     topic,
     sources,
@@ -1874,18 +2043,17 @@ async function generateOutline(ctx, sources) {
     maxChars: 16000,
     baseDir: outputDir || "",
   });
-  const call = stepCallConfig(ctx, "outline", "outline", options);
   let outline;
   try {
     outline = await models.jsonValidated(call.model, {
       ...prompt,
-      schema: outlineDsl,
+      schema: call.schema,
       attempts: call.attempts,
       timeout: call.timeout,
       temperature: call.temperature,
       maxTokens: call.maxTokens,
       label: "outline",
-      slot: LLM_SLOT.draft.outline,
+      slot: API_SLOT.draft.outline,
     });
   } catch (error) {
     logger.warn(`纲要模型失败（${error.message}），使用规则纲要`);
@@ -1999,7 +2167,7 @@ async function generateDraft(ctx, input) {
       timeout: call.timeout,
       temperature: call.temperature,
       label: "draft",
-      slot: LLM_SLOT.draft.draft,
+      slot: API_SLOT.draft.draft,
       maxTokens: call.maxTokens || Math.max(4096, Math.round(type.length.max * 2)),
     });
   } catch (error) {
@@ -2025,13 +2193,14 @@ async function generateDraftBySections(ctx, input) {
       input: { ...input, outline: [section], images: [] },
       template: draftTemplate,
       maxChars: 10000,
+      // 「只写这一节」的约束句单源 prompts/draft.yaml 的 section_only
+      section: section.heading,
     });
     const text = await models.complete(call.model, {
       ...prompt,
-      prompt: `${prompt.prompt}\n\n本次只写「${section.heading}」这一节，不要写其他小节，不要输出 frontmatter。`,
       timeout: call.timeout,
       label: `draft-section-${i + 1}`,
-      slot: LLM_SLOT.draft.draft,
+      slot: API_SLOT.draft.draft,
       maxTokens: 2048,
     });
     parts.push(stripCodeFence(text).replace(/^---[\s\S]*?---\s*/, "").trim());
@@ -2049,48 +2218,90 @@ function lengthInput(ctx, article) {
   };
 }
 
+/**
+ * 重跑审稿阶段前清掉上一进程的轮次目录与留痕：子步骤/尝试计数器每次进程都从 1 开始，
+ * 旧 (尝试) 文件不会被覆盖，留着会让本次运行看起来调用了更多次；同时删掉
+ * reviewed.md / 03-result.json，保证「存在即完成」只对最后一次运行成立。
+ */
+function resetReviewArtifacts(outputDir) {
+  const stepDir = path.join(outputDir, ARTIFACT.reviewDir);
+  if (fs.existsSync(stepDir)) {
+    for (const entry of fs.readdirSync(stepDir)) {
+      if (entry === "api" || /^round-\d+/.test(entry)) {
+        fs.rmSync(path.join(stepDir, entry), { recursive: true, force: true });
+      }
+    }
+  }
+  fs.rmSync(path.join(outputDir, ARTIFACT.reviewed), { force: true });
+  fs.rmSync(path.join(outputDir, ARTIFACT.review), { force: true });
+}
+
+/**
+ * 审稿轮次与通过线单源配置，代码不兜 3 / 80（那两份副本与 defaults.yaml 同值，
+ * 抬 PB_REVIEW_ROUNDS / PB_PASS_SCORE 就白抬了）：
+ *   max_rounds → --rounds > defaults.yaml defaults.review.max_rounds（类型可覆盖），clamp 1-5；
+ *   pass_score → types/<id>.yaml 顶层 pass_score > defaults.yaml defaults.review.pass_score。
+ * 加载期 normalizeType 只把写出来的值归成数字，缺了由这里抛错点名配置路径。
+ */
+function maxRoundsOf(type, roundsOption) {
+  if (roundsOption !== undefined && roundsOption !== null && roundsOption !== "") {
+    return clamp(needNumber(roundsOption, "--rounds"), 1, 5);
+  }
+  return clamp(needNumber(type.review?.max_rounds, "defaults.yaml defaults.review.max_rounds（可用 .env PB_REVIEW_ROUNDS 抬起）"), 1, 5);
+}
+
+function passScoreOf(type) {
+  return needNumber(
+    type.review?.pass_score,
+    `类型 ${type.id} 的 pass_score：写在 types/${type.id}.yaml 顶层或 defaults.yaml defaults.review.pass_score（可用 .env PB_PASS_SCORE 抬起）`,
+  );
+}
+
 async function reviewLoop(ctx, article) {
   const { type, logger, options } = ctx;
-  const maxRounds = clamp(asNumber(options.rounds, type.review.max_rounds), 1, 5);
-  const passScore = Number(type.review.pass_score ?? type.scoring.pass_score ?? 80);
+  resetReviewArtifacts(ctx.outputDir);
+  const maxRounds = maxRoundsOf(type, options.rounds);
+  const passScore = passScoreOf(type);
   const history = [];
   let current = article;
   let final = null;
-  let passed = false;
+  let stopReason = "max_rounds";
 
   for (let round = 1; round <= maxRounds; round += 1) {
     logger.step(`第 ${round}/${maxRounds} 轮：核稿 → 修正 → 评稿 → 判定`);
     const roundDir = ensureDir(path.join(ctx.outputDir, ARTIFACT.reviewDir, `round-${round}`));
 
-    // 1) correct-cn (or LLM fallback)
+    // 1) 并行调用规则端点：/api/correct 与 /api/sensitive/check，只采集候选，不做字面替换。
     let correctResult;
     if (ctx.mock) {
-      correctResult = { enabled: false, ok: true, skipped: true, issues: [], corrected_text: current };
+      correctResult = { enabled: false, ok: true, skipped: true, candidates: [], sensitive: [], errors: { correct: null, sensitive: null } };
     } else {
-      const corrector = createCorrector(type.review.correct_cn, logger);
+      const corrector = createCorrector(type.review.correct_cn, logger, {
+        recorder: ctx.recorder,
+        slots: { correct: API_SLOT.review.correct, sensitive: API_SLOT.review.sensitive },
+      });
       correctResult = await corrector.check(current);
     }
+    const afterCorrect = current;
+    const sensitiveSummary = summarizeSensitive(correctResult.sensitive);
+    // candidates = 过滤后的错别字候选（交给改稿模型逐条核实）；sensitive = 敏感词摘要，只留痕不进提示词。
     writeJson(path.join(roundDir, "correct.json"), {
       ok: correctResult.ok,
       skipped: Boolean(correctResult.skipped),
-      error: correctResult.error || null,
-      issues: correctResult.issues,
+      errors: correctResult.errors || { correct: null, sensitive: null },
+      candidates: correctResult.candidates || [],
+      sensitive: sensitiveSummary,
+      timings: correctResult.timings || {},
     });
-
-    let afterCorrect = current;
-    if (correctResult.ok && !correctResult.skipped) {
-      const applied = applyCorrections(current, correctResult, { apply: type.review.correct_cn.apply || "issues" });
-      afterCorrect = applied.text;
-      if (applied.applied > 0) logger.info(`核稿修正 ${applied.applied} 处（${applied.mode}）`);
-    } else if (correctResult.ok === false && type.review.correct_cn.fallback_llm !== false && !ctx.mock) {
-      logger.info("核稿服务不可用，使用模型修复已发现的问题");
-      afterCorrect = await llmCorrect(ctx, current, correctResult.issues);
-    }
     writeText(path.join(roundDir, "after-correct.md"), afterCorrect);
 
-    // 2) revise：首轮依据核稿改动点，第二轮起叠加上一轮评分；
+    // 2) revise：首轮依据核稿候选，第二轮起叠加上一轮评分；
     //    返回稿本地计字，不合格带原因重试，重试耗尽抛错中断管线。
-    current = await reviseWithLengthCheck(ctx, afterCorrect, { corrections: correctResult.issues, score: final, round });
+    current = await reviseWithLengthCheck(ctx, afterCorrect, {
+      corrections: correctResult.candidates || [],
+      score: final,
+      round,
+    });
     writeText(path.join(roundDir, "after-revise.md"), current);
     if (!ctx.mock) {
       writeText(path.join(ctx.outputDir, ARTIFACT.reviewDir, `round-${round}-diff.md`), diffSummary(afterCorrect, current));
@@ -2099,18 +2310,24 @@ async function reviewLoop(ctx, article) {
     // 3) score
     const score = await scoreArticle(ctx, current, round);
     writeJson(path.join(roundDir, "score.json"), score);
-    logger.info(`评稿得分：${score.total ?? "n/a"}（通过线 ${passScore}）${score.verdict ? `，结论 ${score.verdict}` : ""}`);
+    logger.info(`评稿得分：${score.composite_score ?? "n/a"}（通过线 ${passScore}）${score.verdict ? `，结论 ${score.verdict}` : ""}`);
 
     // 4) 去留判定（scoring 节点 models.check；不可用时回退 pass_score 规则）
     const check = await revisionCheck(ctx, current, score, round, passScore);
     writeJson(path.join(roundDir, "check.json"), check);
 
-    const entry = { round, words: countWords(current), correct: { ok: correctResult.ok, issues: correctResult.issues.length }, score, check };
+    const entry = {
+      round,
+      word_count: countWords(current),
+      correct: { ok: correctResult.ok, candidates: (correctResult.candidates || []).length, sensitive: sensitiveSummary.count },
+      score,
+      check,
+    };
     history.push(entry);
     final = score;
 
     if (check.decision === "done") {
-      passed = true;
+      stopReason = "done";
       logger.step(`第 ${round} 轮判定无需再改（${check.source}），结束审稿循环`);
       break;
     }
@@ -2120,114 +2337,120 @@ async function reviewLoop(ctx, article) {
     }
   }
 
-  return { article: current, history, final: final || { total: null, issues: [] }, passed };
+  // 通过与否只由确定性阈值裁决：本轮最后一份稿件的综合评分（脚本按权重回算，非模型自报）。
+  // check 判定只决定"还要不要再改一轮"，不作为出稿质量结论，两者可以不一致。
+  const passed = (history.at(-1)?.score?.composite_score ?? 0) >= passScore;
+
+  return {
+    article: current,
+    history,
+    final: final || { composite_score: null, issues: [] },
+    passed,
+    pass_score: passScore,
+    stop_reason: stopReason,
+  };
 }
 
 /** 审稿落盘的唯一实现：管线与独立 review 命令共用，写 reviewed.md + 03-result.json。 */
-function finishReviewStage(ctx, slug, reviewed) {
+function finishReviewStage(ctx, reviewed) {
   const file = path.join(ctx.outputDir, ARTIFACT.reviewed);
   writeText(file, reviewed.article);
-  writeJson(path.join(ctx.outputDir, ARTIFACT.review), {
-    step: "review",
-    slug: slug || path.basename(ctx.outputDir),
-    generated_at: new Date().toISOString(),
-    rounds: reviewed.history.map(({ round, words, correct, score, check }) => ({
+  writeJson(path.join(ctx.outputDir, ARTIFACT.review), validateResult({
+    ...buildEnvelope(ctx.outputDir, "review", {
+      title: ctx.topic?.title || "",
+      type: ctx.type?.id || "",
+      files: { reviewed: ARTIFACT.reviewed },
+    }),
+    // 每轮只留闸门要看的那几个数；核稿候选、敏感词命中这些过程明细在 03-step/ 里。
+    rounds: reviewed.history.map(({ round, word_count, score, check }) => ({
       round,
-      words,
-      correct_issues: correct?.issues ?? null,
-      total: score?.total ?? null,
-      verdict: score?.verdict ?? null,
+      word_count,
+      composite_score: score?.composite_score ?? null,
+      scorer: score?.scorer ?? null,
+      scorer_model: score?.scorer_model ?? null,
       decision: check?.decision ?? null,
-      check_source: check?.source ?? null,
     })),
     final: {
-      total: reviewed.final?.total ?? null,
-      verdict: reviewed.final?.verdict ?? null,
+      composite_score: reviewed.final?.composite_score ?? null,
+      reported_score: reviewed.final?.reported_score ?? null,
+      scorer: reviewed.final?.scorer ?? null,
+      scorer_model: reviewed.final?.scorer_model ?? null,
       decision: reviewed.history.at(-1)?.check?.decision ?? null,
+      stop_reason: reviewed.stop_reason ?? null,
     },
     passed: reviewed.passed,
-    file: ARTIFACT.reviewed,
-  });
+    pass_score: reviewed.pass_score,
+  }, { step: "scoring", config: ctx.config, type: ctx.type, file: ARTIFACT.review, logger: ctx.logger }));
   return file;
-}
-
-async function llmCorrect(ctx, article, issues) {
-  const { type, models, options, logger } = ctx;
-  const call = stepCallConfig(ctx, "review", "correct", options);
-  try {
-    const prompt = buildCorrectFallbackPrompt({
-      prompt: promptById(ctx.config.steps, "review.review"),
-      article,
-      issues,
-    });
-    const text = await models.complete(call.model, {
-      ...prompt,
-      timeout: call.timeout,
-      temperature: call.temperature,
-      maxTokens: call.maxTokens,
-      label: "correct-fallback",
-      slot: LLM_SLOT.review.correct,
-      fallback: true,
-    });
-    const cleaned = stripCodeFence(text);
-    const candidate = normalizeArticle(cleaned, { title: getTitle(article), type: type.id });
-    const ratio = countWords(candidate) / Math.max(1, countWords(article));
-    if (ratio < 0.7 || ratio > 1.3) {
-      logger.warn(`模型校对结果长度异常（${(ratio * 100).toFixed(0)}%），保留原稿`);
-      return article;
-    }
-    return candidate;
-  } catch (error) {
-    logger.warn(`模型校对失败：${error.message}`);
-    return article;
-  }
 }
 
 async function scoreArticle(ctx, article, round) {
   const { type, models, options, mock, logger } = ctx;
   if (mock) {
     return {
-      dimensions: type.scoring.dimensions.map((d) => ({ id: d.id, name: d.name, score: 85, comment: "mock" })),
-      total: 85,
+      dimensions: type.scoring.dimensions.map((d) => ({ id: d.id, name: d.name, weight: d.weight, score: 85, comment: "mock" })),
+      composite_score: 85,
+      reported_score: null,
       verdict: "pass",
+      reported_verdict: "pass",
       strengths: ["mock"],
       issues: [],
       must_fix: [],
       suggested_title: "",
-      wordCount: countWords(article),
+      word_count: countWords(article),
+      scorer: "mock",
+      scorer_model: "mock",
     };
   }
 
   const wordCount = countWords(article);
-  const scoringDsl = schemaById(ctx.config.steps, "review.scoring").output;
+  const call = stepCallConfig(ctx, "scoring", "score", { model: options["review-model"] }, round);
   const prompt = buildScorePrompt({
-    prompt: promptById(ctx.config.steps, "review.scoring"),
+    prompt: call.prompt,
+    promptId: call.prompt_id,
     type,
     article,
     wordCount,
     round,
   });
-  const call = stepCallConfig(ctx, "scoring", "score", { model: options["review-model"] });
   let result;
   try {
     result = await models.jsonValidated(call.model, {
       ...prompt,
-      schema: scoringDsl,
+      schema: call.schema,
       attempts: call.attempts,
       timeout: call.timeout,
       temperature: call.temperature,
       maxTokens: call.maxTokens,
       label: "score",
-      slot: LLM_SLOT.review.score,
+      slot: API_SLOT.review.score,
     });
   } catch (error) {
     logger.warn(`评稿模型失败（${error.message}），使用规则评分`);
     return ruleBasedScore(type, article, wordCount);
   }
-  return normalizeScore(type, result, wordCount);
+  return scoreArticleResult(
+    normalizeScore(type, result, wordCount, { model: models.getProfile(call.model).model || call.model }),
+    logger,
+  );
 }
 
-export function normalizeScore(type, result, wordCount) {
+/** 自报总分与维度加权回算背离时警告：闸门只认回算值（composite_score）。 */
+function scoreArticleResult(score, logger) {
+  if (score.reported_score !== null && Math.abs(score.reported_score - score.composite_score) > 5) {
+    logger.warn(
+      `评稿自报总分 ${score.reported_score} 与维度加权回算 ${score.composite_score} 相差 ${Math.round(Math.abs(score.reported_score - score.composite_score) * 10) / 10} 分，综合评分取回算值`,
+    );
+  }
+  if (score.reported_verdict && score.reported_verdict !== score.verdict) {
+    logger.warn(`评稿自报结论 ${score.reported_verdict} 与综合评分阈值判出的 ${score.verdict} 不一致，以综合评分为准`);
+  }
+  return score;
+}
+
+export function normalizeScore(type, result, wordCount, { model = "" } = {}) {
+  // 通过线单源配置（passScoreOf 缺了会抛错点名路径），这里不再兜 80。
+  const passScore = passScoreOf(type);
   const dims = type.scoring.dimensions.map((dimension) => {
     const found = (result.dimensions || []).find((d) => d.id === dimension.id || d.name === dimension.name);
     return {
@@ -2238,9 +2461,9 @@ export function normalizeScore(type, result, wordCount) {
       comment: String(found?.comment || ""),
     };
   });
-  const weighted = dims.reduce((sum, d) => sum + d.score * d.weight, 0);
-  const modelTotal = Number(result.total);
-  const total = Number.isFinite(modelTotal) && modelTotal > 0 ? clamp(modelTotal, 0, 100) : Math.round(weighted * 10) / 10;
+  // 综合评分 = 脚本按维度分加权回算，唯一进闸门的分数；模型自报的 total 只作诊断留痕。
+  const composite = Math.round(dims.reduce((sum, d) => sum + d.score * d.weight, 0) * 10) / 10;
+  const reported = Number(result.total);
   const issues = (result.issues || []).map((issue) => ({
     severity: ["high", "medium", "low"].includes(issue.severity) ? issue.severity : "medium",
     dimension: issue.dimension || "",
@@ -2250,14 +2473,17 @@ export function normalizeScore(type, result, wordCount) {
   }));
   return {
     dimensions: dims,
-    weighted: Math.round(weighted * 10) / 10,
-    total: Math.round(total * 10) / 10,
-    verdict: result.verdict === "pass" ? "pass" : total >= type.review.pass_score ? "pass" : "revise",
+    composite_score: composite,
+    reported_score: Number.isFinite(reported) ? clamp(reported, 0, 100) : null,
+    verdict: composite >= passScore ? "pass" : "revise",
+    reported_verdict: ["pass", "revise"].includes(result.verdict) ? result.verdict : null,
     strengths: Array.isArray(result.strengths) ? result.strengths.map(String) : [],
     issues,
     must_fix: Array.isArray(result.must_fix) ? result.must_fix.map(String) : [],
     suggested_title: String(result.suggested_title || ""),
-    wordCount,
+    word_count: wordCount,
+    scorer: "model",
+    scorer_model: model,
   };
 }
 
@@ -2281,12 +2507,13 @@ export function ruleBasedScore(type, article, wordCount) {
     else if (d.id.includes("practical") || d.name.includes("可复现")) score = imageScore;
     return { id: d.id, name: d.name, weight: d.weight, score: Math.round(score), comment: "规则评分（模型不可用）" };
   });
-  const weighted = dims.reduce((sum, d) => sum + d.score * d.weight, 0);
+  const composite = Math.round(dims.reduce((sum, d) => sum + d.score * d.weight, 0) * 10) / 10;
   return {
     dimensions: dims,
-    weighted: Math.round(weighted * 10) / 10,
-    total: Math.round(weighted * 10) / 10,
-    verdict: weighted >= type.review.pass_score ? "pass" : "revise",
+    composite_score: composite,
+    reported_score: null,
+    verdict: composite >= passScoreOf(type) ? "pass" : "revise",
+    reported_verdict: null,
     strengths: [],
     issues: [
       ...(inRange ? [] : [{ severity: "high", dimension: "length", location: "全文", problem: `字数 ${wordCount} 不在 ${type.length.min}-${type.length.max} 区间`, fix: "扩充或压缩到目标字数" }]),
@@ -2294,20 +2521,21 @@ export function ruleBasedScore(type, article, wordCount) {
     ],
     must_fix: inRange ? [] : ["调整篇幅到要求区间"],
     suggested_title: "",
-    wordCount,
-    ruleBased: true,
+    word_count: wordCount,
+    scorer: "rule",
+    scorer_model: null,
   };
 }
 
 /**
- * 修正（内置字数校验）：首轮修改依据 = 核稿改动点，第二轮起叠加上一轮评分。
- * 返回稿由本地函数计字，不在 [min,max] 区间就带原因重新调用；
+ * 修正（内置字数校验）：首轮修改依据 = 核稿候选，第二轮起叠加上一轮评分。
+ * 返回稿由本地函数计字，不在 [min,max] 区间就以上一稿为基准带原因重新调用；
  * 重试上限 --length-attempts（默认 3），耗尽仍不合格则抛错中断管线。
  */
 async function reviseWithLengthCheck(ctx, article, { corrections = [], score = null, round }) {
   const { type, models, options, logger, mock } = ctx;
   if (mock) return article;
-  const call = stepCallConfig(ctx, "revision", "revise", options);
+  const call = stepCallConfig(ctx, "revision", "revise", options, round);
   const range = { min: type.length.min, max: type.length.max };
   const maxRetries = clamp(asNumber(options.lengthAttempts, 3), 0, 5);
   const input = lengthInput(ctx, article);
@@ -2315,16 +2543,20 @@ async function reviseWithLengthCheck(ctx, article, { corrections = [], score = n
   const markers = parseImageMarkers(article, { format: imageFormat }).length || type.illustrations.min;
   let failReason = null;
   let lastError = null;
+  // 重试以上一次返回稿为基准：字数不合格说的是「上一稿」，继续拿原稿会让提示词里的
+  // 当前字数与正文自相矛盾（模型倾向于退回原稿长度，永远收敛不了）。
+  let base = article;
 
   for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
     const prompt = buildRevisePrompt({
-      prompt: promptById(ctx.config.steps, "revision.revision"),
+      prompt: call.prompt,
+      promptId: call.prompt_id,
       type,
-      article,
+      article: base,
       review: score,
       corrections,
       round,
-      wordCount: countWords(article),
+      wordCount: countWords(base),
       attempt,
       failReason,
     });
@@ -2334,8 +2566,9 @@ async function reviseWithLengthCheck(ctx, article, { corrections = [], score = n
         ...prompt,
         timeout: call.timeout,
         temperature: call.temperature,
-        label: attempt > 1 ? `revise-retry-${attempt - 1}` : "revise",
-        slot: LLM_SLOT.review.revise,
+        label: "revise",
+        slot: API_SLOT.review.revise,
+        attempt,
         maxTokens: call.maxTokens || Math.max(4096, Math.round(range.max * 2)),
       });
       candidate = normalizeArticle(stripCodeFence(text), { title: getTitle(article), type: type.id });
@@ -2355,6 +2588,7 @@ async function reviseWithLengthCheck(ctx, article, { corrections = [], score = n
       return candidate;
     }
     failReason = { words, action };
+    base = candidate;
     logger.warn(`修正稿字数不合格：${words} 字（要求 ${range.min}-${range.max}），需${action === "expand" ? "扩写" : "压缩"}（重试 ${Math.min(attempt, maxRetries)}/${maxRetries}）`);
   }
 
@@ -2369,13 +2603,13 @@ async function revisionCheck(ctx, current, score, round, passScore) {
   const { type, logger } = ctx;
   if (ctx.mock) return { decision: "done", source: "mock", ok: true, confidence: 1 };
   const blocked = (score.issues || []).some((issue) => issue.severity === "high");
-  const ruleDecision = () => (((score.total ?? 0) >= passScore && !blocked) ? "done" : "continue");
+  const ruleDecision = () => (((score.composite_score ?? 0) >= passScore && !blocked) ? "done" : "continue");
   const cfg = systemOneCallConfig(ctx, "scoring", "check");
   if (!cfg) {
     logger.warn("scoring 节点未配置 check 调用，按 pass_score 规则决定去留");
     return { decision: ruleDecision(), source: "rule", ok: false, reason: "未配置 models.check" };
   }
-  const minConfidence = Number(cfg.min_confidence ?? 0.5);
+  const minConfidence = needGateParam(cfg, "min_confidence", "steps 节点 scoring.models.check.options");
   const result = await checkRevisionNeeded({
     config: ctx.config,
     cfg,
@@ -2386,7 +2620,7 @@ async function revisionCheck(ctx, current, score, round, passScore) {
     round,
     logger,
     recorder: ctx.recorder,
-    slot: LLM_SLOT.review.check,
+    slot: API_SLOT.review.check,
   });
   if (result.ok && result.decision) {
     if (Number(result.confidence ?? 1) < minConfidence) {
@@ -2400,55 +2634,340 @@ async function revisionCheck(ctx, current, score, round, passScore) {
   return { decision: ruleDecision(), source: "rule", ok: false, reason: result.reason || "unknown" };
 }
 
-async function illustrateArticle(ctx, article) {
-  const { type, logger, options, mock, outputDir, topic, outline } = ctx;
+/**
+ * steps 节点的 enabled 是否放行该环节（type 层 steps.<step>.enabled 可覆盖；
+ * 节点不存在或配置未加载时默认放行）。04 两条分支、05 发布与归档都用这一个判定。
+ */
+export function stepEnabled(name, config, type) {
+  return resolveStep(name, { steps: config?.steps, type })?.enabled !== false;
+}
+
+/**
+ * 本步 result 本体的校验契约：steps 节点 `result_schema` 指向 schemas 注册表里的紧凑 DSL。
+ * 节点没配（或引用的条目没有 output）就是「没校验」——validateProduced 如实返回 checked:false，
+ * 产物里不假装校验过。不合格只警告不阻塞，与 04/05 既有口径一致。
+ */
+function validateResult(payload, { step, config, type, file, logger }) {
+  payload.validation = validateProduced(payload, resolveStep(step, { steps: config?.steps, type })?.result_output_format);
+  for (const error of payload.validation.errors) logger?.warn?.(`${file} 结构不符：${error}`);
+  return payload;
+}
+
+/**
+ * 04 两条分支的开关：节点 `enabled`（type 层 `steps.<step>.enabled` 可覆盖）是唯一入口，
+ * de_ai 与 image_generation 同规则。关掉的那条只降级——不调用、不产出中间文件、不造假。
+ */
+export function composeBranches(ctx) {
+  return { deAi: stepEnabled("de_ai", ctx.config, ctx.type), images: stepEnabled("image_generation", ctx.config, ctx.type) };
+}
+
+/**
+ * 04 组稿阶段主执行：去 AI 化（模型改写）与配图（外部生成）并发。
+ * 两路互不依赖——去 AI 化只读审稿稿，配图只读纲要的 image_plan；
+ * 都结束后再把图片替换进润色稿。去 AI 化失败退回审稿稿，不阻塞发布。
+ */
+async function composeArticle(ctx, article) {
+  const { type, logger, options, outputDir, outline } = ctx;
   const count = resolveImageCount(type, outline, { count: options.images ? asNumber(options.images) : undefined });
   const plans = planImages(outline, count, { cover: type.illustrations.cover !== false });
-  const imagesDir = ensureDir(path.join(outputDir, ARTIFACT.imagesDir));
+  const imageStep = resolveStep("image_generation", { steps: ctx.config?.steps, type });
+  const { deAi: deAiEnabled, images: imagesEnabled } = composeBranches(ctx);
 
-  if (mock) {
-    // Create tiny placeholder PNGs so downstream publishing can be validated.
-    const images = plans.map((plan) => {
-      const file = path.join(imagesDir, `${String(plan.index).padStart(2, "0")}_mock.png`);
-      if (!exists(file)) fs.writeFileSync(file, MOCK_PNG);
-      return { ...plan, success: true, pipeline: "mock", file };
-    });
-    const replacements = new Map(images.map((image) => [image.index, relativeTo(outputDir, image.file)]));
-    return {
-      article: replaceImageMarkers(article, replacements, {
-        onFailure: type.illustrations.on_failure,
-        format: type.illustrations.position_format,
-        plans,
+  const [polish, imageResult] = await Promise.all([
+    deAiEnabled
+      ? polishArticle(ctx, article).catch((error) => {
+        logger.warn(`去 AI 化失败（${error.message}），退回审稿稿继续配图`);
+        return { article, ok: false, fallback: true, model: null, error: error.message, words: countWords(article), level: null };
+      })
+      : Promise.resolve({
+        article,
+        ok: true,
+        skipped: true,
+        mock: false,
+        model: null,
+        words: countWords(article),
+        attempts: 0,
+        gate: null,
+        level: null,
       }),
-      images,
-    };
-  }
+    imagesEnabled
+      ? generateArticleImages(ctx, plans, imageStep)
+      : Promise.resolve({ images: [], validation: null }),
+  ]);
+  const images = imageResult.images;
 
-  logger.step(`开始生成 ${plans.length} 张配图`);
-  const images = await generateImages({
-    plans,
-    outputDir: imagesDir,
-    config: type.illustrations,
-    logger,
-    topic: topic?.title || topic?.topic || "",
-  });
-
+  // 关档（skipped）和失败回退（fallback）都没有润色稿：宁可不写 polished.md，
+  // 也不把审稿稿复制一份冒充 04 的中间产物。composed.md 才是终稿。
+  const hasPolished = !polish.skipped && !polish.fallback;
+  if (hasPolished) writeText(path.join(outputDir, ARTIFACT.polished), polish.article);
+  // file 与 sources 的 link 同规矩：相对文章根目录、/ 分隔（归档搬家后仍可读）。
+  writeJson(path.join(outputDir, ARTIFACT.images), images.map((image) => (image.file ? { ...image, file: relativeTo(outputDir, image.file) } : image)));
   const replacements = new Map();
   for (const image of images) {
     if (image.success) replacements.set(image.index, relativeTo(outputDir, image.file));
   }
-  writeJson(path.join(outputDir, ARTIFACT.images), images);
-  const next = replaceImageMarkers(article, replacements, {
-    onFailure: type.illustrations.on_failure || "comment",
+  const composed = replaceImageMarkers(polish.article, replacements, {
+    onFailure: needConfig(type.illustrations.on_failure, "defaults.yaml defaults.illustrations.on_failure"),
+    failureNote: imagesEnabled ? "配图生成失败" : "配图已关闭",
     format: type.illustrations.position_format,
     plans,
   });
-  return { article: next, images };
+  const success = images.filter((image) => image.success).length;
+  const polishState = polish.skipped
+    ? "已关闭（用审稿稿）"
+    : polish.ok
+      ? `完成${polish.level ? `（${polish.level}档）` : ""}`
+      : "未生效（用审稿稿）";
+  logger.step(`去 AI 化${polishState}：${polish.words} 字；配图 ${imagesEnabled ? `${success}/${images.length}` : "已关闭"}`);
+  return { article: composed, images, planned: plans.length, imagesSkipped: !imagesEnabled, imagesValidation: imageResult.validation, polish };
 }
 
-async function publishArticle(ctx, article, { stage = "final" } = {}) {
+/** 04 阶段落盘：composed.md + 04-result.json（两路并发的汇总）。 */
+export function finishComposeStage(ctx, result) {
+  const file = path.join(ctx.outputDir, ARTIFACT.composed);
+  writeText(file, result.article);
+  const images = result.images || [];
+  writeJson(path.join(ctx.outputDir, ARTIFACT.compose), validateResult({
+    ...buildEnvelope(ctx.outputDir, "compose", {
+      title: ctx.topic?.title || "",
+      type: ctx.type?.id || "",
+      files: {
+        polished: result.polish.skipped || result.polish.fallback ? null : ARTIFACT.polished,
+        images: ARTIFACT.images,
+        composed: ARTIFACT.composed,
+      },
+    }),
+    polish: {
+      ok: result.polish.ok,
+      skipped: Boolean(result.polish.skipped),
+      level: result.polish.level || null,
+      fallback: Boolean(result.polish.fallback),
+      mock: Boolean(result.polish.mock),
+      model: result.polish.model || null,
+      words: result.polish.words,
+      attempts_used: result.polish.attempts ?? null,
+      gate: result.polish.gate || null,
+      error: result.polish.error || null,
+    },
+    // 每张图的明细（通道、提示词、耗时）只落 04-step/images.json，这里记三个数与汇总。
+    images_planned: result.planned ?? images.length,
+    images_success: images.filter((image) => image.success).length,
+    images_skipped: Boolean(result.imagesSkipped),
+    images_validation: result.imagesValidation || null,
+  }, { step: "image_generation", config: ctx.config, type: ctx.type, file: ARTIFACT.compose, logger: ctx.logger }));
+  return file;
+}
+
+/**
+ * de_ai 的本地质量判据（零 token）：逐字重叠率、字数区间、原稿数字是否都还在。
+ * 实测过：只看禁用词计数会漏掉主失效模式——模型整篇誊抄原稿时，禁用词数量和原稿一样。
+ */
+export function polishSignals(source, polished, range, maxOverlap) {
+  const echo = Number(verbatimOverlap(source, polished).toFixed(2));
+  const words = countWords(polished);
+  const lostNumbers = missingNumbers(source, polished);
+  const violations = [];
+  if (echo > maxOverlap) violations.push(`改写不足：与原稿逐字重叠 ${Math.round(echo * 100)}%（上限 ${Math.round(maxOverlap * 100)}%）`);
+  const action = lengthAction(words, range);
+  if (action) violations.push(`字数${action === "expand" ? "偏少" : "偏多"}：${words} 字（要求 ${range.min}-${range.max}）`);
+  if (lostNumbers.length) violations.push(`原稿数字丢失：${lostNumbers.join("、")}`);
+  return { echo, words, lost_numbers: lostNumbers, violations, ok: violations.length === 0 };
+}
+
+/**
+ * de_ai 档位（light / standard / deep）：`handler_options.level` 选档，
+ * `--de-ai-level` 与 type 层 `steps.de_ai.handler_options.level` 可覆盖；
+ * 每档自带提示词 id、重叠上限和采样参数（models.de_ai.levels.<档>.options）。
+ * 提示词 id 单源在 levels.<档>.prompt（type 层 steps.de_ai.prompt 指定 id 时优先）。
+ * 档位没在 levels 里定义 = 配置说谎，直接抛错，不静默退回默认档。
+ */
+export function deAiLevelConfig(ctx) {
+  const step = resolveStep("de_ai", { steps: ctx.config?.steps, type: ctx.type });
+  const handler = step?.handler_options || {};
+  const levels = handler.levels || {};
+  const level = String(ctx.options?.["de-ai-level"] || handler.level || "").trim();
+  if (!level) throw new Error("de_ai 缺少 handler_options.level（可选值：light / standard / deep）");
+  const def = levels[level];
+  if (!def) {
+    throw new Error(`de_ai 档位 ${level} 未在 handler_options.levels 里定义（已定义：${Object.keys(levels).join(" / ") || "无"}）`);
+  }
+  const prompt = step.prompt_id || def.prompt;
+  if (!prompt) throw new Error(`de_ai 档位 ${level} 缺少 prompt（提示词 id 单源在 levels.<档>.prompt）`);
+  const maxOverlap = Number(def.max_verbatim_overlap);
+  if (!(maxOverlap >= 0 && maxOverlap <= 1)) {
+    throw new Error(`de_ai 档位 ${level} 的 max_verbatim_overlap 必须在 0-1 之间：${def.max_verbatim_overlap}`);
+  }
+  return { level, prompt, maxOverlap };
+}
+
+/**
+ * 离合格还差多少（只在不合格稿之间择优时用）：三项判据各按「超出量 / 阈值」折算相加。
+ * 光比违规条数不够——三条都擦边和一条离谱的，条数一样。
+ */
+function polishSeverity(signals, { min, max }, maxOverlap) {
+  const echoOver = Math.max(0, signals.echo - maxOverlap);
+  const lengthOff = signals.words < min ? (min - signals.words) / min : signals.words > max ? (signals.words - max) / max : 0;
+  return echoOver + lengthOff + (signals.lost_numbers.length ? 0.5 : 0);
+}
+
+export function isBetterAttempt(a, b, range, maxOverlap) {
+  if (a.signals.violations.length !== b.signals.violations.length) {
+    return a.signals.violations.length < b.signals.violations.length;
+  }
+  return polishSeverity(a.signals, range, maxOverlap) < polishSeverity(b.signals, range, maxOverlap);
+}
+
+/**
+ * 去 AI 化：de_ai 节点 models.de_ai（llm 模板，纯文本输出），按档位取提示词与参数。
+ * frontmatter、小节标题和配图标记由脚本按审稿稿回填，模型只许改表达。
+ * 判据不合格就换一次采样重调，上限 = 该档位 retry_limit（含首轮）；耗尽后取最接近合格的一版
+ * （先比违规条数，再比离各阈值的距离），只标记不阻塞——去 AI 化整条分支失败时组稿仍退回审稿稿。
+ */
+async function polishArticle(ctx, article) {
+  const { type, logger, models, options, mock } = ctx;
+  const words = countWords(article);
+  if (mock) {
+    logger.info("mock：跳过去 AI 化模型调用，润色稿沿用审稿稿");
+    return { article, ok: true, mock: true, model: null, words, attempts: 0, gate: null, level: null };
+  }
+  const { level, prompt: promptId, maxOverlap } = deAiLevelConfig(ctx);
+  const call = stepCallConfig(ctx, "de_ai", "de_ai", options, null, level);
+  const prompt = buildDeAiPrompt({
+    prompt: promptById(ctx.config.steps, promptId),
+    id: promptId,
+    type,
+    article,
+    title: ctx.topic?.title || getTitle(article),
+  });
+  const range = { min: type.length.min, max: type.length.max };
+  // 档位（含默认调用）的 retry_limit 都必须真写：闸门重调的次数是配置说的，不是代码兜的。
+  const attempts = needNumber(call.attempts, `steps 节点 de_ai 的 models.de_ai${level ? `.levels.${level}` : ""}.options.retry_limit`);
+  const input = lengthInput(ctx, article);
+  const imageFormat = type.illustrations.position_format;
+  const markers = parseImageMarkers(article, { format: imageFormat }).length || type.illustrations.min;
+  const model = getModelProfile(ctx.config, call.model).model || call.model;
+  const tried = [];
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    let text;
+    try {
+      text = await models.complete(call.model, {
+        ...prompt,
+        timeout: call.timeout,
+        temperature: call.temperature,
+        label: "de_ai",
+        slot: API_SLOT.compose.de_ai,
+        attempt,
+        maxTokens: call.maxTokens || Math.max(4096, Math.round(range.max * 2)),
+      });
+    } catch (error) {
+      lastError = error;
+      logger.warn(`去 AI 化调用失败（第 ${attempt}/${attempts} 次）：${error.message}`);
+      continue;
+    }
+    let polished = normalizeArticle(stripCodeFence(text), { title: getTitle(article), type: type.id });
+    polished = ensureSectionHeadings(polished, input.outline.map((section) => section.heading));
+    polished = normalizeImageMarkers(polished, markers, input.images, { format: imageFormat });
+    const signals = polishSignals(article, polished, range, maxOverlap);
+    tried.push({ polished, signals, attempt });
+    if (signals.ok) {
+      logger.info(`去 AI 化完成（${level}档）：${words} → ${signals.words} 字，重叠 ${Math.round(signals.echo * 100)}%（上限 ${Math.round(maxOverlap * 100)}%）${attempt > 1 ? `，第 ${attempt} 次尝试` : ""}`);
+      return {
+        article: polished,
+        ok: true,
+        mock: false,
+        model,
+        words: signals.words,
+        attempts: attempt,
+        level,
+        gate: gateOf(signals, { attemptsUsed: attempt, attemptsAllowed: attempts, picked: attempt, maxOverlap }),
+      };
+    }
+    logger.warn(`去 AI 化不合格（第 ${attempt}/${attempts} 次）：${signals.violations.join("；")}`);
+  }
+
+  if (!tried.length) {
+    throw new Error(`${attempts} 次调用均未产出稿件${lastError ? `，最后一次错误：${lastError.message}` : ""}`);
+  }
+  const best = tried.reduce((a, b) => (isBetterAttempt(b, a, range, maxOverlap) ? b : a));
+  logger.warn(`去 AI 化重试耗尽：取最接近合格的一版（第 ${best.attempt} 次，${best.signals.violations.join("；")}）`);
+  return {
+    article: best.polished,
+    ok: true,
+    mock: false,
+    model,
+    words: best.signals.words,
+    attempts,
+    level,
+    gate: gateOf(best.signals, { attemptsUsed: attempts, attemptsAllowed: attempts, picked: best.attempt, maxOverlap }),
+  };
+}
+
+function gateOf(signals, { attemptsUsed, attemptsAllowed, picked, maxOverlap }) {
+  return {
+    passed: signals.ok,
+    attempts_used: attemptsUsed,
+    attempts_allowed: attemptsAllowed,
+    picked_attempt: picked,
+    echo: signals.echo,
+    max_echo: maxOverlap,
+    lost_numbers: signals.lost_numbers,
+    violations: signals.violations,
+  };
+}
+
+/**
+ * 配图：mock 只落占位 PNG，真实通道内部并发（defaults.yaml illustrations.concurrency）。
+ * 提示词模板与产物结构都取自 image_generation 节点（prompts + schemas 单源），
+ * 产出的 images.json 按 schemas 的 output 校验一次，不合格只警告——配图失败只降级。
+ */
+async function generateArticleImages(ctx, plans, imageStep) {
+  const { type, logger, mock, outputDir, topic } = ctx;
+  const imagesDir = ensureDir(path.join(outputDir, ARTIFACT.imagesDir));
+  // 模板单源在节点 prompt；两条分支都用它，mock 的 images.json 才不会与真实形状分叉。
+  const template = String(imageStep?.prompt?.user || "").trim();
+  if (!template) {
+    throw new Error("缺少配图提示词模板：steps 节点 image_generation 的 prompt（prompts/revision.yaml → image_generation.user）");
+  }
+  let images;
+
+  if (mock) {
+    // Create tiny placeholder PNGs so downstream publishing can be validated.
+    const scene = (type.illustrations.scenes || {});
+    images = plans.map((plan) => {
+      const file = path.join(imagesDir, `${String(plan.index).padStart(2, "0")}_mock.png`);
+      if (!exists(file)) fs.writeFileSync(file, MOCK_PNG);
+      const size = scene[plan.scene] || scene["article-inline"];
+      if (!Number(size?.width) || !Number(size?.height)) {
+        throw new Error(`缺少配图尺寸：defaults.yaml illustrations.scenes.${plan.scene}（或 article-inline）的 width/height`);
+      }
+      const prompt = composePrompt(plan, type.illustrations, topic?.title || topic?.topic || "", template, size);
+      return { ...plan, prompt, success: true, pipeline: "mock", file };
+    });
+  } else {
+    logger.step(`开始生成 ${plans.length} 张配图`);
+    images = await generateImages({
+      plans,
+      outputDir: imagesDir,
+      config: type.illustrations,
+      promptTemplate: template,
+      logger,
+      topic: topic?.title || topic?.topic || "",
+      recorder: ctx.recorder,
+      slot: API_SLOT.compose.generate,
+    });
+  }
+
+  const validation = validateImageRecords(images, imageStep?.output_format);
+  for (const error of validation.errors) logger.warn(`配图产物结构不符（${ARTIFACT.images}）：${error}`);
+  return { images, validation };
+}
+
+export async function publishArticle(ctx, article) {
   const { type, logger, options, outputDir, stamp } = ctx;
   const publishConfig = type.publish || {};
+  const publishStep = resolveStep("publish", { steps: ctx.config?.steps, type });
   const autoPublish = publishConfig.auto_publish === true || asBool(options["auto-publish"]);
   const dryRun = asBool(options["dry-run"]);
 
@@ -2457,17 +2976,41 @@ async function publishArticle(ctx, article, { stage = "final" } = {}) {
 
   const title = getTitle(article, ctx.topic?.title || "未命名文章");
   const finalFile = path.join(outputDir, ARTIFACT.final);
-  writeText(finalFile, article);
+
+  // publish 节点的 enabled 是整个环节的开关：连终稿都不落，04 的 composed.md 保持最终稿。
+  // 与 auto_publish=false 不同——那是「落终稿但不投递」。
+  if (!stepEnabled("publish", ctx.config, type)) {
+    logger.info("发布环节已关闭（steps 节点 publish.enabled=false）：不生成 05 产物，不投递");
+    return {
+      ...buildEnvelope(outputDir, "publish", { title, type: type.id }),
+      status: "skipped",
+      reason: "steps.publish.enabled=false",
+      email: null,
+      wechat: null,
+      channels: { email: false, wechat: false },
+    };
+  }
+
+  // 终稿落进 05-step/ 后基准目录深了一层：图片引用同步换成相对本目录的路径，
+  // 否则外部发布器（wenyan CLI 按稿件文件所在目录解析相对路径）找不到配图。
+  const { markdown: finalArticle, images: finalImages } = relocateLocalImages(article, outputDir, path.dirname(finalFile));
+  writeText(finalFile, finalArticle);
 
   const result = {
-    title,
+    ...buildEnvelope(outputDir, "publish", {
+      title,
+      type: type.id,
+      files: { final: relativeTo(outputDir, finalFile) },
+    }),
     status: null,
     email: null,
     wechat: null,
-    finalFile,
     channels: { email: emailEnabled, wechat: wechatEnabled },
   };
   const persist = () => {
+    // 产物结构按 publish 节点 result_schema（publish.publish）的契约校验一次：不合格只警告，不阻塞发布。
+    result.validation = validateProduced(result, publishStep?.result_output_format);
+    for (const error of result.validation.errors) logger.warn(`发布产物结构不符（${ARTIFACT.publish}）：${error}`);
     writeJson(path.join(outputDir, ARTIFACT.publish), result);
     return result;
   };
@@ -2488,19 +3031,21 @@ async function publishArticle(ctx, article, { stage = "final" } = {}) {
 
   if (emailEnabled) {
     const to = asList(options.to).length ? asList(options.to) : publishConfig.email?.to || [];
-    const html = emailShell(title, await markdownToHtml(bodyOnly(article)));
+    const html = emailShell(title, await markdownToHtml(bodyOnly(finalArticle)));
     const htmlFile = writeText(path.join(outputDir, ARTIFACT.finalHtml), html);
+    result.files.html = relativeTo(outputDir, htmlFile);
     result.email = dryRun
-      ? { success: true, dryRun: true, to, htmlFile }
+      ? { success: true, dryRun: true, to }
       : await sendEmail({
           to,
-          subject: renderSubject(publishConfig.email?.subject || "{title}", { title, date: stamp.date, type: type.name }),
+          subject: renderSubject(needConfig(publishConfig.email?.subject, "defaults.yaml defaults.publish.email.subject"), { title, date: stamp.date, type: type.name }),
           html,
-          images: collectLocalImages(article, outputDir).map((image) => image.file),
+          images: finalImages.map((image) => ({ src: image.src, file: image.file })),
           config: publishConfig.email || {},
           logger,
+          recorder: ctx.recorder,
+          slot: API_SLOT.publish.email,
         });
-    result.email.htmlFile = htmlFile;
   }
 
   if (wechatEnabled) {
@@ -2508,6 +3053,8 @@ async function publishArticle(ctx, article, { stage = "final" } = {}) {
       markdownFile: finalFile,
       config: { ...publishConfig.wechat, dry_run: dryRun || publishConfig.wechat?.dry_run },
       logger,
+      recorder: ctx.recorder,
+      slot: API_SLOT.publish.wechat,
       envFile: path.resolve(PROJECT_ROOT, publishConfig.wechat?.env_file || ".env"),
     });
   }
@@ -2525,8 +3072,21 @@ function renderSubject(template, vars) {
 /* standalone commands                                                 */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 独立命令要读 02 的纲要/初稿输入：路径只认 02-result.json#files（跨步读取走地图，不猜文件名）；
+ * 地图里没有才回退固定文件名——那是对只有散落稿件的目录跑单步命令的场景。
+ */
+function readDraftArtifacts(dir) {
+  const outlineRel = fileFromResult(dir, "draft", "outline") || ARTIFACT.outline;
+  const draftInputRel = fileFromResult(dir, "draft", "draftInput") || ARTIFACT.draftInput;
+  return {
+    outline: readJsonSafe(path.join(dir, outlineRel)) || undefined,
+    draftInput: readJsonSafe(path.join(dir, draftInputRel)) || undefined,
+  };
+}
+
 async function cmdReviewOnly(config, options) {
-  const target = resolveArticleTarget(config, options, [ARTIFACT.illustrated, ARTIFACT.reviewed, ARTIFACT.draftMd]);
+  const target = resolveArticleTarget(config, options, [ARTIFACT.composed, ARTIFACT.reviewed, ARTIFACT.draftMd]);
   const type = findType(config, options.type || inferTypeFromDir(config, target.dir) || resolveTypeId(options));
   const logger = createLogger({ file: path.join(target.dir, ARTIFACT.log), verbose: asBool(options.verbose), label: "review" });
   const recorder = createRecorder();
@@ -2538,58 +3098,63 @@ async function cmdReviewOnly(config, options) {
     type,
     logger,
     models,
+    recorder,
     mock: asBool(options.mock),
     options,
     outputDir: target.dir,
     topic: { title: getTitle(article) },
-    draftTemplate: loadDraftTemplate(config.__dir),
-    draftInput: readJsonSafe(path.join(target.dir, ARTIFACT.draftInput)) || undefined,
-    outline: readJsonSafe(path.join(target.dir, ARTIFACT.outline)) || undefined,
+    draftTemplate: draftTemplateFromSteps({ steps: config.steps, type }),
+    ...readDraftArtifacts(target.dir),
   };
   const result = await reviewLoop(ctx, article);
-  const out = finishReviewStage(ctx, target.slug, result);
-  console.log(`审稿完成：${result.history.length} 轮，${result.final.total ?? "n/a"} 分 → ${out}`);
+  const out = finishReviewStage(ctx, result);
+  console.log(`审稿完成：${result.history.length} 轮，综合评分 ${result.final.composite_score ?? "n/a"}（通过线 ${result.pass_score}）→ ${out}`);
 }
 
-async function cmdIllustrateOnly(config, options) {
-  const target = resolveArticleTarget(config, options, [ARTIFACT.reviewed, ARTIFACT.draftMd, ARTIFACT.illustrated]);
+async function cmdComposeOnly(config, options) {
+  const target = resolveArticleTarget(config, options, [ARTIFACT.reviewed, ARTIFACT.draftMd, ARTIFACT.composed]);
   const type = findType(config, options.type || inferTypeFromDir(config, target.dir) || resolveTypeId(options));
-  const logger = createLogger({ file: path.join(target.dir, ARTIFACT.log), verbose: asBool(options.verbose), label: "illustrate" });
+  const logger = createLogger({ file: path.join(target.dir, ARTIFACT.log), verbose: asBool(options.verbose), label: "compose" });
   const article = fs.readFileSync(target.path, "utf8");
+  const recorder = createRecorder();
+  recorder.setStepDir(path.join(target.dir, "04-step"));
+  const models = createModelClient(config, logger, recorder);
+  const draftArtifacts = readDraftArtifacts(target.dir);
   const ctx = {
     config,
     type,
     logger,
+    models,
+    recorder,
     options,
     mock: asBool(options.mock),
     outputDir: target.dir,
     topic: { title: getTitle(article) },
-    outline: readJsonSafe(path.join(target.dir, ARTIFACT.outline)) || { title: getTitle(article), image_plan: [] },
+    draftInput: draftArtifacts.draftInput,
+    outline: draftArtifacts.outline || { title: getTitle(article), image_plan: [] },
   };
-  const result = await illustrateArticle(ctx, article);
-  const out = path.join(target.dir, ARTIFACT.illustrated);
-  writeText(out, result.article);
-  writeJson(path.join(target.dir, ARTIFACT.illustrate), {
-    step: "illustrate",
-    generated_at: new Date().toISOString(),
-    images: result.images.map((i) => ({ index: i.index, success: i.success, pipeline: i.pipeline || null })),
-    file: ARTIFACT.illustrated,
-  });
-  console.log(`配图完成：${result.images.filter((i) => i.success).length}/${result.images.length} → ${out}`);
+  const result = await composeArticle(ctx, article);
+  const out = finishComposeStage(ctx, result);
+  const success = result.images.filter((i) => i.success).length;
+  console.log(`组稿完成：去 AI 化${result.polish.ok ? ` ${result.polish.words} 字` : "未生效（用审稿稿）"}，配图 ${success}/${result.images.length} → ${out}`);
 }
 
 async function cmdPublishOnly(config, options) {
-  const target = resolveArticleTarget(config, options, [ARTIFACT.final, ARTIFACT.illustrated, ARTIFACT.reviewed, ARTIFACT.draftMd]);
+  const target = resolveArticleTarget(config, options, [ARTIFACT.final, ARTIFACT.composed, ARTIFACT.reviewed, ARTIFACT.draftMd]);
   const type = findType(config, options.type || inferTypeFromDir(config, target.dir) || resolveTypeId(options));
   const logger = createLogger({ file: path.join(target.dir, ARTIFACT.log), verbose: asBool(options.verbose), label: "publish" });
   const article = fs.readFileSync(target.path, "utf8");
   const stamp = timestamp();
-  const ctx = { config, type, logger, options, outputDir: target.dir, stamp, topic: { title: getTitle(article) } };
+  const recorder = createRecorder();
+  recorder.setStepDir(path.join(target.dir, "05-step"));
+  const ctx = { config, type, logger, recorder, options, outputDir: target.dir, stamp, topic: { title: getTitle(article) } };
   // Explicit invocation of `publish` counts as consent.
   const result = await publishArticle({ ...ctx, type: { ...type, publish: { ...type.publish, auto_publish: true } } }, article);
 
-  // 真实投递成功且稿件在 draft/<slug>/ 里 → 打包并清理。
-  if (result.status === "published") {
+  // 真实投递成功且稿件在 draft/<slug>/ 里 → 打包并清理；archive 节点关掉则整段跳过。
+  if (!stepEnabled("archive", config, type)) {
+    logger.info("归档环节已关闭（steps 节点 archive.enabled=false）：产物留在 draft/，不打包不删除");
+  } else if (result.status === "published") {
     try {
       const archived = archiveArticle({ config, type, dir: target.dir, slug: path.basename(target.dir), publish: result, logger });
       result.archive = archived.archive;
@@ -2614,7 +3179,8 @@ function resolveArticleTarget(config, options, preferred) {
     const text = String(raw);
     const asPath = path.resolve(PROJECT_ROOT, text);
     if (fs.existsSync(asPath) && fs.statSync(asPath).isFile()) {
-      return { path: asPath, dir: path.dirname(asPath), slug: null };
+      const dir = findArticleRoot(path.dirname(asPath));
+      return { path: asPath, dir, slug: dir ? path.basename(dir) : null };
     }
     if (text === "latest" || (!text.includes("/") && !text.includes("\\"))) {
       const opened = openArticle(config, text);
@@ -2628,6 +3194,21 @@ function resolveArticleTarget(config, options, preferred) {
   const file = pickArticleFile(opened.dir, preferred);
   if (!file) throw new Error(`文章 ${opened.slug} 里没有可用的稿件（期望其中之一：${preferred.join(" / ")}）`);
   return { path: file, dir: opened.dir, slug: opened.slug };
+}
+
+/**
+ * --file 给的产物在 NN-step/ 子目录里，文章根目录要往上找（认 01-result.json）；
+ * 找不到就退回文件所在目录。
+ */
+function findArticleRoot(startDir) {
+  let dir = path.resolve(startDir);
+  for (let depth = 0; depth < 4; depth++) {
+    if (fs.existsSync(path.join(dir, ARTIFACT.topic))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+  return path.resolve(startDir);
 }
 
 function inferTypeFromDir(config, dir) {
@@ -2748,7 +3329,9 @@ function resolveTypeId(options, fallback = "") {
 
 /**
  * auto 入口（deferred）选题阶段的占位类型：不预设栏目，
- * 知识库取所有 enabled 类型 knowledge_dirs 的并集，topic 窗口用内置默认值。
+ * 知识库取所有 enabled 类型 knowledge_dirs 的并集；检索条数、选题窗口与模型
+ * 一律继承第一个 enabled 类型（与 knowledge_dirs 的并集同规格），代码里没有第二套默认值。
+ * 四个类型的 topic 窗口本来就一致，占位类型只是要在定类之前把选题跑完。
  * 选题完成后由判断模型定类，本对象不再参与下游步骤。
  */
 function autoTopicType(config) {
@@ -2767,9 +3350,9 @@ function autoTopicType(config) {
       weknora: { ...(knowledge.weknora || {}), enabled: false, kb_ids: [] },
     },
     style: {},
-    topic: {},
+    topic: enabled[0]?.topic || {},
     length: null,
-    model: "llm.local",
+    model: enabled[0]?.model,
   };
 }
 
@@ -2815,6 +3398,7 @@ async function resolveTypeForEntry(config, options, { title = "", command, exist
     const classifierLogger = createLogger({ verbose: asBool(options.verbose), label: "classify" });
     const outcome = await classifyOrFallback({
       config,
+      cfg: systemOneCallConfig({ config }, "classify_type", "classify"),
       title: headline || outline.split(/\r?\n/).find((line) => line.trim())?.replace(/^#+\s*/, "").trim() || "",
       outline,
       logger: classifierLogger,
@@ -2916,8 +3500,11 @@ const MOCK_PNG = Buffer.from(
   "base64",
 );
 
-main().catch((error) => {
-  console.error(`\n错误：${error.message}`);
-  if (process.env.DEBUG) console.error(error.stack);
-  process.exitCode = 1;
-});
+// 只在作为命令执行时跑 CLI；被测试 import 时只导出函数。
+if (process.argv[1] && path.resolve(process.argv[1]) === import.meta.filename) {
+  main().catch((error) => {
+    console.error(`\n错误：${error.message}`);
+    if (process.env.DEBUG) console.error(error.stack);
+    process.exitCode = 1;
+  });
+}

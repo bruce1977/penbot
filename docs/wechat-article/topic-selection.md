@@ -43,7 +43,7 @@ indexKnowledge（增量缓存，全量扫描成本可忽略）
 - 请求：`/v1/systemone`，question `topic_pick`，选项 `1..N`，criteria/state 里带上
   每个候选的标题、写作模型评分、核心判断与素材标题；
 - instructions 明确"评分只作参考、编号只是标签"，避免照抄评分顺序或位置偏置；
-- 返回的 choice 换算成 `picked.index` 写进 `01-step/proposal.json`，并并入 `01-result.json` 的 `picked` 字段；
+- 返回的 choice 换算成 `picked.index` 写进 `01-step/proposal.json`（择题过程只留在这里，`01-result.json` 只带选定后的 `title`/`type`）；
 - 判定不可用（未配置/失败/返回非法编号）时按评分第一篇，记 warn，不阻塞管线；
 - 只有 1 个候选（规则回退）时跳过判定。
 
@@ -88,8 +88,8 @@ ollama        5   2026-10-15        5        2
 
 `listWrittenArticles()` 从两处收集已写/在写文章标题（按日期倒序，默认封顶 60 条）：
 
-- `output/published/*.zip`：直接解析 zip 中央目录，读取包内 `06-result.json` →
-  `01-result.json` 中的标题（旧归档回退 `01-topic.json`，逐个回退）；
+- `output/published/*.zip`：直接解析 zip 中央目录，读取包内 `05-result.json` →
+  `01-result.json` 中的标题（信封让 `05-result.json` 自带 `title`，前一份只是补充）；
 - `output/draft/*/`：尚未归档的文章目录。
 
 用途有两层：
@@ -123,8 +123,11 @@ topic:
   fresh_days: 7          # 小样本：采集窗口
   max_candidates: 40     # 候选池封顶
   proposals: 3           # 模型输出候选数
-  # lookback_days / candidates 为旧字段，作为对应新字段的回退值
 ```
+
+四个窗口值（`candidate_days` / `fresh_days` / `max_candidates` / `proposals`）**必填**：
+代码里没有 15/7/40/3 的副本，缺了加载期直接抛错点名 `types/<id>.yaml 的 topic.<key>`。
+旧字段 `lookback_days` / `candidates` 的回退也已删（没有任何类型用过）。
 
 ## 改动点
 

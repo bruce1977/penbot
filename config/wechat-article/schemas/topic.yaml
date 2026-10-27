@@ -1,18 +1,13 @@
 # 输入/输出结构：选题阶段
-# key = 配置项名；完整 id = <文件名>.<key>，例如 topic.classify_type。
+# key = 配置项名；完整 id = <文件名>.<key>，例如 topic.select_topic。
+#
+# 这个文件只放**脚本真的会跑**的校验契约（紧凑 DSL）。原先的
+# classify_type / gather_materials 两条是人写的形状备注，代码不读它们做校验
+# （判断模型的回答由 classify.mjs 自己解析：答案必须在候选类型里、置信度是数字），
+# 挂在节点上会伪装成「这个节点有输出契约」，已删。定类结果与素材条目的形状
+# 校验属于 01-result.json 本体的事，见 docs/wechat-article/artifacts.md。
 
 schemas:
-  classify_type:
-    input:
-      title: "string"
-      outline: "string?"
-      types: "Array<{id: string, description?: string}>"
-    output:
-      type: "string"
-      confidence: "number(0..1)"
-      probabilities: "Record<string, number>?"
-      source: "classifier|default|manual"
-
   select_topic:
     input:
       type: "ArticleType"
@@ -48,14 +43,39 @@ schemas:
       "topics[].title_candidates": ["array", 1]
       "topics[].title_candidates[]": ["string", 1, "备选标题"]
 
-  gather_materials:
+  # gather_materials 没有模型调用，也没有可执行契约（原先那条 input/output 备注里
+  # 连 lookback_days 都已随 defaults 删掉），已从注册表移除。
+  # 它的产物形状：素材正文经 landSources 落 01-step/sources/*.md，
+  # 01-result.json#sources 每条只有 {index: number, title: string, link: string}，
+  # link 是相对文章目录的路径，下游统一走 loadSource 回读。
+
+  # 01-result.json 本体：信封（stage/generated_at/title/type/files）+ 选题字段 + 素材链接条目。
+  # 校验对象是脚本自己落盘的产物，不是模型输出——由 select_topic 节点的 result_schema 引用，
+  # 落盘前跑 validateProduced，不合格只警告不阻塞，结果记 01-result.json#validation。
+  # title / type 从这里诞生（全文唯一源，02–05 只顺延）；择题过程（score / title_candidates /
+  # 3 选 1 的判定）只留在 01-step/proposal.json，不进 result。
+  result:
     input:
-      topic: "Topic"
-      keywords: "string[]"
-      knowledge_dirs: "string[]"
-      max_sources: "number?"
-      lookback_days: "number?"
-    # 输出数组并入 01-result.json 的 sources 字段（不再单独成文件）。
-    # 素材正文经 landSources 落 01-step/sources/*.md，链接条目只有三个字段；
-    # 下游读取统一走 loadSource（相对 link 以文章目录为 baseDir 回读）。
-    output: "Array<{index: number, title: string, link: string}>"
+      proposals: "01-step/proposal.json（候选与择题判定）"
+      sources: "landSources 落盘的 01-step/sources/*.md"
+    output:
+      stage: ["string", 1, "topic"]
+      generated_at: ["string", 1, "选题落盘时间，也就是文章的创建时间"]
+      title: ["string", 1, "最终标题，全文唯一标题源"]
+      type: ["string", 1, "文章类型 id（字符串，不是对象）"]
+      topic: ["string", 1, "一句话主题"]
+      thesis?: ["string", 1, "核心判断"]
+      angle?: ["string", 1, "切入角度"]
+      rationale?: ["string", 1, "为什么现在写"]
+      keywords?: ["array", 0, "检索关键词"]
+      "keywords[]": ["string", 1]
+      source_hints?: ["array", 0, "选题时看到的素材标题，供检索与查重"]
+      "source_hints[]": ["string", 1]
+      files: "object"
+      "files.topicMd": ["string", 1, "01-step/topic.md，相对文章根目录"]
+      "files.proposal?": ["string", 1, "01-step/proposal.json；跳过选题（手动指定主题）时为 null"]
+      sources: ["array", 0, "素材链接条目，正文在 01-step/sources/*.md"]
+      "sources[].index": ["number", 0]
+      "sources[].title": ["string", 1]
+      "sources[].link": ["string", 1, "相对文章根目录、/ 分隔"]
+      validation?: "object"

@@ -13,12 +13,26 @@ prompts:
       {{outline}}
 
   select_topic:
+    # 下面这些整句文案按条件二选一，代码只负责挑 key（缺 key 抛错，不静默铺副本）：
+    #   audience_line     —— 类型没定类（auto 占位类型没有 style）时整行省略
+    #   mode_line_*       —— 手动指定主题 / 自动挑选
+    #   dedupe_rule_*     —— 归档里已有文章 / 还没有历史文章
+    #   length_range      —— 类型没写字数区间时整行留空
+    audience_line: 目标读者：{{audience}}
+    mode_line_auto: 请从下列近期知识库文章中自动挑选 {{count_label}}最值得写的主题。
+    mode_line_manual: |
+      用户已指定主题：{{user_topic}}
+      补充要求：{{user_requirements}}
+    dedupe_rule_with_history: 严禁与上方「已写过的文章」重复：事件、标题、核心判断任一撞车的候选会被程序直接作废，白白浪费名额；宁可退选热度较低的新方向。
+    dedupe_rule_no_history: 与已有文章形成差异，不要重复同一事件的消息面。
+    length_range: 目标篇幅 {{length.min}}-{{length.max}} 字。
     system: |
       你是「{{type_name}}」栏目的选题编辑。{{type_description}}
-      目标读者：{{audience}}。
+      {{audience_line}}
       你的任务是从近期知识库文章中提炼{{count_label}}值得写的主题，而不是简单复述某一篇。
       时效以每个条目、每个热词给定的「距今天数 / 新采集」为准，不要自行推断当前日期或文章新鲜度。
-      {{json_rules}}
+      只输出一个合法 JSON 对象，不要输出 Markdown 代码块、解释或前后缀。
+      所有字符串使用中文，除专有名词外不要夹杂英文。
       不要编造候选列表和热度表中不存在的事件。
     user: |
       {{mode_line}}

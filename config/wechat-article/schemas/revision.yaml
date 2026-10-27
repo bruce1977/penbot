@@ -1,28 +1,34 @@
-# 输入/输出结构：修正阶段
-# key = 配置项名；完整 id = <文件名>.<key>，例如 topic.classify_type。
+# 输入/输出结构：修正与组稿阶段
+# key = 配置项名；完整 id = <文件名>.<key>，例如 revision.image_generation。
+#
+# 这个文件只放脚本真的会跑的校验契约。修正（revision）与去 AI 化（de_ai）输出的是
+# 自由格式 Markdown 正文，形状由代码闸门保证（字数区间、原稿数字保全、
+# frontmatter/小节标题/配图标记），不挂 schema——挂了也没人按它校验。
 
 schemas:
-  revision:
-    input:
-      article: "string"
-      review: "ScoreResult"
-      round: "number"
-    output:
-      article: "string（Markdown）"
-
-  de_ai:
-    input:
-      article: "string"
-      style: "string?"
-    output:
-      article: "string（Markdown）"
-      changes: "Array<{before: string, after: string, reason: string}>?"
-
+  # 04 配图：校验对象是脚本自己产出的 04-step/images.json（顶层包一层 {images: [...]}），
+  # 不是模型输出——成功与失败的图都要有记录，attempts 记录每张图按通道降级的逐次尝试。
   image_generation:
     input:
-      article: "string"
-      image_plan: "Array<{position: string, description: string, prompt: string}>"
-      count: "number?"
+      article: ["string", 1]
+      image_plan: ["array", 1, 6, "02 纲要的配图规划"]
+      "image_plan[].position": ["string", 1]
+      "image_plan[].description": ["string", 1]
+      "image_plan[].prompt": ["string", 1]
+      count: ["number", 1]
       style: "string?"
     output:
-      images: "Array<{index: number, position: string, scene: string, description?: string, prompt: string, success: boolean, pipeline?: string, file?: string, error?: string, attempts?: Array<{pipeline: string, ok: boolean, error?: string}>}>"
+      images: ["array", 1, 6, "每张图一条"]
+      "images[].index": ["number", 1]
+      "images[].position": ["string", 1]
+      "images[].scene": ["string", 1, "wechat-cover | article-inline"]
+      "images[].prompt": ["string", 1, "实际发给图片模型的 prompt"]
+      "images[].success": "boolean"
+      "images[].description?": ["string", 1]
+      "images[].pipeline?": ["string", 1, "modelscope | pollinations | mock"]
+      "images[].file?": ["string", 1]
+      "images[].error?": ["string", 1]
+      "images[].attempts?": ["array", 1]
+      "images[].attempts[].pipeline": ["string", 1]
+      "images[].attempts[].ok": "boolean"
+      "images[].attempts[].error?": ["string", 1]

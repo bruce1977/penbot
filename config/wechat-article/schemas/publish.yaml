@@ -1,22 +1,54 @@
 # 输入/输出结构：发布阶段
-# key = 配置项名；完整 id = <文件名>.<key>，例如 topic.classify_type。
+# key = 配置项名；完整 id = <文件名>.<key>，例如 publish.publish。
+# 这里校验的是脚本自己落盘的 05-result.json（不给模型看），形状必须与入口写入的一致：
+#   publish  → 整份 05-result.json（终稿 + 渠道投递结果）
+#   archive  → 05-result.json#archive 这一块的归档结果
 
 schemas:
   publish:
     input:
-      article: "string"
-      images: "Array<Image>"
-      title: "string"
+      article: ["string", 1, "04 组稿终稿正文"]
+      title: ["string", 1]
+    # 信封（stage/generated_at/title/type/files）与 01–04 同形：title/type 从上一份 result 顺延。
     output:
-      status: "published|partial|skipped|dry_run|failed"
-      channels: "Record<string, {ok: boolean, detail?: string}>"
-      archive: "{ enabled: boolean, knowledge_file?: string, zip?: string }"
+      stage: ["string", 1, "publish"]
+      generated_at: ["string", 1, "本步落盘时间"]
+      title: ["string", 1]
+      type: ["string", 1, "文章类型 id，从 01-result.json 顺延"]
+      status: ["string", 1, "published | partial | failed | skipped | dry_run，只有 published 触发归档"]
+      files: "object"
+      "files.final": ["string", 1, "05-step/final.md，相对文章根目录"]
+      "files.html?": ["string", 1, "05-step/final.html，邮件渠道启用时才有"]
+      channels: "object"
+      "channels.email": "boolean"
+      "channels.wechat": "boolean"
+      email?: "object"
+      "email.success": "boolean"
+      "email.dryRun?": "boolean"
+      "email.to?": ["array", 0, "收件人"]
+      "email.to[]": ["string", 1]
+      "email.id?": ["string", 1, "Resend 返回的邮件 id"]
+      "email.error?": ["string", 1]
+      wechat?: "object"
+      "wechat.success": "boolean"
+      "wechat.dryRun?": "boolean"
+      "wechat.command?": ["string", 1, "演练时打印的命令，密钥已打码"]
+      "wechat.output?": ["string", 1, "CLI 输出的尾部"]
+      "wechat.code?": ["number", "CLI 退出码"]
+      "wechat.error?": ["string", 1]
+      reason?: ["string", 1, "status=skipped 时的原因"]
+      validation?: "object"
+      archivedAt?: ["string", 1, "归档时间（归档环节写入）"]
+      archive?: "object"
 
   archive:
     input:
-      publish: "06-result.json"
-      article_dir: "string"
+      publish: ["string", 1, "05-result.json"]
     output:
-      zip: "string"
-      knowledge_file: "string?"
-      removed: "boolean"
+      zip: ["string", 1, "published/<日期>-<slug>.zip，相对项目根目录"]
+      knowledge?: "object"
+      "knowledge.ok": "boolean"
+      "knowledge.skipped?": "boolean"
+      "knowledge.file?": ["string", 1, "知识库入库文件绝对路径（在工程外，不做相对化）"]
+      "knowledge.error?": ["string", 1]
+      validation?: "object"

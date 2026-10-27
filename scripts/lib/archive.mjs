@@ -3,15 +3,19 @@ import path from "node:path";
 import { ARTIFACT, ensureLayout } from "./article-store.mjs";
 import { ensureDir, exists, relativeTo, timestamp, writeJson, writeText } from "./fsx.mjs";
 import { buildFrontmatter, splitFrontmatter } from "./markdown.mjs";
+import { resolveStep } from "./steps.mjs";
+import { validateProduced } from "./template.mjs";
 import { zipDirectory } from "./zip.mjs";
 
 function renderName(template, vars) {
   return String(template || "{date}-{slug}.md").replace(/\{(\w+)\}/g, (_, key) => vars[key] ?? "");
 }
 
-function copyToKnowledge({ config, type, dir, slug, title, stamp, archive, logger }) {
+function copyToKnowledge({ config, type, dir, slug, title, stamp, logger }) {
   const settings = type.publish?.archive || {};
-  if (!settings.knowledge_dir || settings.enabled === false) {
+  // 是否入库只有一个开关：knowledge_dir 留空 = 不入库。
+  // 归档环节整体开不开看 steps 节点 archive.enabled，不在这里放第二个同名开关。
+  if (!settings.knowledge_dir) {
     return { ok: true, skipped: true };
   }
   try {
@@ -31,13 +35,12 @@ function copyToKnowledge({ config, type, dir, slug, title, stamp, archive, logge
       published_at: new Date().toISOString(),
     });
     writeText(target, `${frontmatter}${body}\n`);
-    archive.knowledge = { ok: true, file: target };
+    return { ok: true, file: target };
   } catch (error) {
     // 知识库归档失败不阻塞打包与清理，只记录。
-    archive.knowledge = { ok: false, error: error.message };
     logger?.warn?.(`知识库归档失败（不影响发布归档）：${error.message}`);
+    return { ok: false, error: error.message };
   }
-  return archive.knowledge;
 }
 
 /**
@@ -46,7 +49,7 @@ function copyToKnowledge({ config, type, dir, slug, title, stamp, archive, logge
  *   2. 整个 article 目录打包到 published/<YYYYMMDD>-<slug>.zip
  *   3. 删除 draft/<slug>
  *
- * 幂等：zip 路径先写进 06-result.json，重跑时已存在的 zip 直接复用；
+ * 幂等：zip 路径先写进 05-result.json，重跑时已存在的 zip 直接复用；
  * 目录还剩着就只补做未完成的步骤。
  */
 export function archiveArticle({ config, type, dir, slug, publish, logger }) {
@@ -67,10 +70,13 @@ export function archiveArticle({ config, type, dir, slug, publish, logger }) {
   const zipFile = path.resolve(projectRoot, archive.zip);
   archive.zip = relativeTo(projectRoot, zipFile);
 
-  // 1. 知识库
-  copyToKnowledge({ config, type, dir: target, slug, title: record.title, stamp, archive, logger });
+  // 1. 知识库（入库与否、成功与否都记进 archive.knowledge，不靠「键不存在」表达）
+  archive.knowledge = copyToKnowledge({ config, type, dir: target, slug, title: record.title, stamp, logger });
 
   // 2. 先落盘清单，再打包（清单因此会进入 zip）
+  const archiveStep = resolveStep("archive", { steps: config?.steps, type });
+  archive.validation = validateProduced(archive, archiveStep?.result_output_format);
+  for (const error of archive.validation.errors) logger?.warn?.(`归档产物结构不符（${ARTIFACT.publish}#archive）：${error}`);
   const next = { ...record, status: "published", archive, archivedAt: new Date().toISOString() };
   writeJson(path.join(target, ARTIFACT.publish), next);
 

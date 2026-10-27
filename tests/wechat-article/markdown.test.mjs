@@ -14,6 +14,8 @@ import {
   ensureImageMarkers,
   normalizeImageMarkers,
   formatImageMarker,
+  verbatimOverlap,
+  missingNumbers,
 } from "../../scripts/lib/markdown.mjs";
 
 /* ------------------------------------------------------------------ */
@@ -165,4 +167,34 @@ test("normalizeImageMarkers caps at the planned count and pads when short", () =
 
   const short = buildFrontmatter({ title: "t" }) + "A\n\n[[img:1|一|]]\n\nB\n\nC\n";
   assert.equal(parseImageMarkers(normalizeImageMarkers(short, 3)).length, 3);
+});
+
+/* ------------------------------------------------------------------ */
+/* de_ai 本地质量判据（零 token）                                       */
+/* ------------------------------------------------------------------ */
+
+test("verbatimOverlap 抓住整篇复读，放行实质改写", () => {
+  const src = "过去一年里这个产品的下载量涨到了千万级别，团队在两周之内连续做出三次大版本更新，很多人开始重新讨论它到底能走多远";
+  const rewritten = "三个月前它还无人问津，如今每家公司的群聊都在转发同一份榜单，连做投资的人都开始问起团队规模";
+  assert.equal(verbatimOverlap(src, src), 1);
+  assert.equal(verbatimOverlap(src, rewritten), 0);
+  // 整篇誊抄时脚本会回填 frontmatter/标题/配图标记，标记与空白不进比对 key
+  assert.ok(verbatimOverlap(src, `# 标题\n\n${src}\n\n[[img:1]]`) > 0.5);
+  // 抄掉三分之二仍在闸门以上；只借一两句不算复读
+  assert.ok(verbatimOverlap(src, src.slice(0, 66) + rewritten.slice(0, 20)) > 0.5);
+  assert.ok(verbatimOverlap(src, src.slice(0, 24) + rewritten) < 0.5);
+});
+
+test("verbatimOverlap 忽略 Markdown 装饰，短稿不误判", () => {
+  assert.equal(
+    verbatimOverlap("这是**一段**很长的中文正文需要超过二十个字才算合格", "这是 一段 很长的中文正文 需要超过二十个字才算合格"),
+    1
+  );
+  assert.equal(verbatimOverlap("这是一段超过二十个字的中文正文用来验证窗口边界", "太短了"), 0);
+});
+
+test("missingNumbers 返回原稿有、改写稿丢掉的数字（去重）", () => {
+  assert.deepEqual(missingNumbers("2023 年下载量 1000 万，增长 12.5%，共 7 次", "2023 年下载量增长 12.5%，共七次"), ["1000", "7"]);
+  assert.deepEqual(missingNumbers("2023 年又一年，2023 年", "年份"), ["2023"]);
+  assert.deepEqual(missingNumbers("没有数字的一段话", "改写后的一段话"), []);
 });

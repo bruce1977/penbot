@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { needConfig, needNumber } from "./env.mjs";
 import { walkFiles, readText, readJson, writeJson, writeText, ensureDir, slugify } from "./fsx.mjs";
 import { splitFrontmatter } from "./markdown.mjs";
 
@@ -244,17 +245,24 @@ export function searchKnowledge(notes, { topic, keywords = [], limit = 8, excerp
  * Hybrid search against one or more WeKnora knowledge bases.
  * Endpoint: POST {base_url}/knowledge-bases/{kb_id}/hybrid-search
  * Returns sources in the same shape as searchKnowledge().
+ * 每个 kb 的真实请求经 recorder 落 <step>/api/（只记请求体与响应原文，鉴权 header 不写）。
  */
-export async function searchWeKnora(type, query, { logger, limit } = {}) {
+export async function searchWeKnora(type, query, { logger, limit, recorder, slot } = {}) {
   const cfg = type.knowledge?.weknora || {};
   const base = String(cfg.base_url || "").replace(/\/+$/, "");
   const kbIds = (cfg.kb_ids || []).filter(Boolean);
   if (!base || kbIds.length === 0) return [];
 
   const headers = { "Content-Type": "application/json", "X-Request-ID": String(Date.now()) };
-  if (cfg.api_key) headers[cfg.auth_header || "X-API-Key"] = cfg.api_key;
+  // auth_header / timeout_ms 单源 defaults.yaml defaults.knowledge.weknora（原来这两处
+  // 各有一份和配置同值的副本，改配置不生效）。只有真会发请求才要求配全：
+  // 没配 base_url / kb_ids 上面已经直接跳过本通道。
+  if (cfg.api_key) headers[needConfig(cfg.auth_header, "defaults.yaml defaults.knowledge.weknora.auth_header")] = cfg.api_key;
+  const timeoutMs = needNumber(cfg.timeout_ms, "defaults.yaml defaults.knowledge.weknora.timeout_ms");
 
-  const matchCount = Math.max(3, Math.min(Number(cfg.match_count) || limit || 8, 20));
+  // match_count 单源 defaults.yaml knowledge.weknora.match_count（没写就用本步的总条数上限）；
+  // 这里不再留 defaults 的同值兜底，否则改配置不生效。
+  const matchCount = Math.max(3, Math.min(Number(cfg.match_count) || limit, 20));
   const groups = new Map();
 
   for (const kbId of kbIds) {
@@ -262,22 +270,36 @@ export async function searchWeKnora(type, query, { logger, limit } = {}) {
     if (cfg.vector_threshold) body.vector_threshold = Number(cfg.vector_threshold);
     if (cfg.keyword_threshold) body.keyword_threshold = Number(cfg.keyword_threshold);
     const label = cfg.kb_names?.[kbId] || kbId;
+    const startedAt = Date.now();
+    const record = (extra) => {
+      if (!recorder) return;
+      recorder.record({
+        label: "knowledge_search",
+        slot,
+        provider: "weknora",
+        request: { ...body, kb_id: kbId },
+        duration_ms: Date.now() - startedAt,
+        ...extra,
+      });
+    };
     try {
       const res = await fetch(`${base}/knowledge-bases/${encodeURIComponent(kbId)}/hybrid-search`, {
         method: "POST",
         headers,
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(Number(cfg.timeout_ms) || 30000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
+      const raw = await res.text().catch(() => "");
+      record({ response: raw, error: res.ok ? undefined : `HTTP ${res.status}` });
       if (!res.ok) {
-        const detail = await res.text().catch(() => "");
-        logger?.warn(`WeKnora 检索失败（${label}）：HTTP ${res.status} ${detail.slice(0, 120)}`);
+        logger?.warn(`WeKnora 检索失败（${label}）：HTTP ${res.status} ${raw.slice(0, 120)}`);
         continue;
       }
-      const data = await res.json();
+      const data = JSON.parse(raw);
       for (const item of data.data || []) addWeKnoraHit(groups, item, kbId, cfg, excerptCharsOf(type));
       logger?.info(`WeKnora 检索（${label}）：命中 ${(data.data || []).length} 个片段`);
     } catch (error) {
+      record({ error: error.message });
       logger?.warn(`WeKnora 检索异常（${label}）：${error.message}`);
     }
   }
@@ -299,7 +321,9 @@ export async function searchWeKnora(type, query, { logger, limit } = {}) {
 }
 
 function excerptCharsOf(type) {
-  return Number(type.knowledge?.excerpt_chars) || 1800;
+  // 单源 defaults.yaml defaults.knowledge.excerpt_chars；缺了抛错点名配置路径，
+  // 不兜一个和配置同值的数（normalizeType 只把写出来的值归成数字，不再铺默认值）。
+  return needNumber(type.knowledge?.excerpt_chars, "defaults.yaml defaults.knowledge.excerpt_chars");
 }
 
 function addWeKnoraHit(groups, item, kbId, cfg, excerptChars) {
@@ -371,7 +395,10 @@ export async function collectSources(type, { topic, notes = [], logger, mock = f
   const query = [topic?.topic, topic?.title, ...(topic?.keywords || []), ...(type.topic?.keywords || [])]
     .filter(Boolean)
     .join(" ");
-  const limit = Number(type.knowledge.max_sources) || 8;
+  // 条数上限单源 defaults.yaml knowledge.max_sources（.env PB_KNOWLEDGE_MAX_SOURCES 抬起）；
+  // 不留同值兜底，改了配置就得真的生效——缺了宁可抛错点名配置路径，也不要 NaN 条数
+  // 让 slice(0, NaN) 静默交出空素材。
+  const limit = needNumber(type.knowledge?.max_sources, "defaults.yaml defaults.knowledge.max_sources（可用 .env PB_KNOWLEDGE_MAX_SOURCES 抬起）");
   // In mock mode, never hit the network.
   const source = mock ? "local" : type.knowledge.source;
   const exclude = type.topic?.exclude_keywords || [];
@@ -385,7 +412,7 @@ export async function collectSources(type, { topic, notes = [], logger, mock = f
           topic: query,
           keywords: [],
           limit: localLimit,
-          excerptChars: type.knowledge.excerpt_chars,
+          excerptChars: excerptCharsOf(type),
           exclude,
         }).map((item) => ({ ...item, origin: "local" }))
       : [];
@@ -445,6 +472,8 @@ export function assessSourceSufficiency(sources, { topic, maxSources = 8, gate =
     0,
   );
   signals.excerpt_chars = chars;
+  // gate 允许只写个别阈值（本函数的 API 约定，缺的判据退回这里的默认），
+  // 所以这四个阈值保留兜底；defaults.yaml 的 web-search.gate 才是实配置单源。
   const minChars = Number(gate.min_excerpt_chars) || 3000;
   if (chars < minChars) reasons.push(`摘录 ${chars} 字 < ${minChars}`);
 

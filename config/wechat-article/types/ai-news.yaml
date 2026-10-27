@@ -27,7 +27,9 @@ style:
     - 不使用未经确认的传闻作为事实
 
 word_limit: 1500-2000
-pass_score: 78
+# 通过线：.env 的 PB_PASS_SCORE 一抬就统一四类（无人值守调闸门），不设时用本类型的值。
+# 审稿轮次不在这里写——单源 defaults.yaml review.max_rounds（PB_REVIEW_ROUNDS）。
+pass_score: "${PB_PASS_SCORE:-78}"
 scoring_criteria:
   - id: timeliness
     name: 时效与新闻性
@@ -55,10 +57,6 @@ topic:
   fresh_days: 7        # 小样本：采集日期窗口
   max_candidates: 40
   proposals: 3
-
-review:
-  max_rounds: 3
-  pass_score: 78
 
 prompts:
   outline_extra: "纲要必须区分「已知事实」「待确认信息」「作者判断」三类内容。"

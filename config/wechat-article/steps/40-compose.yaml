@@ -1,0 +1,104 @@
+# 组稿阶段（04）：去 AI 化 + 配图两条分支并发执行，都结束后组装成可发布稿。
+#
+# 并发依据：去 AI 化只读 03-step/reviewed.md；配图只依赖 02-step/outline.json 的
+# image_plan 和图片通道，两者互不依赖。等两边都结束再把图片替换进润色稿。
+# 图片内部也并发（defaults.yaml defaults.illustrations.concurrency，默认 2）。
+# 去 AI 化失败时退回审稿稿继续配图，不阻塞发布；配图失败按 on_failure 保留或注释标记。
+# 图片之间并发（defaults.yaml defaults.illustrations.concurrency，默认 2），
+# 每张图内部的通道按 primary → fallback 串行降级（ModelScope 主选，Pollinations 只兜底）。
+# 去 AI 化的改写质量由代码本地判定（逐字重叠率 / 字数区间 / 原稿数字保全），
+# 不合格换一次采样重调，上限见 models.de_ai.options.retry_limit。
+# 改写强度分三档（handler_options.level 选档，--de-ai-level 与类型层可覆盖）：
+#   light 只换词、standard 改到句子、deep 整篇重述；
+#   每档自带提示词 id、重叠上限与采样参数（handler_options.levels + models.de_ai.levels）。
+# 三档共同的硬约束（与档位无关，由脚本判定）：字数落在 type.length 区间、原稿数字全部保留、
+# frontmatter 与小节标题与配图标记不变。enabled: false 才是关闭去 AI 化（无 off 档）。
+# 本节点的三个运行开关都写成 ${PB_*:-默认值}，无人值守时只改 .env（口径同 defaults.yaml）：
+#   PB_DE_AI_ENABLED / PB_DE_AI_LEVEL / PB_IMAGES_ENABLED。
+# expandEnv 替换出来是字符串，加载期 scripts/lib/steps.mjs 把 enabled 归成真布尔
+# （false 用 toBool 判，"false" 不会被 !== false 当成开）。
+# 产物：04-result.json + 04-step/{polished.md, images.json, composed.md, images/}。
+# key = step_name。模型调用统一写 models: { <调用名>: { id, prompt / schema, options } }；
+# 本阶段两个节点都不在调用级写 prompt：de_ai 按档位出文案（handler_options.levels.<档>.prompt），
+# image_generation 没有模型调用（配图提示词模板写在节点 prompt）。
+
+steps:
+  de_ai:
+    label: 去 AI 化
+    description: 把 AI 味重的表达改成自然、具体、有人味的中文；不改事实、结构、frontmatter 和配图标记。失败时退回审稿稿。
+    stage: compose
+    enabled: "${PB_DE_AI_ENABLED:-true}"
+    modes: [auto, manual, run, compose]
+    handler: builtin:de_ai
+    models:
+      # 档位（levels.<档>.options）在节点默认值上做增量覆盖，规则同轮次覆盖；
+      # 运行时优先级 --model > rounds > levels > 这里默认 > type.model。
+      # 9b（llm.local）实测只做同义替换，禁用词原样保留，改用 35b 对比效果。
+      de_ai:
+        id: llm.large
+        options:
+          timeout: 900000
+          retry_limit: 3
+        levels:
+          # 轻档只做局部替换，一轮出稿即可（重试反而会把稿子改回原样）。
+          light:
+            options:
+              retry_limit: 1
+          # 深档允许推倒重述，采样温度调高，靠多次重试压重叠率。
+          deep:
+            options:
+              temperature: 0.9
+    handler_options:
+      # 选档：light / standard / deep。关闭去 AI 化用上面的 enabled: false。
+      # 当前策略：功能保持打开但用最低档先跑起来——轻档只做局部替换，读起来与原稿
+      # 最接近，出稿风险（整篇复读、字数/数字漂移）最低；闸门不合格照样发稿，
+      # 效果靠后续提示词迭代再往 standard/deep 抬。临时想改强度用 --de-ai-level，
+      # 无人值守改 .env 的 PB_DE_AI_LEVEL（大小写敏感：写 Light 会当成未定义档位抛错）。
+      level: "${PB_DE_AI_LEVEL:-light}"
+      # 与原稿 20 字窗口逐字重叠上限：超过即判定"改写不足（整篇复读）"。
+      # 25 次真实 35b 调用：整篇复读在 0.75 以上，合格改写在 0.5 以下。
+      # 提示词 id 与阈值一一对应，档位缺 prompt 或阈值越界都在运行时抛错。
+      levels:
+        light:
+          prompt: revision.de_ai_light
+          max_verbatim_overlap: 0.85
+        standard:
+          prompt: revision.de_ai
+          max_verbatim_overlap: 0.5
+        deep:
+          prompt: revision.de_ai_deep
+          max_verbatim_overlap: 0.35
+    input_format:
+      article: "string"
+      style: "string?"
+    output_format:
+      article: "string（Markdown）"
+    artifacts:
+      reads: ["03-step/reviewed.md"]
+      writes: ["04-step/polished.md"]
+    depends_on: [scoring]
+
+  image_generation:
+    label: 生成配图
+    description: 根据纲要的 image_plan 生成封面和正文图（内部并发）；与去 AI 化并发，全部失败也保留正文标记。
+    stage: compose
+    # enabled: false = 整条配图分支跳过（不调用任何图片通道），正文里的 [[img:N]] 按
+    # illustrations.on_failure 处理；产物记 images_skipped: true。
+    enabled: "${PB_IMAGES_ENABLED:-true}"
+    modes: [auto, manual, run, compose]
+    handler: builtin:generate_images
+    # 无模型调用（图片通道不是 llm/systemone 调用），但两个配置点都真驱动运行：
+    # prompt = 发给图片模型的 prompt 模板（prompts/revision.yaml → image_generation，
+    #   由 composePrompt 渲染，缺了直接抛错，代码不留副本）；
+    # schema = 落 04-step/images.json 前的结构校验（不合格只警告，不阻塞组稿）。
+    # 通道、两种尺寸的场景与并发、失败策略统一在 defaults.yaml illustrations 里配置。
+    prompt: revision.image_generation
+    schema: revision.image_generation
+    # 04-result.json 本体的校验契约（信封 + polish{} + 配图三个数）：与上面 schema
+    # 校验的 04-step/images.json 是两份产物，各用各的契约；不合格只警告，结果记 04-result.json#validation。
+    result_schema: compose.result
+    artifacts:
+      # composed.md 由入口在两路并发都结束后组装；图片本身只依赖 outline 的 image_plan。
+      reads: ["02-step/outline.json", "03-step/reviewed.md"]
+      writes: ["04-step/images.json", "04-step/composed.md", "04-step/images/", "04-result.json"]
+    depends_on: [scoring]

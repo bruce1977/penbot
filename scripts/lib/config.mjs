@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
-import { expandEnv } from "./env.mjs";
+import { expandEnv, needNumber, toBool, toNumber } from "./env.mjs";
 
 /**
  * 功能配置布局：入口注入自己的 feature 名，共享 lib 不持有具体功能路径。
@@ -152,6 +152,27 @@ export function normalizeConfig(config, root = process.cwd()) {
     ...(defaults.knowledge || {}),
     use_weknora: toBool(defaults.knowledge?.use_weknora, true),
   };
+  // doctor 读 config.defaults.publish，运行时读类型合并后的 publish —
+  // 先把 defaults 段的开关归成真布尔，两边口径才一致。
+  defaults.publish = normalizePublish(defaults.publish);
+  // defaults.yaml 里可翻转的阈值同样写成 `${PB_*:-默认}`（由 .env 抬起），expandEnv 之后是字符串。
+  // doctor 读 defaults 段、运行时读类型合并后的值，先把 defaults 归成数字，两边口径才一致；
+  // 类型自己写的值在 normalizeType 里归一。
+  defaults.review = coerceNumbers(defaults.review, {
+    max_rounds: "defaults.review.max_rounds",
+    pass_score: "defaults.review.pass_score",
+  });
+  defaults.knowledge = coerceNumbers(defaults.knowledge, {
+    max_sources: "defaults.knowledge.max_sources",
+    excerpt_chars: "defaults.knowledge.excerpt_chars",
+    max_file_bytes: "defaults.knowledge.max_file_bytes",
+  });
+  defaults.illustrations = coerceNumbers(defaults.illustrations, {
+    concurrency: "defaults.illustrations.concurrency",
+    min: "defaults.illustrations.min",
+    max: "defaults.illustrations.max",
+    count: "defaults.illustrations.count",
+  });
   const types = (config.types || []).map((type) => normalizeType(type, defaults, root, config));
   const ids = new Set();
   for (const type of types) {
@@ -262,9 +283,12 @@ function normalizeClassifier(classifier = {}) {
   }
   return {
     enabled: toBool(classifier.enabled, true),
-    question: classifier.question || "article_type",
-    topic_question: classifier.topic_question || "topic_pick",
-    check_question: classifier.check_question || "review_check",
+    // 三个问题名单源 defaults.yaml classifier.*（三个判定入口都用 needBehavior 要求它们）。
+    // 这里不再铺 "article_type"/"topic_pick"/"review_check" 的同值副本：defaults.yaml 三个键
+    // 都写死了，副本一旦和配置取值不同，判定请求会问一个配置文件里根本不存在的问题。
+    question: classifier.question,
+    topic_question: classifier.topic_question,
+    check_question: classifier.check_question,
     default_type: classifier.default_type || "",
   };
 }
@@ -272,26 +296,31 @@ function normalizeClassifier(classifier = {}) {
 function normalizeType(type, defaults, root, config) {
   const id = String(type.id || "").trim();
   if (!id) throw new Error("存在缺少 id 的文章类型");
+  // 评稿/修正/判断的模型调用单源在 steps 节点（统一标准见根目录 AGENTS.md）：
+  // type 层写 review.model 不会有任何效果，加载期直接报错而不是静默忽略。
+  if (type.review?.model !== undefined) {
+    throw new Error(
+      `类型 ${id} 的 review.model 已废弃：审稿环节各调用的模型只在 config/wechat-article/steps/30-review.yaml 的 models.<调用名> 配置`,
+    );
+  }
 
   const knowledge = {
-    source: "local",
-    max_sources: 8,
-    excerpt_chars: 1800,
-    lookback_days: 365,
-    max_file_bytes: 400000,
     ...(defaults.knowledge || {}),
     ...(type.knowledge || {}),
   };
+  // max_sources 由 `${PB_KNOWLEDGE_MAX_SOURCES:-8}` 抬起 → 归成数字，
+  // 下游（检索条数、weknora.match_count、充足性闸门）拿到的都是 number。
+  // 这里不再铺 source/max_sources/excerpt_chars/max_file_bytes 的同值副本：
+  // 四项都在 defaults.yaml defaults.knowledge 写着，副本只会让改配置不生效。
+  for (const key of ["max_sources", "excerpt_chars", "max_file_bytes"]) {
+    if (knowledge[key] === undefined) continue;
+    knowledge[key] = needNumber(knowledge[key], `类型 ${id} 的 knowledge.${key}`);
+  }
   // 通道 2 外部检索：嵌套合并，类型文件可只覆盖个别阈值。
   // model 不是模型调用（opencode 工具节点自带模型），配置单源在 defaults.yaml web-search.model。
+  // 各阈值同样不吃这里的默认值：真正发起检索时由 web-search.mjs 逐项要求
+  // （未启用本通道就不需要配全，见 collectWebSearchSources 的 enabled 判定）。
   knowledge["web-search"] = {
-    enabled: false,
-    model: "",
-    max_queries: 2,
-    max_per_query: 3,
-    max_sources: 6,
-    excerpt_chars: 800,
-    timeout_ms: 600000,
     ...(defaults.knowledge?.["web-search"] || {}),
     ...(type.knowledge?.["web-search"] || {}),
   };
@@ -303,16 +332,15 @@ function normalizeType(type, defaults, root, config) {
   // 新写法：knowledge_source 直接写在类型顶层。
   if (type.knowledge_source) knowledge.source = type.knowledge_source;
   knowledge.weknora = {
-    enabled: false,
+    // 只保留"没配 = 空"的形状归一：source/enabled/base_url/kb_ids 都参与下面的启用判定。
+    // 端点参数（auth_header / timeout_ms）单源 defaults.yaml defaults.knowledge.weknora，
+    // 缺了由 knowledge.mjs 在真正请求前抛错点名配置路径；原来这里的 "X-API-Key"/30000
+    // 和 defaults.yaml 同值，改配置不生效。match_count 是**继承**不是同值默认：
+    // 它与本地检索共用一个条数上限，PB_KNOWLEDGE_MAX_SOURCES 一改两边都变。
     base_url: "",
     api_key: "",
-    auth_header: "X-API-Key",
     kb_ids: [],
-    kb_names: {},
-    match_count: knowledge.max_sources || 8,
-    vector_threshold: 0,
-    keyword_threshold: 0,
-    timeout_ms: 30000,
+    match_count: knowledge.max_sources,
     ...(defaults.knowledge?.weknora || {}),
     ...(type.knowledge?.weknora || {}),
     ...(type.weknora || {}),
@@ -341,31 +369,49 @@ function normalizeType(type, defaults, root, config) {
   }
 
   const review = deepMerge(defaults.review || {}, type.review || {});
-  review.max_rounds = clamp(review.max_rounds ?? 3, 1, 5);
-  review.pass_score = type.pass_score ?? review.pass_score ?? 80;
-  review.correct_cn = {
-    enabled: true,
-    endpoint: "/api/pipeline",
-    auth_header: "X-Auth-Key",
-    apply: "issues",
-    timeout_ms: 180000,
-    fallback_llm: true,
-    ...(defaults.review?.correct_cn || {}),
-    ...(type.review?.correct_cn || {}),
-  };
+  // 轮次与通过线都可由 .env 抬起（defaults.yaml 与 types 里的 `${PB_*:-默认}`）；
+  // expandEnv 之后是字符串，这里归成数字再交给 clamp。
+  // 原来这里的 `?? 3` / `?? 80` 是和 defaults.yaml 同值的第二份真相：抬 PB_PASS_SCORE
+  // 只改配置不生效的那类问题就是这么来的。现在缺值不在这里兜，审稿循环用到时抛错点名配置路径。
+  if (review.max_rounds !== undefined) {
+    review.max_rounds = clamp(needNumber(review.max_rounds, `类型 ${id} 的 defaults.review.max_rounds`), 1, 5);
+  }
+  // 通过线只在这里解析一次：顶层 pass_score > 类型/defaults 的 review.pass_score > 旧写法
+  // scoring.pass_score。原来下面 scoring.pass_score 又各自算一遍带旧写法的链，两条链的取值
+  // 只在「类型只写了 scoring.pass_score」时不同——那种写法下 review.pass_score 是 undefined，
+  // 审稿循环会抛错，而展示层却看得到分数。合成一条链后 scoring.pass_score 只是别名。
+  const passScore = toNumber(type.pass_score, `类型 ${id} 的 pass_score`)
+    ?? toNumber(review.pass_score, `类型 ${id} 的 defaults.review.pass_score`)
+    ?? toNumber(type.scoring?.pass_score, `类型 ${id} 的 scoring.pass_score`);
+  if (passScore !== undefined) review.pass_score = passScore;
+  // 核稿服务（correct-cn）的端点、鉴权头、超时与重试全部单源 defaults.yaml
+  // defaults.review.correct_cn（auth_header 原来这里写的是 "X-Auth-Key"，而 defaults.yaml
+  // 早已改成 Authorization——两份副本并存时，改配置的一方永远赢不了）。
+  // 这里只把 enabled 归成真布尔；必填项缺失由 corrector.mjs 在发请求前抛错点名配置路径。
+  review.correct_cn = { ...(review.correct_cn || {}), enabled: toBool(review.correct_cn?.enabled, false) };
 
   const illustrations = deepMerge(defaults.illustrations || {}, type.illustrations || {});
+  // 配图并发数可由 `${PB_IMAGE_CONCURRENCY:-2}` 抬起：这里只把字符串归成数字，
+  // 缺失/非法值留给 comm 模块的下限兜底（至少 1 个 worker，否则队列永远跑不完）。
+  const concurrency = toNumber(illustrations.concurrency, `类型 ${id} 的 illustrations.concurrency`);
+  if (concurrency !== undefined) illustrations.concurrency = concurrency;
   Object.assign(illustrations, normalizeImageCount(type.image_count));
   if (type.image_position_format) illustrations.position_format = String(type.image_position_format);
-  illustrations.min = clamp(illustrations.min ?? 1, 1, 5);
-  illustrations.max = clamp(illustrations.max ?? 5, illustrations.min, 5);
-  if (illustrations.count !== undefined) {
-    illustrations.count = clamp(illustrations.count, illustrations.min, illustrations.max);
-  }
+  // 张数区间不再铺 `?? 1` / `?? 5` 的同值副本（defaults.yaml 写的就是 1/5，那份副本只会掩盖配置）：
+  // 这里只把写出来的值归成数字并夹进 1-5 的设计区间；缺值不在这里兜，
+  // 由 comm/wechat-illustrate.mjs 在真正排张数时抛错点名配置路径。
+  const illMin = illustrations.min === undefined ? undefined : clamp(needNumber(illustrations.min, `类型 ${id} 的 illustrations.min`), 1, 5);
+  const illMax = illustrations.max === undefined ? undefined : clamp(needNumber(illustrations.max, `类型 ${id} 的 illustrations.max`), illMin ?? 1, 5);
+  const illCount = illustrations.count === undefined ? undefined : clamp(needNumber(illustrations.count, `类型 ${id} 的 illustrations.count（image_count.default）`), illMin ?? 1, illMax ?? 5);
+  if (illMin !== undefined) illustrations.min = illMin;
+  if (illMax !== undefined) illustrations.max = illMax;
+  if (illCount !== undefined) illustrations.count = illCount;
 
-  const publish = deepMerge(defaults.publish || {}, type.publish || {});
-  publish.email = { ...(defaults.publish?.email || {}), ...(type.publish?.email || {}) };
-  publish.wechat = { ...(defaults.publish?.wechat || {}), ...(type.publish?.wechat || {}) };
+  const publish = normalizePublish({
+    ...deepMerge(defaults.publish || {}, type.publish || {}),
+    email: { ...(defaults.publish?.email || {}), ...(type.publish?.email || {}) },
+    wechat: { ...(defaults.publish?.wechat || {}), ...(type.publish?.wechat || {}) },
+  });
 
   const knowledgeDirs = (Array.isArray(type.knowledge_base_path)
     ? type.knowledge_base_path
@@ -375,7 +421,7 @@ function normalizeType(type, defaults, root, config) {
     .filter(Boolean)
     .map((dir) => path.resolve(root, String(dir)));
 
-  const length = normalizeWordLimit(type.word_limit ?? type.length);
+  const length = normalizeWordLimit(type.word_limit ?? type.length, `类型 ${id} 的 word_limit`);
   const criteria = Array.isArray(type.scoring_criteria)
     ? type.scoring_criteria
     : Array.isArray(type.scoring?.dimensions)
@@ -396,7 +442,8 @@ function normalizeType(type, defaults, root, config) {
     style,
     length,
     scoring: {
-      pass_score: type.pass_score ?? type.scoring?.pass_score ?? review.pass_score,
+      // 纯别名：值就是上面解析好的 review.pass_score，不再自己算一遍优先级。
+      pass_score: review.pass_score,
       dimensions: criteria.map((dimension) => ({
         ...dimension,
         weight: Number(dimension.weight || 0) / totalWeight,
@@ -405,17 +452,34 @@ function normalizeType(type, defaults, root, config) {
     review,
     illustrations,
     publish,
-    topic: { keywords: [], exclude_keywords: [], candidates: 12, ...(type.topic || {}) },
+    // keywords/exclude_keywords 的空数组只是形状归一（读取端 .map/.join 前不必判空）；
+    // 候选条数单源 topic.max_candidates——旧的 candidates 别名没有任何类型写过，
+    // 这里的 12 只会让读取端的 `|| 15` 永远不生效，已删。
+    topic: { keywords: [], exclude_keywords: [], ...(type.topic || {}) },
     prompts: type.prompts || {},
-    model: type.model || defaults.model || "llm.local",
+    // 模型末位回退链：--model > 节点 models.<调用名>.id > type.model > defaults.model。
+    // 原来尾巴上还挂着 "llm.local"：defaults.yaml 明明写的是 llm.large，配置被删掉时
+    // 代码会静默换到另一个模型，那是第三份真相，已删（缺了由取 profile 时抛错）。
+    model: type.model || defaults.model,
     config,
   };
 }
 
-/** `1500` / `"800-1300"` / `{min,max,target}` → { min, max, target }。 */
-export function normalizeWordLimit(value) {
-  let min = 800;
-  let max = 2000;
+/**
+ * `1500` / `"800-1300"` / `{min,max,target}` → { min, max, target }。
+ *
+ * word_limit 在 types/README.md 里是必填项，所以这里不再垫 800-2000：
+ * 缺了或写成了无法解析的样子直接抛错。原来「解析不出来就用默认区间」会让
+ * `word_limit: 八百` 这种笔误静默变成 800-2000，而写作提示词与 de_ai 字数闸门
+ * 都以这个区间为准——那是拿代码默认值冒充配置。target 没写时取区间中点，
+ * 是纯推导（不是第二份真相）。
+ */
+export function normalizeWordLimit(value, where = "word_limit") {
+  if (value === undefined || value === null || value === "") {
+    throw new Error(`缺少配置项 ${where}：必填参数不留代码默认值（写法 1500 / "800-1300" / {min,max,target}）`);
+  }
+  let min;
+  let max;
   let target;
   if (typeof value === "number" && Number.isFinite(value)) {
     min = max = Math.round(value);
@@ -426,16 +490,21 @@ export function normalizeWordLimit(value) {
       max = Number(pair[2]);
     } else if (/^\d+$/.test(value.trim())) {
       min = max = Number(value.trim());
+    } else {
+      throw new Error(`${where} 无法解析成字数区间：${JSON.stringify(value)}`);
     }
-  } else if (value && typeof value === "object") {
-    min = Number(value.min ?? min);
-    max = Number(value.max ?? max);
-    if (value.target !== undefined) target = Number(value.target);
+  } else if (typeof value === "object") {
+    min = needNumber(value.min, `${where}.min`);
+    max = needNumber(value.max, `${where}.max`);
+    if (value.target !== undefined) target = needNumber(value.target, `${where}.target`);
+  } else {
+    throw new Error(`${where} 只支持数字、"min-max" 字符串或 {min,max,target}：${JSON.stringify(value)}`);
   }
-  if (!Number.isFinite(min) || min <= 0) min = 800;
-  if (!Number.isFinite(max) || max <= 0) max = 2000;
+  min = Math.round(min);
+  max = Math.round(max);
+  if (min <= 0 || max <= 0) throw new Error(`${where} 的字数区间必须为正数：${min}-${max}`);
   if (max < min) max = min;
-  return { min, max, target: Number.isFinite(target) ? target : Math.round((min + max) / 2) };
+  return { min, max, target: Number.isFinite(target) ? Math.round(target) : Math.round((min + max) / 2) };
 }
 
 /** `3` / `"1-5"` / `{min,max,default,cover}` → { min, max, count?, cover? }。 */
@@ -480,7 +549,9 @@ export function listTypes(config) {
 }
 
 export function getModelProfile(config, name) {
-  const id = name || config.defaults?.model || "llm.local";
+  // 没传 id 时回退 defaults.yaml 的 defaults.model；代码里不再垫 "llm.local"
+  // （那是第三份真相，且两个调用方都必须传 id）。找不到就在下面抛错点名 id。
+  const id = name || config.defaults?.model;
   if (id === "none") return { id: "none", provider: "none" };
   const models = config.models || {};
   let key = id;
@@ -535,10 +606,12 @@ export function validateConfig(config) {
     }
     if (type.length.min > type.length.max) issues.push(`${type.id}: word_limit.min 应小于等于 word_limit.max`);
     if (type.illustrations.min > type.illustrations.max) issues.push(`${type.id}: image_count.min 应小于等于 image_count.max`);
-    if (!hasModel(config, type.model)) issues.push(`${type.id}: model "${type.model}" 未在 models.yaml 中定义`);
-    if (!hasModel(config, type.review?.model || type.model)) {
-      issues.push(`${type.id}: review.model "${type.review?.model}" 未在 models.yaml 中定义`);
+    // 这三项都嵌在提示词的整句里（文风：{{tone}}。/ 目标读者：{{audience}}。/ 标题风格：{{title_style}}。），
+    // 代码里已经不再自创「清晰、克制」这类兜底文案：缺了就是空句子，必须在启动前点名。
+    for (const key of ["tone", "audience", "title_style"]) {
+      if (!type.style?.[key]) issues.push(`${type.id}: 缺少 style.${key}（写作/纲要/评稿/去 AI 化提示词直接引用它）`);
     }
+    if (!hasModel(config, type.model)) issues.push(`${type.id}: model "${type.model}" 未在 models.yaml 中定义`);
     if (type.knowledge.source !== "local") {
       const w = type.knowledge.weknora || {};
       if (!w.base_url) issues.push(`${type.id}: knowledge_source=${type.knowledge.source} 但未配置 weknora.base_url`);
@@ -595,13 +668,30 @@ export function validateWarnings(config) {
   return warnings;
 }
 
-/** Coerce JSON/env values ("true"/"false"/0/1) into a boolean. */
-function toBool(value, fallback = false) {
-  if (value === undefined || value === null || value === "") return fallback;
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value !== 0;
-  const text = String(value).trim().toLowerCase();
-  if (["false", "0", "no", "off", "disabled"].includes(text)) return false;
-  if (["true", "1", "yes", "on", "enabled"].includes(text)) return true;
-  return fallback;
+/**
+ * 三个投递开关（auto_publish / email.enabled / wechat.enabled）归成真布尔。
+ * defaults.yaml 把它们写成 `${PB_AUTO_PUBLISH:-false}` 等形式，由 .env 抬起；
+ * expandEnv 替换出来的是字符串，而读取端混用 `=== true`（入口）与真值判断（doctor），
+ * 不归一会让 "false" 在真值判断里当成开。
+ */
+function normalizePublish(publish = {}) {
+  const out = { ...publish, email: { ...(publish.email || {}) }, wechat: { ...(publish.wechat || {}) } };
+  out.auto_publish = toBool(out.auto_publish, false);
+  out.email.enabled = toBool(out.email.enabled, false);
+  out.wechat.enabled = toBool(out.wechat.enabled, false);
+  return out;
+}
+
+/**
+ * 按 labels 表把 env 抬起的数字字符串归成真数字：键不存在（或值为空串）就不动它，
+ * 让上层的默认值/类型层的值照常生效；写了但不是数字直接抛错。
+ */
+function coerceNumbers(obj, labels) {
+  const out = { ...(obj || {}) };
+  for (const [key, label] of Object.entries(labels)) {
+    if (out[key] === undefined) continue;
+    const n = toNumber(out[key], label);
+    if (n !== undefined) out[key] = n;
+  }
+  return out;
 }

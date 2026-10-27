@@ -208,6 +208,37 @@ export function lengthAction(wordCount, { min, max } = {}) {
 }
 
 /**
+ * 改写稿对原稿的逐字重叠率（0-1）：把两边都抹掉空白与 Markdown 符号，
+ * 再按 window 字滑窗（步长 step）统计有多少片段能在原稿里原样找到。
+ * 去 AI 化要的是「重新措辞」，重叠率高就是誊抄；禁用词计数测不出这种失效
+ * ——誊抄稿的禁用词数量和原稿一模一样。
+ */
+export function verbatimOverlap(source, revised, { window = 20, step = 5 } = {}) {
+  const key = (text) => String(text).replace(/[\s#*_`>|\[\]!-]/g, "");
+  const ref = key(source);
+  const out = key(revised);
+  if (out.length < window) return 0;
+  let hit = 0;
+  let total = 0;
+  for (let i = 0; i + window <= out.length; i += step) {
+    total += 1;
+    if (ref.includes(out.slice(i, i + window))) hit += 1;
+  }
+  return total ? hit / total : 0;
+}
+
+/**
+ * 原稿里写过、改写稿里找不到的数字（「事实不许丢」的本地判据，不花 token）。
+ * 用子串匹配：数字只要在任何位置重现就算保住（「3」会被「2023」认掉），
+ * 宁可漏报也不因改写稿换了一种写法而误报。
+ */
+export function missingNumbers(source, revised) {
+  const tokens = [...new Set(String(source).match(/\d[\d.,]*\d|\d/g) || [])];
+  const out = String(revised);
+  return tokens.filter((token) => !out.includes(token));
+}
+
+/**
  * Canonical image marker:
  *   [[img:1|图片说明|optional prompt]]
  * Legacy marker also supported:
@@ -242,8 +273,8 @@ function splitMarkerPayload(payload) {
   return [text.slice(0, pipe).trim(), text.slice(pipe + 1).trim()];
 }
 
-/** Replace every marker with an image or a failure placeholder. */
-export function replaceImageMarkers(markdown, replacements, { onFailure = "comment", format, plans = [] } = {}) {
+/** Replace every marker with an image or a placeholder explaining why it's missing. */
+export function replaceImageMarkers(markdown, replacements, { onFailure = "comment", failureNote = "配图生成失败", format, plans = [] } = {}) {
   const text = String(markdown || "");
   return text.replace(markerRegex(format), (whole, a, b, c, d) => {
     const index = Number(a || c);
@@ -257,7 +288,7 @@ export function replaceImageMarkers(markdown, replacements, { onFailure = "comme
     }
     if (onFailure === "keep") return whole;
     if (onFailure === "drop") return "";
-    return `<!-- 配图生成失败：${alt} -->`;
+    return `<!-- ${failureNote}：${alt} -->`;
   });
 }
 
@@ -487,18 +518,26 @@ export function imagePathForMarkdown(fileDir, imageFile) {
   return path.relative(fileDir, imageFile).split(path.sep).join("/");
 }
 
-/** Local markdown image sources in document order. */
-export function collectLocalImages(markdown, fileDir) {
-  const out = [];
-  const regex = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
-  let match;
-  while ((match = regex.exec(markdown))) {
-    const src = match[2];
-    if (/^(https?:)?\/\//i.test(src) || src.startsWith("data:")) continue;
-    const resolved = path.resolve(fileDir, decodeURI(src));
-    if (fs.existsSync(resolved)) out.push({ alt: match[1], src, file: resolved });
-  }
-  return out;
+/**
+ * 把正文里的本地图片引用改写成相对 toDir 的路径，同时返回每图的绝对路径。
+ * 用在 05：稿件从文章根目录挪进 05-step/ 后基准目录变了一层，
+ * 不改写的话外部发布器（wenyan CLI 按稿件文件所在目录解析相对路径）找不到图。
+ * 远程/缺失的图片原样保留。
+ */
+export function relocateLocalImages(markdown, fromDir, toDir) {
+  const images = [];
+  const text = String(markdown || "").replace(
+    /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
+    (whole, alt, src) => {
+      if (/^(https?:)?\/\//i.test(src) || src.startsWith("data:")) return whole;
+      const file = path.resolve(fromDir, decodeURI(src));
+      if (!fs.existsSync(file)) return whole;
+      const next = imagePathForMarkdown(toDir, file);
+      images.push({ alt, src: next, file });
+      return `![${alt}](${next})`;
+    },
+  );
+  return { markdown: text, images };
 }
 
 export { IMAGE_MARKER };

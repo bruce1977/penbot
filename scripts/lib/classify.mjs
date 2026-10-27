@@ -39,17 +39,73 @@
  *   checkRevisionNeeded    评稿结果 → 判断稿件是否还需要继续修改（done/continue）。
  *
  * 任何网络/解析问题都不抛出：返回 { ok:false, reason }，由调用方回退到
- * classifier.default_type。真正的“配置缺失”在 validate 里给警告。
+ * classifier.default_type。文案配置缺失是工程错误，抛出中断流程（见下一段）。
  *
- * 请求文案可配置：instructions（纯文本）与 state 模板（{{title}}/{{outline}}、
- * {{blocks}} 等占位符经 renderTemplate 渲染）来自 config/prompts/topic.yaml
- * 的 topic.classify_type、topic.select_best，经 promptById 取回；代码里的
- * 字符串只是缺省兜底。
+ * 请求文案单源 = 节点 models.<调用名>.prompt：调用方（入口的 systemOneCallConfig）
+ * 把它解析出的提示词块放进 cfg.prompt，其中 instructions（纯文本）与 state 模板
+ * （{{title}}/{{outline}}、{{blocks}} 等占位符经 renderTemplate 渲染）都来自
+ * config/prompts/；代码里不留提示词副本，缺 key 直接抛错（缺配置是配置说谎，
+ * 不能静默用默认文案跑起来）。
+ *
+ * 端点参数（base_url / model / endpoint / timeout_ms / max_retries）单源
+ * config/models.yaml，问题名单源 defaults.yaml classifier.*，闸门参数
+ * （escalate_below / min_confidence）单源 steps 节点 models.<调用名>.options：
+ * 这里只读不算，缺了就抛错点名配置路径——代码里写死过一份和配置不一致的值
+ * （timeout_ms 15000 vs models.yaml 60000/120000、model "jev-latest" 在任何配置里
+ * 都不存在，还进了留痕）。
  */
-import { promptById } from "./steps.mjs";
 import { renderTemplate } from "./template.mjs";
 
-export async function classifyArticle({ config, cfg: cfgArg, title, outline, logger, fetchImpl = fetch, mock = false, recorder, slot, deepSlot } = {}) {
+/** 行为参数（问题名）缺失：抛错点名 defaults.yaml，代码不留同值副本。 */
+function needBehavior(cfg, key) {
+  const value = String(cfg?.[key] ?? "").trim();
+  if (!value) throw new Error(`缺少判断模型行为参数：defaults.yaml classifier.${key}`);
+  return value;
+}
+
+/**
+ * 端点参数缺失：抛错点名 config/models.yaml（导出给调用方组装 cfg 时复用同一口径，
+ * where 用来点名具体模型 id）。
+ */
+export function needEndpointParam(cfg, key, where = "config/models.yaml systemone.*") {
+  const value = cfg?.[key];
+  if (value === undefined || value === null || String(value).trim() === "") {
+    throw new Error(`判断模型缺少 ${key}：${where}`);
+  }
+  return value;
+}
+
+/**
+ * 置信度闸门参数（escalate_below / min_confidence）单源 steps 节点
+ * models.<调用名>.options：缺了就抛错，代码不替配置决定「有没有闸门」。
+ * 不想要闸门就显式写 0（0-1 由 steps 加载期校验）。
+ */
+export function needGateParam(cfg, key, where = "steps 节点 models.<调用名>.options") {
+  const value = cfg?.[key];
+  if (value === undefined || value === null || value === "") {
+    throw new Error(`判断模型缺少 ${key}：${where}（不设闸门请写 0）`);
+  }
+  return Number(value);
+}
+
+/**
+ * 取提示词块里的一个字段：缺失即抛错，并指名是哪个 prompt id 没写全。
+ * where 用于区分同一块里的多个字段（如审稿去留的 done/continue 选项文案）。
+ */
+function promptText(prompt, key, promptId, where = key) {
+  const text = String(prompt?.[key] ?? "").trim();
+  if (!text) {
+    throw new Error(`缺少提示词字段 ${where}（${key}）：${promptId || "节点未声明 prompt id"}，在该功能 config/<feature>/prompts/ 注册表里补上`);
+  }
+  return text;
+}
+
+/** 渲染 state 模板并清掉 YAML 块标量留下的行尾空格。 */
+function renderState(prompt, promptId, vars) {
+  return renderTemplate(promptText(prompt, "state", promptId), vars).replace(/[ \t]+$/gm, "").trim();
+}
+
+export async function classifyArticle({ config, cfg: cfgArg, title, outline, logger, fetchImpl = fetch, mock = false, recorder, slot } = {}) {
   const cfg = cfgArg || config?.classifier || {};
   const types = (config?.types || []).filter((type) => type.enabled !== false);
 
@@ -60,18 +116,19 @@ export async function classifyArticle({ config, cfg: cfgArg, title, outline, log
   if (!types.length) return { ok: false, reason: "没有启用的文章类型" };
   if (!cfg.base_url) return { ok: false, reason: "未配置 SYSTEMONE_BASE_URL" };
 
-  const question = cfg.question || "article_type";
+  const question = needBehavior(cfg, "question");
   const lightBody = buildSystemOneBody({
     types,
     title,
     outline,
     question,
-    model: cfg.model || "jev-latest",
-    prompt: promptById(config?.steps, "topic.classify_type"),
+    model: cfg.model,
+    prompt: cfg.prompt || {},
+    promptId: cfg.prompt_id || "",
   });
   if (!lightBody.state) return { ok: false, reason: "缺少标题或提纲" };
 
-  return twoPassChoice({ cfg, lightBody, options: types, question, logger, fetchImpl, recorder, label: "classify_type", slot, deepSlot });
+  return twoPassChoice({ cfg, lightBody, options: types, question, logger, fetchImpl, recorder, label: "classify_type", slot });
 }
 
 /**
@@ -93,13 +150,14 @@ export async function selectBestTopic({ config, cfg: cfgArg, topics = [], logger
   if (topics.length === 1) return { ok: true, index: 0, confidence: 1, model: "single-candidate", escalated: false };
   if (!cfg.base_url) return { ok: false, reason: "未配置 SYSTEMONE_BASE_URL" };
 
-  const question = cfg.topic_question || "topic_pick";
+  const question = needBehavior(cfg, "topic_question");
   const options = topics.map((_, i) => ({ id: String(i + 1) }));
   const lightBody = buildTopicChoiceBody({
     topics,
     question,
-    model: cfg.model || "jev-latest",
-    prompt: promptById(config?.steps, "topic.select_best"),
+    model: cfg.model,
+    prompt: cfg.prompt || {},
+    promptId: cfg.prompt_id || "",
   });
 
   const result = await twoPassChoice({ cfg, lightBody, options, question, logger, fetchImpl, recorder, label: "select_best", slot });
@@ -114,8 +172,8 @@ export async function selectBestTopic({ config, cfg: cfgArg, topics = [], logger
 /**
  * 审稿循环去留判定：评稿结果（总分/结论/剩余问题）→ systemone 判断
  * 是否还需要继续修改。选项 done / continue，返回 { ok, decision }；
- * 失败不抛出，由调用方回退到 total >= pass_score 规则。
- * 文案在 prompts/review.yaml 的 check（id review.check，代码取）。
+ * 失败不抛出，由调用方回退到 composite_score >= pass_score 规则。
+ * 文案来自节点 models.check.prompt（调用方解析后放进 cfg.prompt）。
  */
 export async function checkRevisionNeeded({ config, cfg: cfgArg, score, wordCount, length, passScore, round, logger, fetchImpl = fetch, mock = false, recorder, slot } = {}) {
   const cfg = cfgArg || config?.classifier || {};
@@ -126,7 +184,7 @@ export async function checkRevisionNeeded({ config, cfg: cfgArg, score, wordCoun
   if (!cfg.enabled) return { ok: false, reason: "classifier.disabled" };
   if (!cfg.base_url) return { ok: false, reason: "未配置 SYSTEMONE_BASE_URL" };
 
-  const question = cfg.check_question || "review_check";
+  const question = needBehavior(cfg, "check_question");
   const options = [{ id: "done" }, { id: "continue" }];
   const lightBody = buildReviewCheckBody({
     score,
@@ -135,8 +193,9 @@ export async function checkRevisionNeeded({ config, cfg: cfgArg, score, wordCoun
     passScore,
     round,
     question,
-    model: cfg.model || "jev-latest",
-    prompt: promptById(config?.steps, "review.check"),
+    model: cfg.model,
+    prompt: cfg.prompt || {},
+    promptId: cfg.prompt_id || "",
   });
 
   const result = await twoPassChoice({ cfg, lightBody, options, question, logger, fetchImpl, recorder, label: "review_check", slot });
@@ -144,24 +203,28 @@ export async function checkRevisionNeeded({ config, cfg: cfgArg, score, wordCoun
   return { ...result, decision: result.type };
 }
 
-/** 一次轻量 → 置信度低于 escalate_below 时用重模型再判一次；二次失败保留一次结果。 */
-async function twoPassChoice({ cfg, lightBody, options, question, logger, fetchImpl, recorder, label, slot, deepSlot }) {
-  const lightModel = cfg.model || "jev-latest";
+/** 一次轻量 → 置信度低于节点 options.escalate_below 时用重模型再判一次；二次失败保留一次结果。
+ *  二次判断属同一子步骤的「尝试」（留痕文件名带 (2)，轮次不推进），沿用同一 slot。 */
+async function twoPassChoice({ cfg, lightBody, options, question, logger, fetchImpl, recorder, label, slot }) {
+  const lightModel = cfg.model || "";
+  const lightModelName = lightModel || "端点默认模型";
   const ask = { options, question, logger, fetchImpl, recorder, label };
 
   const first = await askSystemOne({ ...ask, cfg, model: lightModel, body: lightBody, slot });
   if (!first.ok) return first;
 
-  const escalateBelow = Number(cfg.escalate_below ?? 0.65);
   const deep = cfg.deep;
-  if (!deep?.model || deep.model === lightModel || first.confidence >= escalateBelow) {
+  if (!deep?.model || deep.model === lightModel) return { ...first, escalated: false };
+  // 只有真会升级（配了不同的重模型）才需要闸门值；缺了就抛错，代码不替配置决定阈值。
+  const escalateBelow = needGateParam(cfg, "escalate_below");
+  if (first.confidence >= escalateBelow) {
     return { ...first, escalated: false };
   }
 
   logger?.info?.(
-    `一次判断（${lightModel}）置信度 ${first.confidence} 低于 ${escalateBelow}，升级二次判断（${deep.model}）`,
+    `一次判断（${lightModelName}）置信度 ${first.confidence} 低于 ${escalateBelow}，升级二次判断（${deep.model}）`,
   );
-  const second = await askSystemOne({ ...ask, cfg: { ...cfg, ...deep }, model: deep.model, body: { ...lightBody, model: deep.model }, slot: deepSlot || slot });
+  const second = await askSystemOne({ ...ask, cfg: { ...cfg, ...deep }, model: deep.model, body: { ...lightBody, model: deep.model }, slot, attempt: 2 });
   if (!second.ok) {
     logger?.warn?.(`二次判断不可用（${second.reason || "unknown"}），保留一次判断结果`);
     return { ...first, escalated: true };
@@ -169,15 +232,21 @@ async function twoPassChoice({ cfg, lightBody, options, question, logger, fetchI
   return { ...second, escalated: true, first };
 }
 
-/** 单次 /v1/systemone choice 查询：发请求（带重试）、解析答案；问题都不抛出。 */
-async function askSystemOne({ cfg, model, body, options, question, logger, fetchImpl, recorder, label, slot }) {
-  const url = systemOneUrl(cfg.base_url, cfg.endpoint);
+/** 单次 /v1/systemone choice 查询：发请求（带重试）、解析答案；问题都不抛出。
+ *  端点参数在这一步之前取（needEndpointParam 缺字段抛错属工程错误，要冒泡出去）；
+ *  try 里的 catch 只吞网络/解析问题，不能把「配置没写」降级成判断模型不可用。 */
+async function askSystemOne({ cfg, model, body, options, question, logger, fetchImpl, recorder, label, slot, attempt }) {
+  const where = cfg.model_id ? `config/models.yaml ${cfg.model_id}` : "config/models.yaml systemone.*";
+  const url = systemOneUrl(cfg.base_url, needEndpointParam(cfg, "endpoint", where));
+  const timeoutMs = Number(needEndpointParam(cfg, "timeout_ms", where));
+  const maxRetries = Math.max(0, Number(needEndpointParam(cfg, "max_retries", where)));
   const started = Date.now();
   const record = (extra) => {
     if (!recorder) return;
     recorder.record({
       label: label || "systemone",
       slot,
+      attempt,
       provider: "systemone",
       model,
       duration_ms: Date.now() - started,
@@ -186,7 +255,15 @@ async function askSystemOne({ cfg, model, body, options, question, logger, fetch
     });
   };
   try {
-    const { res, text } = await postWithRetry({ fetchImpl, url, body, cfg, logger });
+    const { res, text } = await postWithRetry({
+      fetchImpl,
+      url,
+      body,
+      api_key: cfg.api_key,
+      timeoutMs,
+      maxRetries,
+      logger,
+    });
     record({ response: text, error: res.ok ? undefined : `HTTP ${res.status}` });
     if (!res.ok) {
       const detail = errorMessage(text);
@@ -217,17 +294,18 @@ async function askSystemOne({ cfg, model, body, options, question, logger, fetch
  * 分类 + 回退。返回 { typeId, source, result }：
  *   source = classifier | default | none
  */
-export async function classifyOrFallback({ config, cfg: cfgArg, title, outline, logger, mock = false, recorder, slot, deepSlot } = {}) {
+export async function classifyOrFallback({ config, cfg: cfgArg, title, outline, logger, mock = false, recorder, slot } = {}) {
   const cfg = cfgArg || config?.classifier || {};
   const fallbackId =
     cfg.default_type && config.types.some((type) => type.id === cfg.default_type && type.enabled !== false)
       ? cfg.default_type
       : "";
 
-  const result = await classifyArticle({ config, cfg, title, outline, logger, mock, recorder, slot, deepSlot });
+  const result = await classifyArticle({ config, cfg, title, outline, logger, mock, recorder, slot });
   if (result.ok && result.type) {
-    if (result.confidence < Number(cfg.min_confidence ?? 0.5)) {
-      logger?.warn?.(`判断模型置信度 ${result.confidence} 低于 ${cfg.min_confidence}，按 ${fallbackId || "未分类"} 处理`);
+    const minConfidence = needGateParam(cfg, "min_confidence", "steps 节点 classify_type.models.classify.options");
+    if (result.confidence < minConfidence) {
+      logger?.warn?.(`判断模型置信度 ${result.confidence} 低于 ${minConfidence}，按 ${fallbackId || "未分类"} 处理`);
       if (fallbackId) return { typeId: fallbackId, source: "default", result };
       return { typeId: "", source: "none", result };
     }
@@ -243,24 +321,14 @@ export async function classifyOrFallback({ config, cfg: cfgArg, title, outline, 
 }
 
 /** 组装 /v1/systemone 请求体：一个 choice 问题，选项就是启用的文章类型。 */
-export function buildSystemOneBody({ types, title, outline, question = "article_type", model, prompt = {} } = {}) {
-  let state;
-  if (prompt.state) {
-    // 去掉 YAML 块缩进残留的行尾空格，保持 state 干净。
-    state = renderTemplate(prompt.state, { title: title || "", outline: outline || "" })
-      .replace(/[ \t]+$/gm, "")
-      .trim();
-  } else {
-    state = buildState({ title, outline });
-  }
+export function buildSystemOneBody({ types, title, outline, question = "article_type", model, prompt = {}, promptId = "" } = {}) {
   return {
     ...(model ? { model } : {}),
-    state,
+    state: renderState(prompt, promptId, { title: title || "", outline: outline || "" }),
     questions: {
       [question]: {
         type: "choice",
-        instructions: (prompt.instructions || "").trim()
-          || "判断这篇公众号文章最适合归入哪个类型。只依据标题和提纲表达的内容与体裁，不要依据选项在列表中的顺序。",
+        instructions: promptText(prompt, "instructions", promptId),
         criteria: Object.fromEntries(types.map((type) => [type.id, describeType(type)])),
       },
     },
@@ -268,7 +336,7 @@ export function buildSystemOneBody({ types, title, outline, question = "article_
 }
 
 /** 组装选题判定请求体：选项是候选主题编号 1..N，评分与依据写进 state/criteria。 */
-export function buildTopicChoiceBody({ topics, question = "topic_pick", model, prompt = {} } = {}) {
+export function buildTopicChoiceBody({ topics, question = "topic_pick", model, prompt = {}, promptId = "" } = {}) {
   const blocks = topics.map((t, i) => {
     const lines = [`${i + 1}. 《${t.title || t.topic}》（写作模型评分 ${t.score ?? "未给出"}）`];
     if (t.thesis) lines.push(`   核心判断：${t.thesis}`);
@@ -276,23 +344,13 @@ export function buildTopicChoiceBody({ topics, question = "topic_pick", model, p
     if (t.source_hints?.length) lines.push(`   素材：${t.source_hints.join(" / ")}`);
     return lines.join("\n");
   });
-  let state;
-  if (prompt.state) {
-    // YAML 块标量解析后已去掉公共缩进，占位符替换按原样插入。
-    state = renderTemplate(prompt.state, { count: topics.length, blocks: blocks.join("\n\n") })
-      .replace(/[ \t]+$/gm, "")
-      .trim();
-  } else {
-    state = `候选主题（公众号选题，一次模型调用产出，按评分从高到低）：\n\n${blocks.join("\n\n")}`;
-  }
   return {
     ...(model ? { model } : {}),
-    state,
+    state: renderState(prompt, promptId, { count: topics.length, blocks: blocks.join("\n\n") }),
     questions: {
       [question]: {
         type: "choice",
-        instructions: (prompt.instructions || "").trim()
-          || "这些是同一批候选选题，请选出最值得现在写的一个，返回其编号。依据：素材是否新、核心判断是否有信息量、标题是否具体不空泛。写作模型评分只作参考；编号只是标签，不要偏向任何编号。",
+        instructions: promptText(prompt, "instructions", promptId),
         criteria: Object.fromEntries(
           topics.map((t, i) => [String(i + 1), `《${t.title || t.topic}》：${t.topic || ""}`]),
         ),
@@ -302,10 +360,10 @@ export function buildTopicChoiceBody({ topics, question = "topic_pick", model, p
 }
 
 /** 组装审稿去留判定请求体：选项 done/continue，评稿结果渲染进 state。 */
-export function buildReviewCheckBody({ score, wordCount, length, passScore, round, question = "review_check", model, prompt = {} } = {}) {
+export function buildReviewCheckBody({ score, wordCount, length, passScore, round, question = "review_check", model, prompt = {}, promptId = "" } = {}) {
   const vars = {
     round,
-    total: score?.total ?? "未给出",
+    total: score?.composite_score ?? "未给出",
     pass_score: passScore ?? "未给出",
     verdict: score?.verdict ?? "未给出",
     word_count: wordCount,
@@ -315,50 +373,36 @@ export function buildReviewCheckBody({ score, wordCount, length, passScore, roun
       .join("\n") || "（无）",
     must_fix: (score?.must_fix || []).map((item, i) => `${i + 1}. ${item}`).join("\n") || "（无）",
   };
-  let state;
-  if (prompt.state) {
-    state = renderTemplate(prompt.state, vars).replace(/[ \t]+$/gm, "").trim();
-  } else {
-    state = `公众号文章审稿，第 ${round} 轮评稿结果：总分 ${vars.total}（通过线 ${vars.pass_score}），结论 ${vars.verdict}。篇幅：当前 ${wordCount} 字。剩余问题：\n${vars.issues}`;
-  }
   return {
     ...(model ? { model } : {}),
-    state,
+    state: renderState(prompt, promptId, vars),
     questions: {
       [question]: {
         type: "choice",
-        instructions: (prompt.instructions || "").trim()
-          || "判断这篇稿件是否还需要继续修改。done = 已达到可发表水准，剩余问题只是小瑕疵；continue = 还有必须修复的问题。只依据给出的评分与问题清单判断。",
+        instructions: promptText(prompt, "instructions", promptId),
         criteria: {
-          done: prompt.criteria_done || "已达到可发表水准：总分过线、结论 pass、无 high 级问题；剩余仅为可选优化。",
-          continue: prompt.criteria_continue || "仍需修改：存在 high 级问题或必须修改项；或结论为 revise 且问题具体可执行。",
+          done: promptText(prompt, "criteria_done", promptId, "done 选项文案"),
+          continue: promptText(prompt, "criteria_continue", promptId, "continue 选项文案"),
         },
       },
     },
   };
 }
 
-/** 把标题和提纲压成 SystemOne 的 state（纯文本，避免结构化字段名依赖）。 */
-export function buildState({ title, outline }) {
-  const heading = String(title || "").trim();
-  const body = formatOutline(outline);
-  const parts = [];
-  if (heading) parts.push(`标题：${heading}`);
-  if (body && body !== "（无）") parts.push(`提纲：\n${body}`);
-  return parts.join("\n\n");
-}
-
-/** 拼 SystemOne 地址：base_url 带 /v1 时不再重复拼 /v1。 */
-export function systemOneUrl(baseUrl, endpoint = "/v1/systemone") {
+/** 拼 systemone 地址：endpoint 由调用方从 models.yaml 取（缺了先抛错，这里不留第二份默认）。
+ *  base_url 带 /v1 时不再重复拼 /v1。 */
+export function systemOneUrl(baseUrl, endpoint) {
   const base = String(baseUrl || "").replace(/\/+$/, "");
-  const path = String(endpoint || "/v1/systemone");
+  const path = `/${String(endpoint).replace(/^\/+/, "")}`;
   if (!base) return path;
   if (base.endsWith("/v1") && path.startsWith("/v1/")) return `${base}${path.slice(3)}`;
-  return `${base}${path.startsWith("/") ? path : `/${path}`}`;
+  return `${base}${path}`;
 }
 
 export function normalizeClassifyResult(payload, types, cfg = {}) {
   if (!payload || typeof payload !== "object") return { ok: false, reason: "返回不是 JSON 对象" };
+  // question 由调用方（三个判定入口）显式传入；这里的默认值只服务直接调用本函数的
+  // 使用者，与上面三个 build* 的签名默认同口径（lib API 部分入参默认，不是配置兜底）。
   const question = cfg.question || "article_type";
   const answer = payload.answers?.[question];
   if (!answer || typeof answer !== "object") return { ok: false, reason: `answers 里没有 ${question}` };
@@ -375,7 +419,6 @@ export function normalizeClassifyResult(payload, types, cfg = {}) {
     confidence: Number.isFinite(rawConfidence) ? Math.max(0, Math.min(1, rawConfidence)) : 0,
     probabilities,
     scores: probabilities,
-    min_confidence: Number(cfg.min_confidence ?? 0.5),
   };
 }
 
@@ -392,17 +435,16 @@ function topProbability(probabilities) {
   return Object.entries(probabilities || {}).sort((a, b) => Number(b[1]) - Number(a[1]))[0]?.[0] || "";
 }
 
-async function postWithRetry({ fetchImpl, url, body, cfg, logger }) {
-  const maxRetries = Math.max(0, Number(cfg.max_retries ?? 2));
+async function postWithRetry({ fetchImpl, url, body, api_key, timeoutMs, maxRetries, logger }) {
   for (let attempt = 0; ; attempt += 1) {
     const res = await fetchImpl(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(cfg.api_key ? { Authorization: `Bearer ${cfg.api_key}` } : {}),
+        ...(api_key ? { Authorization: `Bearer ${api_key}` } : {}),
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(Number(cfg.timeout_ms || 15000)),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     const text = await res.text();
     if ((res.status === 429 || res.status === 503) && attempt < maxRetries) {

@@ -14,11 +14,19 @@ import { pathToFileURL } from "node:url";
 import fs from "node:fs";
 import path from "node:path";
 import { OpenCode } from "@opencode/client";
+import { needNumber } from "./env.mjs";
 import { ensureDir, slugify } from "./fsx.mjs";
 import { assessSourceSufficiency } from "./knowledge.mjs";
 
 const SERVE_TIMEOUT_MS = 30000;
-const SERVE_MAX_LIFETIME_MS = 600000; // serve 最长存活 10 分钟，防止异常路径下服务器卡死
+/**
+ * websearch 单组检索超时：实配置单源 = defaults.yaml `knowledge.web-search.timeout_ms`，
+ * 这里只是该项缺省时的兜底，不再另设互相矛盾的第二份默认值。
+ * 取值依据：单组实测 40–170s（见 docs/wechat-article/materials-collection.md），180s 覆盖上限。
+ */
+export const DEFAULT_SEARCH_TIMEOUT_MS = 180000;
+/** serve 存活看门狗余量：启动 + 建会话 + 收尾轮询；必须大于它，否则看门狗会先把在跑的检索掐死 */
+const SERVE_LIFETIME_SLACK_MS = 60000;
 export const DEFAULT_SEARCH_MODEL = "ollama-local/qwen3.5:9b";
 
 /** 模型参数归一化：字符串 "provider/model" 或对象；缺省读环境变量 OPENCODE_DEFAULT_MODEL，再落默认 9b */
@@ -33,15 +41,39 @@ function parseModel(model) {
 }
 
 /**
- * 启动一个临时 `opencode serve` 进程并解析监听地址与服务密码。
- * 返回 { baseUrl, password, close() }；超过 maxLifetimeMs 未关闭会被自动杀掉。
+ * opencode 可执行文件：优先本仓库 `node_modules/.bin`（package.json 声明的 @opencode/cli，
+ * 版本被锁住），没有再退回 PATH 上的全局安装。
  */
-export async function startServe({ port, timeoutMs = SERVE_TIMEOUT_MS, maxLifetimeMs = SERVE_MAX_LIFETIME_MS } = {}) {
+export function resolveOpencodeBin(
+  root = path.resolve(import.meta.dirname, "..", ".."),
+) {
+  const bin = path.join(root, "node_modules", ".bin", process.platform === "win32" ? "opencode.cmd" : "opencode");
+  return fs.existsSync(bin) ? bin : "opencode";
+}
+
+/**
+ * 启动一个临时 `opencode serve` 进程并解析监听地址与服务密码。
+ * 返回 { baseUrl, password, close() }；超过 maxLifetimeMs 未关闭会被自动杀掉（防孤儿服务）。
+ * maxLifetimeMs 由调用方按「检索预算 + 余量」传入，必须大于单组检索超时，否则看门狗会掐断在跑的请求。
+ */
+export async function startServe({
+  port,
+  bin,
+  timeoutMs = SERVE_TIMEOUT_MS,
+  maxLifetimeMs = DEFAULT_SEARCH_TIMEOUT_MS + SERVE_LIFETIME_SLACK_MS,
+  logger,
+} = {}) {
   port = port || 20000 + Math.floor(Math.random() * 20000);
-  const proc = spawn("opencode", ["serve", `--hostname=127.0.0.1`, `--port=${port}`], {
-    shell: process.platform === "win32",
-    windowsHide: true,
-  });
+  const serveBin = bin || resolveOpencodeBin();
+  const serveArgs = ["serve", `--hostname=127.0.0.1`, `--port=${port}`];
+  // Windows 走 shell:true：Node 会把命令与参数拼成一个串交给 cmd，路径含空格会被切断，只给 bin 加引号。
+  const proc =
+    process.platform === "win32"
+      ? spawn([serveBin.includes(" ") ? `"${serveBin}"` : serveBin, ...serveArgs].join(" "), {
+          shell: true,
+          windowsHide: true,
+        })
+      : spawn(serveBin, serveArgs, { windowsHide: true });
   let stdout = "";
   let stderr = "";
   proc.stdout?.on("data", (chunk) => {
@@ -100,7 +132,13 @@ export async function startServe({ port, timeoutMs = SERVE_TIMEOUT_MS, maxLifeti
     if (lifetimeTimer) clearTimeout(lifetimeTimer);
     killProc();
   };
-  const lifetimeTimer = maxLifetimeMs > 0 ? setTimeout(kill, maxLifetimeMs) : null;
+  const lifetimeTimer =
+    maxLifetimeMs > 0
+      ? setTimeout(() => {
+          logger?.warn?.(`opencode serve 到达存活期（${maxLifetimeMs}ms），主动回收`);
+          kill();
+        }, maxLifetimeMs)
+      : null;
   lifetimeTimer?.unref?.(); // 定时器本身不阻止 node 正常退出
 
   return { baseUrl: started.url, password: started.password, close: kill };
@@ -124,7 +162,7 @@ const PROBE_TIMEOUT_MS = 2000;
  *   4. 未配置端口 → 随机端口临时 serve（close 受最大存活时间看门狗保护）。
  * 返回 { baseUrl, password, reused, close() }。
  */
-export async function ensureServer({ port, password, logger } = {}) {
+export async function ensureServer({ port, password, logger, maxLifetimeMs } = {}) {
   port = port ?? toInt(process.env.OPENCODE_SERVE_PORT);
   password = password ?? (process.env.OPENCODE_SERVER_PASSWORD || "");
   let status = 0;
@@ -147,7 +185,11 @@ export async function ensureServer({ port, password, logger } = {}) {
       logger?.warn?.(`端口 ${port} 已有 opencode serve 但口令不符，降级临时端口（请核对 .env 的 OPENCODE_SERVER_PASSWORD）`);
     }
   }
-  const own = await startServe({ port: port && status !== 401 && status !== 403 ? port : undefined });
+  const own = await startServe({
+    port: port && status !== 401 && status !== 403 ? port : undefined,
+    logger,
+    ...(maxLifetimeMs ? { maxLifetimeMs } : {}),
+  });
   return { baseUrl: own.baseUrl, password: own.password, reused: false, close: own.close };
 }
 
@@ -210,19 +252,27 @@ function resultsToMarkdown(results, { maxExcerptChars = 2000 } = {}) {
  * @param {string|{providerID, modelID}} [options.model] opencode 侧模型 "provider/model"；
  *        缺省 = 环境变量 OPENCODE_DEFAULT_MODEL ?? DEFAULT_SEARCH_MODEL（ollama-local/qwen3.5:9b）
  * @param {{baseUrl: string, password: string}} [options.server]   复用已启动的 serve；缺省时临时起一个
- * @param {number} [options.timeoutMs=600000]   单次检索总超时
+ * @param {number} [options.timeoutMs=DEFAULT_SEARCH_TIMEOUT_MS]   本组检索的总超时
  * @param {object} [options.logger]
- * @param {string} [options.slot] llm 日志的固化大号（同步骤内多次检索共享大号，小号按执行顺序递增）
+ * @param {string} [options.slot] 调用留痕（NN-step/api/）的子步骤号（同一步骤内多组检索共用同一子步骤，轮次按组递增）
  * @returns {Promise<string>} Markdown 检索结果
  */
-export async function websearch({ query, model, server, timeoutMs = 600000, logger, recorder, slot }) {
+export async function websearch({
+  query,
+  model,
+  server,
+  timeoutMs = DEFAULT_SEARCH_TIMEOUT_MS,
+  logger,
+  recorder,
+  slot,
+}) {
   const { providerID, modelID } = parseModel(model);
   const resolvedModel = `${providerID}/${modelID}`;
   const started = Date.now();
   const record = (extra) => {
     if (!recorder) return;
     recorder.record({
-      label: `websearch.${slugify(query, "q").slice(0, 40)}`,
+      label: "websearch",
       slot,
       provider: "opencode-websearch",
       model: resolvedModel,
@@ -232,7 +282,7 @@ export async function websearch({ query, model, server, timeoutMs = 600000, logg
     });
   };
   let own = null;
-  if (!server) own = await ensureServer({ logger });
+  if (!server) own = await ensureServer({ logger, maxLifetimeMs: timeoutMs + SERVE_LIFETIME_SLACK_MS });
   const baseUrl = server?.baseUrl || own?.baseUrl;
   const password = server?.password || own?.password;
   const client = makeClient(baseUrl, password);
@@ -287,31 +337,35 @@ export function wrapSearchMarkdown(query, markdown) {
 
 /**
  * 关键字组列表 → 每组一次 websearch → Markdown。
- * 返回 [{ query, markdown }]；单组失败记录 warn 后继续。
+ * 各组**并行**（同一个 serve 上各开一个会话），所以 `timeout_ms` 就是外部检索的总时长上限，
+ * 不会随关键字组数线性放大。单组失败只 warn，返回结果顺序与 queries 一致。
  */
-export async function searchWebSearch(queries, { model, timeoutMs, logger, recorder, slot } = {}) {
-  const server = await ensureServer({ logger });
-  const out = [];
+export async function searchWebSearch(queries, { model, timeoutMs = DEFAULT_SEARCH_TIMEOUT_MS, logger, recorder, slot } = {}) {
+  const server = await ensureServer({ logger, maxLifetimeMs: timeoutMs + SERVE_LIFETIME_SLACK_MS });
   try {
-    for (const query of queries) {
-      try {
-        const markdown = await websearch({ query, model, server, timeoutMs, logger, recorder, slot });
-        out.push({ query, markdown: wrapSearchMarkdown(query, markdown) });
-      } catch (error) {
-        logger?.warn?.(`websearch "${query}" failed: ${error.message}`);
-        out.push({ query, markdown: "", error: error.message });
-      }
-    }
+    return await Promise.all(
+      queries.map(async (query) => {
+        try {
+          const markdown = await websearch({ query, model, server, timeoutMs, logger, recorder, slot });
+          return { query, markdown: wrapSearchMarkdown(query, markdown) };
+        } catch (error) {
+          logger?.warn?.(`websearch "${query}" failed: ${error.message}`);
+          return { query, markdown: "", error: error.message };
+        }
+      }),
+    );
   } finally {
     server.close();
   }
-  return out;
 }
 
 /**
  * 解析 websearch 的 Markdown 输出：以 `## [标题](URL)` 为界切块。
  * 结果正文里也可能出现非链接的 `## 小节`，所以只认「## [」开头的块。
  * 返回 [{ title, url, excerpt }]。
+ *
+ * 参数默认值只服务"直接调用本模块"的使用者（管线里一律由 gatherWebSearch 传
+ * defaults.yaml 的 needNumber 结果，不吃这里的数字）——别把它当配置的第二份真相。
  */
 export function parseSearchMarkdown(markdown, { limit = 8, excerptChars = 800 } = {}) {
   const chunks = String(markdown || "").split(/\n(?=## \[[^\]]+\]\(https?:\/\/)/);
@@ -355,16 +409,21 @@ export async function gatherWebSearch({
   articleDir,
   cfg = {},
   model,
-  maxSources = 8,
+  maxSources,
   logger,
   now = Date.now(),
   recorder,
   slot,
   searchImpl = searchWebSearch,
 } = {}) {
+  // 本通道的每个阈值都单源 defaults.yaml defaults.knowledge.web-search：
+  // 原来这里和下面各有一份与配置同值的副本（8 / 2 / 3 / 6 / 800 / 180000），
+  // 改 defaults.yaml 不生效就是这个形状。缺了直接抛错点名配置路径。
+  const where = (key) => `defaults.yaml defaults.knowledge.web-search.${key}`;
+  const sourceLimit = needNumber(maxSources, "defaults.yaml defaults.knowledge.max_sources");
   const verdict = assessSourceSufficiency(localSources, {
     topic,
-    maxSources,
+    maxSources: sourceLimit,
     gate: cfg.gate || {},
     now,
   });
@@ -374,11 +433,13 @@ export async function gatherWebSearch({
   }
   logger?.warn?.(`本地素材不足：${verdict.reasons.join("；")}，走外部检索`);
 
-  const queries = buildSearchQueries(topic, { max: cfg.max_queries });
+  const queries = buildSearchQueries(topic, { max: needNumber(cfg.max_queries, where("max_queries")) });
   if (!queries.length) return [];
   const results = await searchImpl(queries, {
     model,
-    timeoutMs: Number(cfg.timeout_ms) || 600000,
+    // 单组检索限时（各组并行，所以它也是外部检索的总时长上限）单源 defaults.yaml：
+    // DEFAULT_SEARCH_TIMEOUT_MS 只留给 serve 存活期与直接调用本模块的使用者，不再吃进配置路径。
+    timeoutMs: needNumber(cfg.timeout_ms, where("timeout_ms")),
     logger,
     recorder,
     slot,
@@ -395,8 +456,8 @@ export async function gatherWebSearch({
     const rel = `01-step/web-search/${slugify(r.query, "web-search")}.md`;
     fs.writeFileSync(path.join(articleDir, rel), r.markdown, "utf8");
     const blocks = parseSearchMarkdown(r.markdown, {
-      limit: Number(cfg.max_per_query) || 3,
-      excerptChars: cfg.excerpt_chars,
+      limit: needNumber(cfg.max_per_query, where("max_per_query")),
+      excerptChars: needNumber(cfg.excerpt_chars, where("excerpt_chars")),
     });
     for (const b of blocks) {
       entries.push({
@@ -417,7 +478,7 @@ export async function gatherWebSearch({
   }
   fs.writeFileSync(path.join(dir, "index.json"), `${JSON.stringify(index, null, 2)}\n`, "utf8");
 
-  const capped = entries.slice(0, Number(cfg.max_sources) || 6);
+  const capped = entries.slice(0, needNumber(cfg.max_sources, where("max_sources")));
   logger?.info?.(
     `外部检索：${queries.length} 组关键字，落地 ${index.filter((x) => x.file).length} 个文件，解析 ${entries.length} 条，并入 ${capped.length} 条`,
   );

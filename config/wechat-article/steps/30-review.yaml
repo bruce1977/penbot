@@ -5,29 +5,26 @@
 # 篇幅不在本阶段单独设节点：修正环节内置字数校验——返回稿由本地函数计字，
 # 不在区间就带原因重试（--length-attempts，默认 3 次），重试耗尽仍不合格则中断管线。
 # 是否继续修改由 scoring 节点的 check 判断调用（systemone）决定；判定不可用时
-# 回退 total >= pass_score 规则。循环轮次单源 = type.review.max_rounds（defaults.yaml）。
-# retry_limit 只对结构化修复重试的调用生效（score）；核稿兜底与修正是纯文本
-# 生成，不配。核稿服务参数单源 defaults.yaml defaults.review.correct_cn.*。
-# key = step_name。模型调用统一写 models: { <调用名>: { id, options } }
-# （标准见根目录 AGENTS.md）。提示词和数据结构只引用 id：config/prompts/、config/schemas/。
+# 回退 composite_score >= pass_score 规则。循环轮次单源 = type.review.max_rounds（defaults.yaml）。
+# retry_limit 只对结构化修复重试的调用生效（score）；核稿与修正是纯文本
+# 生成，不配。核稿接口参数单源 defaults.yaml defaults.review.correct_cn.*。
+# key = step_name。模型调用统一写 models: { <调用名>: { id, prompt / schema, options } }
+# （标准见根目录 AGENTS.md）。提示词和数据结构只引用 id：config/prompts/、config/schemas/；
+# 多调用节点（scoring）逐调用声明，不写在节点级。
 
 steps:
   review:
     label: 核稿
-    description: 先走中文校对接口，接口不可用时用模型兜底；只修错别字和敏感词。
+    description: 并行调用 /api/correct 与 /api/sensitive/check 采集错别字候选（敏感词只留痕），候选交给修正环节逐条核实；本节点无模型调用。
     stage: review
-    enabled: true
     modes: [auto, manual, run, review]
     handler: builtin:review_article
-    models:
-      # 核稿服务不可用时的模型兜底校对调用（纯文本生成，无修复重试）。
-      # 核稿服务本身的参数单源在 defaults.yaml defaults.review.correct_cn.*。
-      correct:
-        id: llm.local
-        options:
-          timeout: 180000
-    prompt: review.review
-    schema: review.review
+    input_format:
+      article: "string"
+      round: "number"
+    output_format:
+      candidates: "Array<{type: string, original: string, corrected: string, line?: number}>"
+      sensitive: "{count: number, unique: string[], by_category: Record<string, number>}"
     artifacts:
       reads: ["02-step/draft.md", "03-step/round-<n-1>/after-revise.md"]
       writes: ["03-step/round-<n>/correct.json", "03-step/round-<n>/after-correct.md"]
@@ -35,19 +32,36 @@ steps:
 
   revision:
     label: 修正
-    description: 按核稿改动点（首轮）与上一轮评分意见修改稿件，含篇幅要求；返回稿本地计字，不合格带原因重试，重试耗尽中断流程。
+    description: 按核稿候选（首轮，可能误报需核实）与上一轮评分意见修改稿件，含篇幅要求；返回稿本地计字，不合格带原因重试，重试耗尽中断流程。
     stage: review
-    enabled: true
     modes: [auto, manual, run, review]
     handler: builtin:revise_article
     models:
+      # 修正用 35b：9b 会漏字（把「国土安全部」写成「土安全部」）且难以同时落实候选与字数要求。
       # 纯文本改写调用，无修复重试；篇幅不合格由代码带原因重新调用（上限 --length-attempts）。
       revise:
-        id: llm.local
+        id: llm.large
         options:
           timeout: 900000
+          # 改稿是收敛型任务：低温减少发挥，避免压缩时只做同义改写、或扩写时编造细节。
+          temperature: 0.2
+        # 可按轮次覆盖模型/参数（键=轮次，1 起；只写要覆盖的字段，其余继承上面的默认）：
+        # rounds:
+        #   1:
+        #     id: llm.local
+        #     options: { timeout: 600000 }
     prompt: revision.revision
-    schema: revision.revision
+    # 修正是纯文本改写（models.complete），稿件形状由代码闸门保证：字数区间由本地计字
+    # 校验、frontmatter 与小节标题由 normalizeArticle/ensureSectionHeadings 补齐、
+    # 配图标记由 normalizeImageMarkers 对齐——没有可执行的输出契约可挂，所以不写 schema；
+    # 下面的格式是形状备注（人读 + steps 打印）。
+    input_format:
+      article: "string（上一稿：首轮为 02-step/draft.md，之后为 after-correct.md）"
+      review: "ScoreResult（上一轮评稿的维度分与 must_fix）"
+      corrections: "Array<Correction>?（核稿候选，首轮由 correct.mjs 给出）"
+      round: "number"
+    output_format:
+      article: "string（Markdown）"
     artifacts:
       reads: ["03-step/round-<n>/after-correct.md"]
       writes: ["03-step/round-<n>/after-revise.md", "03-step/round-<n>-diff.md?"]
@@ -57,26 +71,31 @@ steps:
     label: 评稿
     description: 按类型评分维度打分，输出总分、问题和修改建议；check 判断模型据此决定是否需要再改一轮。
     stage: review
-    enabled: true
     modes: [auto, manual, run, review]
     handler: builtin:score_article
     models:
+      # 评稿用 35b：9b 常给不齐维度分、自报 total 与加权回算对不上（总分是闸门判据）。
       score:
-        id: llm.local
+        id: llm.large
+        prompt: review.scoring
+        schema: review.scoring
         options:
           retry_limit: 2
           timeout: 900000
       # 循环去留判定（continue/done）；端点默认在 models.yaml systemone.*，
       # 行为参数（escalate_below / min_confidence / deep）在本节点；
-      # 问句文案在 prompts/review.yaml 的 check（id review.check，代码取）。
+      # 问句文案在 models.check.prompt（id review.check）。
       check:
         id: systemone.classifier
+        prompt: review.check
         options:
           deep: systemone.classifier-deep
           escalate_below: 0.65
           min_confidence: 0.5
-    prompt: review.scoring
-    schema: review.scoring
+    # 03-result.json 本体的校验契约（信封 + rounds[] + final + passed/pass_score）：
+    # 落盘前跑一次，不合格只警告，结果记 03-result.json#validation。
+    # 审稿阶段的落盘由入口的 finishReviewStage 完成（管线与独立 review 命令共用）。
+    result_schema: review.result
     artifacts:
       reads: ["03-step/round-<n>/after-revise.md"]
       writes: ["03-step/round-<n>/score.json", "03-step/round-<n>/check.json", "03-step/reviewed.md", "03-result.json"]

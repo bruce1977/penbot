@@ -1,7 +1,7 @@
 /**
  * Draft input — the contract between "准备阶段" and "写初稿阶段".
  *
- * 三样东西装在一个 JSON 里（校验规则见 config/schemas/draft.yaml 的 draft_input）：
+ * 三样东西装在一个 JSON 里（校验规则见 config/wechat-article/schemas/draft.yaml 的 draft_input）：
  *   title      文章标题
  *   outline    文章大纲：[{ heading, points[], target_words? }]
  *   materials  相关资料：[{ title, date?, source?, paragraphs[] }]
@@ -9,41 +9,35 @@
  * 其余字段都可选：type / thesis / audience / hook / requirements /
  * counterpoint / takeaway / images。
  *
- * 提示词在 config/prompts/draft.yaml 的 draft_writing，校验规则在
- * config/schemas/draft.yaml 的 draft_input；改文案不用碰代码。
+ * 提示词与校验规则都由 steps 节点引用 id 提供（draft_writing.prompt /
+ * bundle_draft_input.schema），本模块不直接读配置文件；改文案不用碰代码。
  */
 
-import path from "node:path";
-import { parse as parseYaml } from "yaml";
-import { readText } from "./fsx.mjs";
 import { formatSources, loadSource } from "./knowledge.mjs";
-import { validateTemplateSchema } from "./template.mjs";
-
-export const DRAFT_PROMPT_FILE = "prompts/draft.yaml";
-export const DRAFT_SCHEMA_FILE = "schemas/draft.yaml";
+import { validateTemplateSchema, pickPromptText } from "./template.mjs";
+import { resolveStep, stepCallContract } from "./steps.mjs";
 
 const text = (value) => String(value ?? "").trim();
 const lines = (value) => (Array.isArray(value) ? value : []).map(text).filter(Boolean);
 
-/** Load config/prompts/draft.yaml + config/schemas/draft.yaml. */
-export function loadDraftTemplate(configDir) {
-  const promptFile = path.join(configDir, DRAFT_PROMPT_FILE);
-  const schemaFile = path.join(configDir, DRAFT_SCHEMA_FILE);
-  const promptData = parseYaml(readText(promptFile));
-  const schemaData = parseYaml(readText(schemaFile));
-  const prompt = promptData?.prompts?.draft_writing;
-  const schema = schemaData?.schemas?.draft_input?.output;
-
-  if (!prompt || typeof prompt !== "object") {
-    throw new Error(`${promptFile} 缺少 prompts.draft_writing`);
-  }
+/**
+ * 写初稿需要的两样契约都从 steps 注册表取（代码不再直接读 prompts/schemas 文件）：
+ *   prompt = draft_writing 节点的提示词块（含 type 层 steps.draft_writing.prompt 覆盖）
+ *   schema = bundle_draft_input 节点的 draft_input 校验 DSL
+ */
+export function draftTemplateFromSteps({ steps, type } = {}) {
+  const writing = resolveStep("draft_writing", { steps, type });
+  const contract = stepCallContract(writing, "draft") || {};
+  const prompt = contract.prompt || {};
   if (!prompt.system || !prompt.user) {
-    throw new Error(`${promptFile} 的 prompts.draft_writing 缺少 system / user`);
+    throw new Error(`draft_writing 节点缺少提示词配置（system/user）：${writing?.prompt_id || "未声明 prompt id"}`);
   }
-  if (!schema || typeof schema !== "object") {
-    throw new Error(`${schemaFile} 缺少 schemas.draft_input.output（紧凑校验 DSL）`);
+  const schema = resolveStep("bundle_draft_input", { steps, type })?.output_format;
+  if (!schema || !Object.keys(schema).length) {
+    throw new Error("bundle_draft_input 节点缺少 schema（output 校验 DSL 为空）");
   }
-  return { prompt, schema };
+  // prompt_id 一起带出去：条件文案（配图计划、分节说明）的报错要靠它定位配置。
+  return { prompt, prompt_id: contract.prompt_id || "", schema };
 }
 
 /** Build a draft input from upstream artifacts (topic / outline / sources). */
@@ -151,7 +145,7 @@ export function validateDraftInput(raw, { schema, type, advisory = false } = {})
 }
 
 /** Variables available to {{...}} in config/prompts/draft.yaml. */
-export function buildDraftVars({ type, input, maxChars = 18000 }) {
+export function buildDraftVars({ type, input, maxChars = 18000, prompt = null, promptId = "" }) {
   const outline = input.outline
     .map((section, i) => {
       const words = section.target_words ? `｜约 ${section.target_words} 字` : "";
@@ -159,25 +153,27 @@ export function buildDraftVars({ type, input, maxChars = 18000 }) {
     })
     .join("\n");
 
-  const imageHint = input.images.length
-    ? input.images.map((image, i) => `${i + 1}. ${image.position}：${image.description}`).join("\n")
-    : "封面 1 张 + 正文 1-2 张";
-
   return {
     type_name: type?.name || "",
     persona: type?.style?.persona || "",
-    tone: type?.style?.tone || "清晰、克制",
-    title_style: type?.style?.title_style || "准确、有信息量",
+    tone: type?.style?.tone || "",
+    title_style: type?.style?.title_style || "",
     title: input.title,
     thesis: input.thesis,
     hook: input.hook,
     audience: input.audience || type?.style?.audience || "",
     counterpoint: input.counterpoint || "（无）",
     takeaway: input.takeaway,
-    requirements_block: input.requirements ? `\n补充要求：${input.requirements}` : "",
+    // 「有补充要求」时这句整句文案也在注册表里（draft.requirements_block），代码只挑有无。
+    requirements_block: input.requirements
+      ? pickPromptText(prompt, "requirements_block", { requirements: input.requirements }, promptId)
+      : "",
     outline,
     materials: formatSources(toSources(input.materials), { maxChars }) || "（无）",
-    image_hint: imageHint,
+    // 纲要没排出配图时该说什么也是配置里的整句文案（draft.no_image_hint）。
+    image_hint: input.images.length
+      ? input.images.map((image, i) => `${i + 1}. ${image.position}：${image.description}`).join("\n")
+      : pickPromptText(prompt, "no_image_hint", {}, promptId),
     extra: type?.prompts?.draft_extra ? `\n- ${type.prompts.draft_extra}` : "",
     length: {
       min: type?.length?.min ?? "",

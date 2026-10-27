@@ -1,7 +1,6 @@
 // 初稿阶段测试：draft-input 组装与校验、模板渲染、初稿/修正提示词
 import test from "node:test";
 import assert from "node:assert/strict";
-import path from "node:path";
 
 import { buildRevisePrompt, buildDraftPrompt } from "../../scripts/lib/prompts.mjs";
 import { loadSteps } from "../../scripts/lib/steps.mjs";
@@ -11,13 +10,13 @@ import {
   buildDraftInput,
   normalizeDraftInput,
   validateDraftInput,
-  loadDraftTemplate,
+  draftTemplateFromSteps,
   buildDraftVars,
   summarizeDraftInput,
 } from "../../scripts/lib/draft-input.mjs";
 
-const CONFIG_DIR = path.join(import.meta.dirname, "../../config/wechat-article");
-const DRAFT_TEMPLATE = loadDraftTemplate(CONFIG_DIR);
+// 初稿契约从 steps 注册表取（提示词 = draft_writing 节点，校验 DSL = bundle_draft_input 节点）
+const DRAFT_TEMPLATE = draftTemplateFromSteps({ steps: loadSteps("config/wechat-article/steps.yaml") });
 
 /* ------------------------------------------------------------------ */
 /* length control                                                      */
@@ -46,14 +45,31 @@ test("buildRevisePrompt renders first-round basis and word-count retry block", (
   assert.match(first.prompt, /首轮修改：本轮没有评分意见/);
   assert.match(first.prompt, /\[typo\] 在 → 再/);
   assert.match(first.prompt, /800-1300/);
+  assert.match(first.prompt, /可能误报/);
   assert.doesNotMatch(first.prompt, /上一稿不合格/);
   assert.doesNotMatch(first.prompt, /\{\{/);
+
+  // 候选可能误报：提示词要求逐条核实，并保留专有名词/缩写的大小写。
+  const withCandidates = buildRevisePrompt({
+    prompt,
+    type,
+    article: "正文",
+    corrections: [{ type: "typo", original: "帐号", corrected: "账号", line: 3 }],
+    round: 1,
+    wordCount: 700,
+  });
+  assert.match(withCandidates.prompt, /\[typo\] 帐号 → 账号（第 3 行）/);
+  assert.match(withCandidates.prompt, /专有名词、缩写（AI、API、MIT 等）和模型名的大小写与拼写保持原样/);
+  assert.doesNotMatch(withCandidates.prompt, /\{\{/);
+
+  const noCandidates = buildRevisePrompt({ prompt, type, article: "正文", corrections: [], round: 1, wordCount: 700 });
+  assert.match(noCandidates.prompt, /规则接口未给出需要修复的候选/);
 
   const retry = buildRevisePrompt({
     prompt,
     type,
     article: "正文",
-    review: { total: 60, verdict: "revise", issues: [{ severity: "high", dimension: "length", problem: "篇幅不足", fix: "补充素材" }], must_fix: ["补 300 字"] },
+    review: { composite_score: 60, verdict: "revise", issues: [{ severity: "high", dimension: "length", problem: "篇幅不足", fix: "补充素材" }], must_fix: ["补 300 字"] },
     corrections: [],
     round: 2,
     wordCount: 700,
@@ -64,7 +80,7 @@ test("buildRevisePrompt renders first-round basis and word-count retry block", (
   assert.match(retry.prompt, /上一稿不合格（第 3 次尝试）/);
   assert.match(retry.prompt, /需要增补约 300 字/);
   assert.match(retry.prompt, /优先在现有小节内补充/);
-  assert.match(retry.prompt, /核稿未发现需要修复的问题/);
+  assert.match(retry.prompt, /规则接口未给出需要修复的候选/);
   assert.doesNotMatch(retry.prompt, /\{\{/);
 });
 
@@ -209,6 +225,37 @@ test("行内 schema：缺失/类型错为硬错误，长度与项数越界为警
   );
 });
 
+test("行内 schema：点号路径校验嵌套对象，父级可选决定整棵子树", () => {
+  const schema = {
+    title: ["string", 1],
+    channels: "object",
+    "channels.email": "boolean",
+    "wechat.success": "boolean",
+    "wechat.code?": ["number"],
+    "email?.success": "boolean",
+    "email.htmlFile?": ["string", 1],
+  };
+  const ok = validateTemplateSchema(
+    { title: "T", channels: { email: true }, wechat: { success: false, code: 1 } },
+    schema,
+  );
+  assert.deepEqual(ok.errors, []);
+  // 必写的父级缺失只报一次「缺失」，子树不再重复报错
+  const missing = validateTemplateSchema({ title: "T", channels: { email: true } }, schema);
+  assert.deepEqual(missing.errors, ["wechat 缺失"]);
+  // 父级类型不对 = 应为对象
+  assert.deepEqual(validateTemplateSchema({ title: "T", channels: true, wechat: { success: true } }, schema).errors, [
+    "channels 应为对象",
+  ]);
+  // "email?.success"：email 缺席/为 null 都放过，存在时仍校验子字段
+  assert.deepEqual(validateTemplateSchema({ title: "T", channels: { email: true }, wechat: { success: true }, email: null }, schema).errors, []);
+  assert.deepEqual(validateTemplateSchema({ title: "T", channels: { email: true }, wechat: { success: true }, email: { success: "yes" } }, schema).errors, [
+    "email.success 应为布尔值",
+  ]);
+  // 尾项是备注不是类型；kind 上挂问号的写法也接受
+  assert.deepEqual(validateTemplateSchema({ title: "T", channels: { email: true }, wechat: { success: true }, note: "x" }, { ...schema, note: "string?" }).errors, []);
+});
+
 test("renderTemplate 替换嵌套变量，未知变量留空", () => {
   const text = "{{title}}／{{length.min}}-{{length.max}}／{{missing}}／{{tags}}";
   assert.equal(renderTemplate(text, { title: "T", length: { min: 1, max: 2 }, tags: ["a", "b"] }), "T／1-2／／a、b");
@@ -264,4 +311,91 @@ test("buildDraftVars 渲染大纲、素材与配图提示", () => {
   assert.equal(vars.image_hint, "1. cover：封面画面");
   assert.equal(vars.length.min, 100);
   assert.equal(vars.image.max, "");
+});
+
+/* ------------------------------------------------------------------ */
+/* 条件文案：整句只在 prompts 注册表里，代码只按条件挑 key                */
+/* ------------------------------------------------------------------ */
+
+const REVISE_PROMPT = loadSteps("config/wechat-article/steps.yaml").prompts["revision.revision"];
+const REVISE_TYPE = { name: "AI 资讯快评", length: { min: 800, max: 1300, target: 1000 } };
+
+test("buildRevisePrompt 的三种重试原因与「无问题」占位都取注册表整句", () => {
+  const failed = buildRevisePrompt({
+    prompt: REVISE_PROMPT,
+    promptId: "revision.revision",
+    type: REVISE_TYPE,
+    article: "正文",
+    round: 2,
+    wordCount: 900,
+    attempt: 2,
+    failReason: { words: 900, error: "超时" },
+  });
+  assert.match(failed.prompt, /上一次尝试是调用失败，不是字数问题（错误：超时）/);
+  assert.match(failed.prompt, /保持原有结构、配图标记和 frontmatter，整篇重新输出/);
+  assert.doesNotMatch(failed.prompt, /需要增补约|需要删减约/);
+
+  const condense = buildRevisePrompt({
+    prompt: REVISE_PROMPT, promptId: "revision.revision", type: REVISE_TYPE, article: "正文",
+    round: 2, wordCount: 1500, attempt: 2, failReason: { words: 1500, action: "condense" },
+  });
+  assert.match(condense.prompt, /需要删减约 500 字/);
+
+  const cleanReview = buildRevisePrompt({
+    prompt: REVISE_PROMPT, promptId: "revision.revision", type: REVISE_TYPE, article: "正文",
+    review: { composite_score: 88, verdict: "polish", issues: [] }, round: 2, wordCount: 1000,
+  });
+  assert.match(cleanReview.prompt, /（无具体问题，请做语言层面的精修）/);
+
+  for (const [key, args] of [
+    ["review_basis_first_round", { round: 1, wordCount: 700 }],
+    ["review_basis_reviewed", { review: { composite_score: 60, verdict: "revise", issues: [] }, round: 2, wordCount: 700 }],
+    ["retry_reason_expand", { round: 2, wordCount: 700, attempt: 2, failReason: { words: 700, action: "expand" } }],
+    ["retry_fix_call_failed", { round: 2, wordCount: 700, attempt: 2, failReason: { words: 700, error: "超时" } }],
+  ]) {
+    const broken = { ...REVISE_PROMPT, [key]: "" };
+    assert.throws(
+      () => buildRevisePrompt({ prompt: broken, promptId: "revision.revision", type: REVISE_TYPE, article: "正文", ...args }),
+      new RegExp(`缺少提示词文案 revision\.revision\.${key}`),
+    );
+  }
+});
+
+test("buildDraftPrompt 的分节约束与无配图说明也来自 draft_writing", () => {
+  const type = { id: "t1", name: "T1", style: { audience: "读者" }, length: { min: 100, max: 200, target: 150 } };
+  const input = buildDraftInput({
+    type,
+    topic: { title: "T" },
+    outline: { outline: [{ heading: "第一节", points: ["p"] }] },
+    sources: [],
+  });
+  assert.equal(input.images.length, 0);
+  const noImage = buildDraftPrompt({ type, input, template: DRAFT_TEMPLATE });
+  assert.match(noImage.prompt, /（本次没有给定配图计划/);
+  const sectioned = buildDraftPrompt({ type, input, template: DRAFT_TEMPLATE, section: "第一节" });
+  assert.match(sectioned.prompt, /本次只写「第一节」这一节/);
+  assert.doesNotMatch(sectioned.prompt, /不要写其他小节[\s\S]*不要写其他小节/);
+
+  const withRequirements = buildDraftInput({
+    type,
+    topic: { title: "T" },
+    outline: { outline: [{ heading: "第一节", points: ["p"] }] },
+    sources: [],
+    requirements: "别写融资",
+  });
+  assert.match(buildDraftPrompt({ type, input: withRequirements, template: DRAFT_TEMPLATE }).prompt, /补充要求：别写融资/);
+  assert.doesNotMatch(noImage.prompt, /补充要求/);
+
+  for (const key of ["no_image_hint", "section_only", "requirements_block"]) {
+    const broken = { ...DRAFT_TEMPLATE, prompt: { ...DRAFT_TEMPLATE.prompt, [key]: "" } };
+    assert.throws(
+      () => buildDraftPrompt({
+        type,
+        input: key === "requirements_block" ? withRequirements : input,
+        template: broken,
+        section: key === "section_only" ? "第一节" : "",
+      }),
+      new RegExp(`缺少提示词文案 draft\\.draft_writing\\.${key}`),
+    );
+  }
 });

@@ -1,0 +1,39 @@
+# 发布阶段：发布 → 归档
+#
+# key = step_name。这两个节点不调用模型（无 models 段），也不需要提示词，只引用数据结构 id。
+# enabled 真驱动运行：publish.enabled=false 时整个发布环节不执行（不落 05 产物、不投递），
+#   04 的 composed.md 保持为最终稿；archive.enabled=false 时不入库、不打包、不删 draft/。
+# result_schema 也真驱动：落 05-result.json 前用紧凑 DSL 校验脚本自己的产物，不合格只警告不阻塞，
+#   结果分别记 05-result.json#validation 与 #archive.validation。
+#   （01–04 的 result 本体用同一个键；节点级 schema 只留给模型输出/中间产物的契约。）
+# 投递哪些渠道的开关单源在 defaults.yaml defaults.publish.*（email/wechat.enabled、auto_publish），
+#   命令行 --email / --wechat / --auto-publish 可临时触发。
+
+steps:
+  publish:
+    label: 发布
+    description: 生成终稿，按渠道开关投递邮件和公众号草稿；未真实成功则留在 draft/。
+    stage: publish
+    enabled: true
+    modes: [auto, manual, run, publish]
+    handler: builtin:publish_article
+    result_schema: publish.publish
+    artifacts:
+      reads: ["04-step/composed.md"]
+      writes: ["05-step/final.md", "05-step/final.html?", "05-result.json"]
+    depends_on: [de_ai, image_generation]
+
+  archive:
+    label: 归档
+    description: 发布成功后复制终稿到知识库 pipeline，打包到 published/，再删除 draft/<slug>/。
+    stage: publish
+    enabled: true
+    modes: [auto, manual, run, publish]
+    handler: builtin:archive_article
+    result_schema: publish.archive
+    artifacts:
+      reads: ["05-result.json"]
+      # 归档会重写 05-result.json（并入 archive 块与 archivedAt）后再打包，
+      # 清单必须进 zip，所以落盘顺序是「先写 result，再打包，最后删 draft/<slug>/」。
+      writes: ["05-result.json", "../../published/<date>-<slug>.zip"]
+    depends_on: [publish]

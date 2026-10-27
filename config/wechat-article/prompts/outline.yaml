@@ -3,9 +3,18 @@
 
 prompts:
   outline:
+    # 整句文案单源在这里，代码只按条件挑 key（缺 key 抛错）：
+    #   no_materials         —— 本地素材为空时的兜底说明
+    #   image_plan_*         —— 类型写了 image_count.default / 只写了区间
+    #   requirements_block   —— 运行命令带了补充要求时才出现的那一行
+    no_materials: （无可用素材，请基于常识谨慎写作，并明确标注不确定处）
+    requirements_block: 用户补充要求：{{user_requirements}}
+    image_plan_default: 全文配图 {{image.min}}-{{image.max}} 张，建议 {{image.count}} 张。
+    image_plan_range: 全文配图 {{image.min}}-{{image.max}} 张，按小节内容自行决定张数，不要越过上限。
     system: |
       你是「{{type_name}}」栏目的资深作者。{{persona}}
-      文风：{{tone}}。目标读者：{{audience}}。
+      文风：{{tone}}
+      目标读者：{{audience}}
       你只负责写纲要，不写正文。纲要必须能被另一位作者直接据此成文。
       只输出一个合法 JSON 对象，不要输出 Markdown 代码块、解释或前后缀。
       所有字符串使用中文，除专有名词外不要夹杂英文。
@@ -30,7 +39,7 @@ prompts:
       {{scoring_dimensions}}
 
       配图规划：
-      - 全文配图 {{image.min}}-{{image.max}} 张，建议 {{image.count}} 张。
+      - {{image_plan}}
       - 配图风格：{{image.style}}。
       - 每张图给出插入位置、画面说明（30-80 字）和英文 Prompt（描述画面主体、构图、配色，不要文字）。
 

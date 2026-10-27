@@ -1,12 +1,12 @@
 # 文章类型注册表
 #
-# key = 类型 id，value = config/types/ 下的文件名。
+# key = 类型 id，value = config/wechat-article/types/ 下的文件名。
 # 顺序就是日志、validate 和默认类型的展示顺序。
 #
-# 类型明细：config/types/<id>.yaml
-# 全局默认：config/defaults.yaml
-# 模型定义：config/models.yaml
-# 流程节点：config/steps/（入口 steps.yaml）
+# 类型明细：config/wechat-article/types/<id>.yaml
+# 全局默认：config/wechat-article/defaults.yaml
+# 模型定义：config/models.yaml（三管线共享）
+# 流程节点：config/wechat-article/steps/（入口 steps.yaml）
 
 types:
   ai-insight: ai-insight.yaml

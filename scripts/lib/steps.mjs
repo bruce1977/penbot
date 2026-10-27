@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
-import { expandEnv } from "./env.mjs";
+import { expandEnv, toBool } from "./env.mjs";
 import { normalizeModelMap } from "./config.mjs";
 
 /**
@@ -22,11 +22,169 @@ function templateOfModelId(id) {
   return CALL_TEMPLATES[prefix] ? prefix : "";
 }
 
+/** 调用项允许的字段；轮次/档位覆盖项只允许 id / options（提示词与数据结构只在默认调用上声明）。 */
+const CALL_ENTRY_KEYS = ["id", "options"];
+
+/** 校验并归一化 options（按模板白名单，数值字段就地转成数字）。 */
+function normalizeOptions({ name, path: callPath, template, options, models, file }) {
+  const value = options === undefined ? {} : options;
+  if (!isPlainObject(value)) throw new Error(`步骤 ${name}.${callPath}.options 必须是对象（${file}）`);
+  const allowed = CALL_TEMPLATES[template];
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key)) {
+      throw new Error(`步骤 ${name}.${callPath}（${template} 模板）不支持参数 ${key}；可用：${allowed.join(" / ")}`);
+    }
+  }
+  if (template === "llm") {
+    if (value.retry_limit !== undefined) {
+      const n = toInt(value.retry_limit, NaN);
+      if (!(n >= 1)) throw new Error(`步骤 ${name}.${callPath}.options.retry_limit 必须是 ≥1 的整数（总尝试上限，含首轮）`);
+      value.retry_limit = n;
+    }
+    if (value.timeout !== undefined) {
+      const n = toInt(value.timeout, NaN);
+      if (!(n > 0)) throw new Error(`步骤 ${name}.${callPath}.options.timeout 必须大于 0（ms）`);
+      value.timeout = n;
+    }
+    for (const key of ["temperature", "max_tokens"]) {
+      if (value[key] !== undefined) {
+        const n = Number(value[key]);
+        if (!Number.isFinite(n)) throw new Error(`步骤 ${name}.${callPath}.options.${key} 必须是数字`);
+        value[key] = n;
+      }
+    }
+  } else {
+    const deepId = value.deep === undefined || value.deep === "" ? "" : String(value.deep).trim();
+    if (deepId) {
+      if (templateOfModelId(deepId) !== "systemone") {
+        throw new Error(`步骤 ${name}.${callPath}.options.deep 必须是 systemone.* 模型 id：${deepId}`);
+      }
+      if (!models[deepId]) {
+        throw new Error(`步骤 ${name}.${callPath}.options.deep 引用了未在 config/models.yaml 定义的模型 id：${deepId}`);
+      }
+      value.deep = deepId;
+    }
+    for (const key of ["escalate_below", "min_confidence"]) {
+      if (value[key] !== undefined) {
+        const n = Number(value[key]);
+        if (!(n >= 0 && n <= 1)) throw new Error(`步骤 ${name}.${callPath}.options.${key} 必须在 0-1 之间`);
+        value[key] = n;
+      }
+    }
+  }
+  return value;
+}
+
 /**
- * 归一化节点 models 注册表 → calls：{ 调用名: { label, model_id, template, options } }。
- * 写法不合规一律抛错（配置错误在加载期暴露，不在运行时静默降级）。
+ * 归一化单个模型调用项。baseTemplate 非空时表示变体覆盖项（轮次/档位）：
+ * 允许省略 id（继承默认模型），且模板必须与默认调用一致。
  */
-function normalizeCalls(step, { models, name, file }) {
+function normalizeCallEntry({ name, path: callPath, entry, models, file, baseTemplate = "", allowVariants = false }) {
+  const value = typeof entry === "string" ? { id: entry } : entry;
+  if (!isPlainObject(value)) {
+    throw new Error(`步骤 ${name}.${callPath} 必须是 { id, options } 或模型 id 字符串（${file}）`);
+  }
+  const allowedKeys = allowVariants
+    ? [...CALL_ENTRY_KEYS, "rounds", "levels", "prompt", "schema"]
+    : CALL_ENTRY_KEYS;
+  for (const key of Object.keys(value)) {
+    if (!allowedKeys.includes(key)) {
+      throw new Error(`步骤 ${name}.${callPath} 不支持字段 ${key}（可用：${allowedKeys.join(" / ")}）`);
+    }
+  }
+  const id = String(value.id || "").trim();
+  let template = baseTemplate;
+  if (!id) {
+    if (!baseTemplate) {
+      throw new Error(`步骤 ${name}.${callPath} 必须是 { id, options } 或模型 id 字符串（${file}）`);
+    }
+  } else {
+    template = templateOfModelId(id);
+    if (!template) {
+      throw new Error(`步骤 ${name}.${callPath} 的模型 id 必须落在已定义模板下（${Object.keys(CALL_TEMPLATES).join(" / ")}）：${id}`);
+    }
+    if (baseTemplate && template !== baseTemplate) {
+      throw new Error(`步骤 ${name}.${callPath} 的变体覆盖（轮次/档位）必须与默认调用使用同一模板（${baseTemplate}）：${id}`);
+    }
+    if (!models[id]) throw new Error(`步骤 ${name}.${callPath} 引用了未在 config/models.yaml 定义的模型 id：${id}`);
+  }
+  const options = normalizeOptions({ name, path: callPath, template, options: value.options, models, file });
+  return { id, template, options };
+}
+
+/** rounds: { <轮次>: { id?, options? } }，轮次从 1 起；覆盖项至少写 id 或一个 options 字段。 */
+function normalizeRounds({ name, label, rounds, models, file, template }) {
+  if (rounds === undefined) return {};
+  if (!isPlainObject(rounds)) {
+    throw new Error(`步骤 ${name}.${label}.rounds 必须是对象（键为轮次，从 1 起）（${file}）`);
+  }
+  const out = {};
+  for (const [key, value] of Object.entries(rounds)) {
+    if (!/^[1-9]\d*$/.test(key)) {
+      throw new Error(`步骤 ${name}.${label}.rounds 的轮次键必须是从 1 起的整数：${key}`);
+    }
+    requireVariant(name, label, "rounds", key, value);
+    const normalized = normalizeCallEntry({
+      name,
+      path: `${label}.rounds.${key}`,
+      entry: value,
+      models,
+      file,
+      baseTemplate: template,
+    });
+    out[Number(key)] = { model_id: normalized.id, options: normalized.options };
+  }
+  return out;
+}
+
+/**
+ * levels: { <档位名>: { id?, options? } }，档位名是标识符（如 light / standard / deep）。
+ * 与 rounds 同构：只覆盖写出的字段，档位由运行时传入（见各步骤 handler_options.level）。
+ */
+function normalizeLevels({ name, label, levels, models, file, template }) {
+  if (levels === undefined) return {};
+  if (!isPlainObject(levels)) {
+    throw new Error(`步骤 ${name}.${label}.levels 必须是对象（键为档位名）（${file}）`);
+  }
+  const out = {};
+  for (const [key, value] of Object.entries(levels)) {
+    if (!/^[a-z][a-z0-9_]*$/.test(key)) {
+      throw new Error(`步骤 ${name}.${label}.levels 的档位名不合法：${key}（只允许小写字母、数字、下划线）`);
+    }
+    requireVariant(name, label, "levels", key, value);
+    const normalized = normalizeCallEntry({
+      name,
+      path: `${label}.levels.${key}`,
+      entry: value,
+      models,
+      file,
+      baseTemplate: template,
+    });
+    out[key] = { model_id: normalized.id, options: normalized.options };
+  }
+  return out;
+}
+
+function requireVariant(name, label, kind, key, value) {
+  const entry = isPlainObject(value) ? value : {};
+  const hasOptions = isPlainObject(entry.options) && Object.keys(entry.options).length > 0;
+  if (!String(entry.id || "").trim() && !hasOptions) {
+    throw new Error(`步骤 ${name}.${label}.${kind}.${key} 至少写 id 或一个 options 字段（否则是无效覆盖）`);
+  }
+}
+
+/**
+ * 归一化节点 models 注册表 → calls：
+ * { 调用名: { label, model_id, template, options, prompt?, prompt_id?, schema?, schema_id?,
+ *             output_format?, rounds?, levels? } }。
+ * 写法不合规一律抛错（配置错误在加载期暴露，不在运行时静默降级）。
+ *
+ * 提示词与数据结构可以写在两处：
+ *   - 节点级 prompt/schema（标量 id）：无模型调用节点（本地组装、外部 handler）或单调用节点；
+ *   - 调用级 models.<调用名>.prompt/.schema：多调用节点的每次调用各写各的。
+ * 多调用节点必须逐调用声明（节点级标量会被第二个调用误继承），加载期校验。
+ */
+function normalizeCalls(step, { models, name, file, prompts = {}, schemas = {} }) {
   for (const legacy of ["model", "retry_limit", "timeout"]) {
     if (step[legacy] !== undefined) {
       throw new Error(
@@ -47,60 +205,73 @@ function normalizeCalls(step, { models, name, file }) {
     if (!isPlainObject(entry) || !String(entry.id || "").trim()) {
       throw new Error(`步骤 ${name}.${label} 必须是 { id, options } 或模型 id 字符串（${file}）`);
     }
-    const id = String(entry.id).trim();
-    const template = templateOfModelId(id);
-    if (!template) {
-      throw new Error(`步骤 ${name}.${label} 的模型 id 必须落在已定义模板下（${Object.keys(CALL_TEMPLATES).join(" / ")}）：${id}`);
+    const normalized = normalizeCallEntry({ name, path: label, entry, models, file, allowVariants: true });
+    const call = { label, model_id: normalized.id, template: normalized.template, options: normalized.options };
+    // 轮次/档位覆盖只有 llm 生成调用会用到（revision/scoring 传轮次、de_ai 传档位）；
+    // 判断调用按标签一次一次发起，运行时不传轮次也不传档位，写了就是假配置。
+    if (normalized.template !== "llm" && (entry.rounds !== undefined || entry.levels !== undefined)) {
+      const kind = entry.rounds !== undefined ? "rounds" : "levels";
+      throw new Error(
+        `步骤 ${name}.${label} 不支持 ${kind}：${normalized.template} 判断调用运行时不传轮次/档位（只有 llm 生成调用可以）（${file}）`,
+      );
     }
-    if (!models[id]) throw new Error(`步骤 ${name}.${label} 引用了未在 config/models.yaml 定义的模型 id：${id}`);
-    const options = entry.options === undefined ? {} : entry.options;
-    if (!isPlainObject(options)) throw new Error(`步骤 ${name}.${label}.options 必须是对象（${file}）`);
-    const allowed = CALL_TEMPLATES[template];
-    for (const key of Object.keys(options)) {
-      if (!allowed.includes(key)) {
-        throw new Error(`步骤 ${name}.${label}（${template} 模板）不支持参数 ${key}；可用：${allowed.join(" / ")}`);
-      }
+    if (entry.prompt !== undefined) {
+      call.prompt = normalizePrompt(
+        resolvePromptRef(entry.prompt, { prompts, step: `${name}.${label}` }),
+        {},
+      );
+      call.prompt_id = typeof entry.prompt === "string" ? entry.prompt : "";
     }
-    if (template === "llm") {
-      if (options.retry_limit !== undefined) {
-        const n = toInt(options.retry_limit, NaN);
-        if (!(n >= 1)) throw new Error(`步骤 ${name}.${label}.options.retry_limit 必须是 ≥1 的整数（总尝试上限，含首轮）`);
-        options.retry_limit = n;
-      }
-      if (options.timeout !== undefined) {
-        const n = toInt(options.timeout, NaN);
-        if (!(n > 0)) throw new Error(`步骤 ${name}.${label}.options.timeout 必须大于 0（ms）`);
-        options.timeout = n;
-      }
-      for (const key of ["temperature", "max_tokens"]) {
-        if (options[key] !== undefined) {
-          const n = Number(options[key]);
-          if (!Number.isFinite(n)) throw new Error(`步骤 ${name}.${label}.options.${key} 必须是数字`);
-          options[key] = n;
-        }
-      }
-    } else {
-      const deepId = options.deep === undefined || options.deep === "" ? "" : String(options.deep).trim();
-      if (deepId) {
-        if (templateOfModelId(deepId) !== "systemone") {
-          throw new Error(`步骤 ${name}.${label}.options.deep 必须是 systemone.* 模型 id：${deepId}`);
-        }
-        if (!models[deepId]) {
-          throw new Error(`步骤 ${name}.${label}.options.deep 引用了未在 config/models.yaml 定义的模型 id：${deepId}`);
-        }
-        options.deep = deepId;
-      }
-      for (const key of ["escalate_below", "min_confidence"]) {
-        if (options[key] !== undefined) {
-          const n = Number(options[key]);
-          if (!(n >= 0 && n <= 1)) throw new Error(`步骤 ${name}.${label}.options.${key} 必须在 0-1 之间`);
-          options[key] = n;
-        }
-      }
+    if (entry.schema !== undefined) {
+      const schema = resolveSchemaRef(entry.schema, { schemas, step: `${name}.${label}` });
+      call.schema = schema;
+      call.schema_id = typeof entry.schema === "string" ? entry.schema : "";
+      call.input_format = schema.input || {};
+      call.output_format = schema.output || {};
     }
-    calls[label] = { label, model_id: id, template, options };
+    const rounds = normalizeRounds({
+      name,
+      label,
+      rounds: entry.rounds,
+      models,
+      file,
+      template: normalized.template,
+    });
+    if (Object.keys(rounds).length) call.rounds = rounds;
+    const levels = normalizeLevels({
+      name,
+      label,
+      levels: entry.levels,
+      models,
+      file,
+      template: normalized.template,
+    });
+    if (Object.keys(levels).length) call.levels = levels;
+    calls[label] = call;
   }
   return calls;
+}
+
+/**
+ * 解析一次调用的最终模型与参数：默认调用 → 档位覆盖（levels）→ 轮次覆盖（rounds）。
+ * 两级覆盖都只替换写出的字段（id 缺省继承，options 按键合并），
+ * 轮次后应用是因为它更贴近本次运行的真实上下文。
+ */
+export function resolveCall(call, round = null, level = null) {
+  let resolved = { model_id: call?.model_id || "", options: { ...(call?.options || {}) } };
+  const levelOverride = level === null || level === undefined ? null : call?.levels?.[String(level)];
+  if (levelOverride) {
+    resolved = {
+      model_id: levelOverride.model_id || resolved.model_id,
+      options: { ...resolved.options, ...levelOverride.options },
+    };
+  }
+  const roundOverride = round === null || round === undefined ? null : call?.rounds?.[Number(round)];
+  if (!roundOverride) return resolved;
+  return {
+    model_id: roundOverride.model_id || resolved.model_id,
+    options: { ...resolved.options, ...roundOverride.options },
+  };
 }
 
 /**
@@ -212,7 +383,6 @@ export function normalizeSteps(
   for (const step of steps) byName.set(step.step_name, step);
 
   return {
-    version: Number(raw.version || 1),
     file,
     defaults: {
       prompt: defaults.prompt || {},
@@ -358,9 +528,18 @@ function normalizeStep(
   const name = String(step.step_name || step.name || "").trim();
   if (!name) throw new Error(`${file || "steps.yaml"} 第 ${index + 1} 个步骤缺少 step_name`);
 
-  const calls = normalizeCalls(step, { models, name, file });
+  const calls = normalizeCalls(step, { models, name, file, prompts, schemas });
+  requirePerCallContracts(step, calls, { name, file });
   const schema = resolveSchemaRef(step.schema, { schemas, step: name });
-  const inputFormat = step.input_format !== undefined ? step.input_format : schema.input;
+  // result_schema 校验的是**脚本自己落盘的 NN-result.json 本体**（title/type/files 之外的载荷），
+  // 与节点级 schema（模型输出/中间产物的契约）是两件事：01–04 的 schema 口已被模型调用占用。
+  const resultSchema = resolveSchemaRef(step.result_schema, { schemas, step: name });
+  if (step.result_schema !== undefined && Object.keys(resultSchema.output || {}).length === 0) {
+    throw new Error(
+      `步骤 ${name} 的 result_schema ${step.result_schema} 没有 output DSL（${file}）：result 本体的契约必须是可执行紧凑 DSL，挂了没人校验就是说谎`,
+    );
+  }
+  const inputFormat = step.input_format !== undefined ? step.input_format : (schema.input || resultSchema.input);
   const outputFormat = step.output_format !== undefined ? step.output_format : schema.output;
 
   return {
@@ -368,10 +547,15 @@ function normalizeStep(
     label: String(step.label || name),
     description: String(step.description || ""),
     stage: String(step.stage || name),
-    enabled: step.enabled !== false,
+    stage_declared: step.stage !== undefined && String(step.stage).trim() !== "",
+    // enabled 可由 `${PB_*_ENABLED:-true}` 抬起（04 的两条分支），expandEnv 之后是字符串：
+    // 用 `!== false` 判会让 "false" 当成开，所以走 toBool。是否显式写了开关由下面这行记。
+    enabled: toBool(step.enabled, true),
+    // 是否显式写了 enabled：validateSteps 用它判断"写了关不掉的开关"。
+    enabled_declared: step.enabled !== undefined,
     modes: toStringArray(step.modes, ["auto", "manual", "run"]),
     handler: parseHandler(step.handler, root),
-    // 模型调用注册表：{ 调用名: { model_id, template, options } }；无调用的本地节点为空。
+    // 模型调用注册表：{ 调用名: { model_id, template, options, rounds?, levels? } }；无调用的本地节点为空。
     calls,
     handler_options: step.handler_options || {},
     input_format: inputFormat || {},
@@ -382,7 +566,56 @@ function normalizeStep(
     prompt_id: typeof step.prompt === "string" ? step.prompt : "",
     schema: step.schema || "",
     schema_id: typeof step.schema === "string" ? step.schema : "",
+    // NN-result.json 本体的校验契约（紧凑 DSL），由入口在落盘前跑 validateProduced。
+    result_schema: step.result_schema || "",
+    result_output_format: resultSchema.output || {},
     source: file || "",
+  };
+}
+
+/**
+ * 多调用节点的提示词/数据结构必须逐调用声明：节点级标量只属于单调用节点，
+ * 或无模型调用的本地节点（组稿、发布这类只产 JSON 的节点）。两个调用共用同一份
+ * 节点级提示词时，第二个调用会拿到不相干的文案并静默降级，所以加载期直接抛错。
+ */
+function requirePerCallContracts(step, calls, { name, file }) {
+  const labels = Object.keys(calls);
+  if (labels.length === 1 && step.prompt !== undefined && calls[labels[0]].prompt) {
+    throw new Error(
+      `步骤 ${name} 的提示词声明了两处（节点级 prompt 与 models.${labels[0]}.prompt），只保留一处（${file}）`,
+    );
+  }
+  if (labels.length < 2) return;
+  for (const label of labels) {
+    if (!calls[label].prompt) {
+      throw new Error(
+        `步骤 ${name} 有 ${labels.length} 个模型调用，models.${label}.prompt 必须单独声明提示词 id（${file}）`,
+      );
+    }
+  }
+  for (const key of ["prompt", "schema"]) {
+    if (step[key] !== undefined) {
+      throw new Error(
+        `步骤 ${name} 有 ${labels.length} 个模型调用，节点级 ${key} 会被其他调用误继承：写进真正拥有它的 models.<调用名>（${file}）`,
+      );
+    }
+  }
+}
+
+/**
+ * 一次调用的完整契约：提示词块 + 校验 DSL（运行时唯一取词入口）。
+ * 调用级声明优先；单调用节点与无模型调用节点吃节点级值（含 type 层覆盖）。
+ */
+export function stepCallContract(step, label) {
+  if (!step) return null;
+  const call = step.calls?.[label];
+  return {
+    prompt: call?.prompt ?? step.prompt ?? {},
+    prompt_id: call?.prompt_id ?? step.prompt_id ?? "",
+    schema: call?.schema ?? null,
+    schema_id: call?.schema_id ?? step.schema_id ?? "",
+    input_format: call?.input_format ?? step.input_format ?? {},
+    output_format: call?.output_format ?? step.output_format ?? {},
   };
 }
 
@@ -498,7 +731,8 @@ export function resolveStep(stepOrName, { steps, type } = {}) {
 
   return {
     ...step,
-    enabled: override.enabled ?? step.enabled,
+    // type 层覆盖同样可能是 `${...}` 抬起的字符串：没写就吃节点值，写了就归一成布尔。
+    enabled: override.enabled === undefined ? step.enabled : toBool(override.enabled, step.enabled),
     handler_options: deepMerge(step.handler_options, override.handler_options),
     input_format: override.input_format ?? schema?.input ?? step.input_format,
     output_format: override.output_format ?? schema?.output ?? step.output_format,
@@ -511,8 +745,8 @@ export function resolveStep(stepOrName, { steps, type } = {}) {
 
 /**
  * 提示词优先级：type.steps.<step>.prompt > steps 里的 prompt id。
- * type.steps.<step>.prompt 是提示词 id，例如 ai-news.draft_writing；
- * 对应配置在 config/prompts/ai-news.yaml 的 draft_writing 项。
+ * prompt id 是 `<文件>.<key>`，例如 draft.draft_writing 对应
+ * config/<feature>/prompts/draft.yaml 的 draft_writing 项。
  * 旧 prompts.*_extra 继续追加。
  */
 export function resolveStepPrompt(stepOrName, { steps, type } = {}) {
@@ -541,7 +775,13 @@ const LEGACY_EXTRA = {
   revision: "revise_extra",
 };
 
-export function validateSteps(steps, { types = [] } = {}) {
+/**
+ * 校验步骤注册表。除了通用形状检查，还接收入口提供的两份词汇表：
+ *   stages    —— 流程阶段名（即 --stage 的取值），节点的 stage 必须落在其中；
+ *   skippable —— 入口支持"关掉就跳过"的节点名，只有这些节点可以写 enabled。
+ * 传了才检查（不传 = 该管线不约束），这样 lib 不写死某条管线的词表。
+ */
+export function validateSteps(steps, { types = [], stages, skippable } = {}) {
   const errors = [];
   const warnings = [];
   if (!steps) {
@@ -572,8 +812,36 @@ export function validateSteps(steps, { types = [] } = {}) {
       errors.push(`步骤 ${label} 缺少 HTTP URL`);
     }
 
-    if (!Object.keys(step.input_format || {}).length) warnings.push(`步骤 ${label} 未声明 input_format`);
-    if (!Object.keys(step.output_format || {}).length) warnings.push(`步骤 ${label} 未声明 output_format`);
+    // 契约可以写在节点级（单调用/无调用节点）或调用级（多调用节点），任一处有就算声明。
+    const hasFormat = (key) =>
+      Object.keys(step[key] || {}).length > 0 ||
+      Object.keys(step.calls || {}).some((label) => Object.keys(stepCallContract(step, label)?.[key] || {}).length > 0);
+    if (!hasFormat("input_format")) warnings.push(`步骤 ${label} 未声明 input_format`);
+    // 产物契约（result_schema）也算声明过输出格式：publish/archive 这类节点没有模型输出，
+    // 它校验的就是自己落的 NN-result.json。
+    if (!hasFormat("output_format") && !step.result_schema) warnings.push(`步骤 ${label} 未声明 output_format`);
+
+    // result_schema = 本节点会落盘的那份 NN-result.json 本体的校验契约；
+    // 挂在不会写 result 的节点上等于配置说谎（代码没处可跑它）。
+    if (step.result_schema) {
+      const writesResult = (step.artifacts?.writes || []).some((item) => /(?:^|\/)\d{2}-result\.json/.test(String(item)));
+      if (!writesResult) {
+        errors.push(
+          `步骤 ${label} 声明了 result_schema ${step.result_schema}，但 artifacts.writes 里没有 NN-result.json——产物契约只能挂在真正落盘 result 的节点上${step.source ? `（${step.source}）` : ""}`,
+        );
+      }
+    }
+
+    if (Array.isArray(stages) && !stages.includes(step.stage)) {
+      errors.push(
+        `步骤 ${label} 的 stage ${step.stage_declared ? `"${step.stage}"` : "未声明"}不在流程阶段表（${stages.join("|")}）——stage 表示这个节点属于哪一次 --stage 边界`,
+      );
+    }
+    if (Array.isArray(skippable) && step.enabled_declared && !skippable.includes(step.step_name)) {
+      errors.push(
+        `步骤 ${label} 写了 enabled，但入口不支持跳过它（可跳过：${skippable.join("|") || "无"}）——删掉这行，假开关比没开关更坏${step.source ? `（${step.source}）` : ""}`,
+      );
+    }
   }
 
   for (const step of steps.steps) {
@@ -591,6 +859,9 @@ export function validateSteps(steps, { types = [] } = {}) {
       }
       if (typeof override.schema === "string" && !hasId(steps.schemas, override.schema)) {
         errors.push(`类型 ${type.id} 的步骤 ${name} 引用了不存在的数据结构 id：${override.schema}`);
+      }
+      if (Array.isArray(skippable) && override.enabled !== undefined && !skippable.includes(name)) {
+        errors.push(`类型 ${type.id} 覆盖步骤 ${name} 的 enabled，但入口不支持跳过它（可跳过：${skippable.join("|") || "无"}）`);
       }
     }
   }

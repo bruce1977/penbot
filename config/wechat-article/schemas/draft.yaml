@@ -1,16 +1,14 @@
 # 输入/输出结构：初稿阶段
-# key = 配置项名；完整 id = <文件名>.<key>，例如 topic.classify_type。
+# key = 配置项名；完整 id = <文件名>.<key>，例如 draft.draft_input。
+#
+# 这个文件只放脚本真的会跑的校验契约。写初稿（draft_writing）的输出是自由格式
+# Markdown 正文，没有可执行形状可校验，原先那条 draft_writing 备注已删——
+# 它挂在节点上只会伪装成「这个节点有输出契约」。初稿阶段唯一被校验的产物是
+# 02-step/draft-input.json（draft.draft_input，由 draft-input.mjs 的 validateDraftInput 读取）。
 
 schemas:
-  draft_writing:
-    input:
-      draft_input: "DraftInput（见 02-step/draft-input.json）"
-    output:
-      article: "string（Markdown，含 frontmatter 和配图标记）"
-
   # bundle_draft_input 的产物结构：output 为紧凑校验 DSL（由 draft-input.mjs
-  # 读取，validateDraftInput 的唯一标准）；input 是文档性描述。
-  # 完整 id：draft.draft_input
+  # 读取，validateDraftInput 的唯一标准）。
   draft_input:
     input:
       topic: "01-result.json（标题、判断、受众等）"
@@ -38,3 +36,26 @@ schemas:
       "images[].position": ["string", 1]
       "images[].description": ["string", 1]
       "images[].prompt?": "string"
+
+  # 02-result.json 本体（脚本落盘的产物，不给模型看）：信封 + 三个本地计数。
+  # 由 draft_writing 节点的 result_schema 引用，落盘前跑 validateProduced，
+  # 不合格只警告不阻塞，结果记 02-result.json#validation。
+  # 纲要/初稿输入/初稿的路径都在 files 地图里，下游只从地图取。
+  result:
+    input:
+      draft: "02-step/draft.md"
+      draft_input: "02-step/draft-input.json（由 draft.draft_input 校验）"
+    output:
+      stage: ["string", 1, "draft"]
+      generated_at: ["string", 1]
+      title: ["string", 1, "从 01-result.json 顺延，不改写"]
+      type: ["string", 1, "文章类型 id，同样从 01 顺延"]
+      files: "object"
+      "files.outline": ["string", 1, "02-step/outline.json"]
+      "files.outlineMd": ["string", 1, "02-step/outline.md"]
+      "files.draftInput": ["string", 1, "02-step/draft-input.json"]
+      "files.draft": ["string", 1, "02-step/draft.md"]
+      sections: ["number", 0, "纲要小节数"]
+      images_planned: ["number", 0, "纲要规划的配图张数；0 = 纲要没规划，配图数量吃类型兜底"]
+      words: ["number", 0, "初稿字数（已剥离配图标记）"]
+      validation?: "object"

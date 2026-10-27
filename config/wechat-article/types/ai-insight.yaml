@@ -33,7 +33,9 @@ word_limit:
   max: 2200
   target: 1800
 
-pass_score: 82
+# 通过线：.env 的 PB_PASS_SCORE 一抬就统一四类（无人值守调闸门），不设时用本类型的值。
+# 审稿轮次不在这里写——单源 defaults.yaml review.max_rounds（PB_REVIEW_ROUNDS）。
+pass_score: "${PB_PASS_SCORE:-82}"
 scoring_criteria:
   - id: thesis
     name: 观点质量
@@ -89,10 +91,6 @@ topic:
   fresh_days: 7
   max_candidates: 40
   proposals: 3
-
-review:
-  max_rounds: 3
-  pass_score: 82
 
 prompts:
   outline_extra: "纲要需要明确：核心判断、三个支撑论据、一个反方视角、读者可执行的行动建议。"

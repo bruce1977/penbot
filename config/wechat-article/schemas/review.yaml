@@ -1,16 +1,7 @@
 # 输入/输出结构：审稿阶段
-# key = 配置项名；完整 id = <文件名>.<key>，例如 topic.classify_type。
+# key = 配置项名；完整 id = <文件名>.<key>，例如 review.scoring。
 
 schemas:
-  review:
-    input:
-      article: "string"
-      round: "number"
-    output:
-      article: "string（修正后）"
-      issues: "Array<{type: string, original: string, corrected: string, suggestion?: string}>"
-      channel: "correct-cn|llm|none"
-
   scoring:
     input:
       article: "string"
@@ -19,7 +10,8 @@ schemas:
       scoring_criteria: "Array<{id: string, name: string, weight: number, description?: string}>"
     # 紧凑 DSL（见 lib/template.mjs）：models.jsonValidated 校验模型输出的标准；
     # 尾项字符串是给人看的备注，不作为提示词来源（结构说明在 prompts/review.yaml）；
-    # total 加权一致性等域内修正仍由 normalizeScore() 负责。
+    # total / verdict 只是模型自报值：normalizeScore() 按维度权重回算出 composite_score
+    # 并据此重判 verdict，自报值以 reported_score / reported_verdict 留痕，不进闸门。
     output:
       dimensions: ["array", 1]
       "dimensions[].id": ["string", 1, "维度 id"]
@@ -39,3 +31,37 @@ schemas:
       must_fix: ["array", 0, 3]
       "must_fix[]": ["string", 1, "本轮必须修改的问题"]
       suggested_title?: ["string", 0, "如果标题不够好，给出更好的标题，否则留空"]
+
+  # 03-result.json 本体（脚本落盘的产物）：信封 + 每轮闸门要看的几个数 + 最终结论。
+  # 由 scoring 节点的 result_schema 引用，落盘前跑 validateProduced，
+  # 不合格只警告不阻塞，结果记 03-result.json#validation。
+  # 过程明细（核稿候选数、敏感词命中、每轮全文）留在 03-step/，不进 result；
+  # 分数一律用脚本回算的 composite_score，模型自报 total 只在 final 里留痕为 reported_score。
+  result:
+    input:
+      reviewed: "03-step/reviewed.md"
+      rounds: "03-step/round-N/"
+    output:
+      stage: ["string", 1, "review"]
+      generated_at: ["string", 1]
+      title: ["string", 1, "从 02-result.json 顺延"]
+      type: ["string", 1, "文章类型 id"]
+      files: "object"
+      "files.reviewed": ["string", 1, "03-step/reviewed.md"]
+      rounds: ["array", 1, "逐轮记录，只留闸门要看的那几个数"]
+      "rounds[].round": ["number", 1]
+      "rounds[].word_count": ["number", 0]
+      "rounds[].composite_score?": ["number", 0, 100, "脚本按权重回算的综合评分"]
+      "rounds[].scorer?": ["string", 1, "model|rule|mock——不同模型的分是不同量纲"]
+      "rounds[].scorer_model?": ["string", 1]
+      "rounds[].decision?": ["string", 1, "本轮判定：done|continue"]
+      final: "object"
+      "final.composite_score?": ["number", 0, 100]
+      "final.reported_score?": ["number", 0, 100, "模型自报 total，只留痕不进闸门"]
+      "final.scorer?": ["string", 1]
+      "final.scorer_model?": ["string", 1]
+      "final.decision?": ["string", 1]
+      "final.stop_reason?": ["string", 1, "passed|max_rounds|…"]
+      passed: ["boolean", 0, "最后一轮 composite_score 是否达到 pass_score"]
+      pass_score: ["number", 0, "通过线"]
+      validation?: "object"

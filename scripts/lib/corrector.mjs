@@ -1,42 +1,55 @@
+import { needConfig, needNumber } from "./env.mjs";
 import { sleep } from "./fsx.mjs";
 
 /**
- * correct-cn client.
+ * correct-cn rule clients.
  * Docs: https://github.com/bruce1977/correct-cn
  *
- * POST {base_url}{endpoint}
- *   body: { text, enable_audit?, enable_final_suggestion? }
- *   response: { corrected_text, issues[], sensitive_words[], final_suggestion?, has_issues }
+ * 并行调用两个规则端点，只采集候选，不做裁决：
+ *   POST /api/correct          { text } -> { original, corrected, errors[], model }
+ *   POST /api/sensitive/check  { text } -> { is_sensitive, count, sensitive_words[] }
+ *
+ * `/api/correct#corrected` 实测与原文逐字相同，真正可用的是 `errors[]`；
+ * 候选统一经 selectCandidates() 过滤（空 original、仅大小写差异、纯 ASCII 短词、
+ * original==corrected、重复项），剩下的交给改稿模型逐条核实。
+ * 敏感词误报率高，只做摘要留痕，不进入修改提示词。
+ *
+ * 每次真实 HTTP 请求（含失败重试）经 recorder 落 <step>/api/ 留痕：只记请求体与响应原文，
+ * 鉴权 header / api_key 一律不写。两个端点各占一个 API_SLOT 子步骤号。
  */
-export function createCorrector(correctConfig = {}, logger) {
+export function createCorrector(correctConfig = {}, logger, { recorder, slots = {} } = {}) {
   const base = String(correctConfig.base_url || "").replace(/\/+$/, "");
-  const endpoint = correctConfig.endpoint || "/api/pipeline";
   const enabled = correctConfig.enabled !== false && Boolean(base);
+  // 端点、鉴权头、超时与重试单源 defaults.yaml defaults.review.correct_cn，这里不铺同值副本。
+  // 历史教训：config.mjs 里曾写 auth_header: "X-Auth-Key"，而 defaults.yaml 早已改成
+  // Authorization（服务真用的是后者）——两份并存时改配置的一方永远赢不了。
+  // 只在服务真开着时才要求配全：关掉核稿不需要为它准备端点参数。
+  const where = (key) => `defaults.yaml defaults.review.correct_cn.${key}`;
+  const correctEndpoint = enabled ? needConfig(correctConfig.correct_endpoint, where("correct_endpoint")) : "";
+  const sensitiveEndpoint = enabled ? needConfig(correctConfig.sensitive_endpoint, where("sensitive_endpoint")) : "";
+  const timeoutMs = enabled ? needNumber(correctConfig.timeout_ms, where("timeout_ms")) : 0;
+  const retries = enabled ? needNumber(correctConfig.retries, where("retries")) : 0;
 
-  async function check(text) {
-    if (!enabled) {
-      return { enabled: false, ok: true, skipped: true, issues: [], corrected_text: text, final_suggestion: null };
-    }
+  async function postJson(endpoint, body, { label, slot }) {
     const url = `${base}${endpoint}`;
-    const body = { text };
-    if (correctConfig.enable_audit !== undefined) body.enable_audit = Boolean(correctConfig.enable_audit);
-    if (correctConfig.enable_final_suggestion !== undefined) {
-      body.enable_final_suggestion = Boolean(correctConfig.enable_final_suggestion);
-    }
-
     const headers = { "Content-Type": "application/json" };
     if (correctConfig.api_key) {
-      headers[correctConfig.auth_header || "X-Auth-Key"] = correctConfig.api_key;
-      if ((correctConfig.auth_header || "").toLowerCase() === "authorization") {
+      const authHeader = needConfig(correctConfig.auth_header, where("auth_header"));
+      if (String(authHeader).toLowerCase() === "authorization") {
         headers.Authorization = `Bearer ${correctConfig.api_key}`;
+      } else {
+        headers[authHeader] = correctConfig.api_key;
       }
     }
+    const record = (extra) =>
+      recorder?.record({ label, slot, provider: "correct-cn", request: body, ...extra });
 
-    const retries = Number(correctConfig.retries ?? 2);
     let lastError;
     for (let attempt = 0; attempt <= retries; attempt += 1) {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), correctConfig.timeout_ms || 120000);
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const startedAt = Date.now();
+      let raw = "";
       try {
         const res = await fetch(url, {
           method: "POST",
@@ -44,49 +57,64 @@ export function createCorrector(correctConfig = {}, logger) {
           body: JSON.stringify(body),
           signal: controller.signal,
         });
-        const raw = await res.text();
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}: ${raw.slice(0, 300)}`);
-        }
+        raw = await res.text();
+        record({ attempt: attempt + 1, duration_ms: Date.now() - startedAt, response: raw, error: res.ok ? undefined : `HTTP ${res.status}` });
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${raw.slice(0, 300)}`);
         let data;
         try {
           data = JSON.parse(raw);
         } catch {
           throw new Error(`Non-JSON response: ${raw.slice(0, 200)}`);
         }
-        const issues = normalizeIssues(data);
-        logger?.info(
-          `核稿完成：${issues.length} 条问题，has_issues=${Boolean(data.has_issues)}，corrected=${Boolean(data.corrected_text)}`,
-        );
-        return {
-          enabled: true,
-          ok: true,
-          issues,
-          corrected_text: data.corrected_text || text,
-          final_suggestion: data.final_suggestion || null,
-          review_suggestions: data.review_suggestions || "",
-          typos: data.typos || [],
-          sensitive_words: data.sensitive_words || [],
-          raw: data,
-        };
+        return { ok: true, data, duration_ms: Date.now() - startedAt };
       } catch (error) {
         lastError = error;
-        const message = error.name === "AbortError" ? `timeout after ${correctConfig.timeout_ms || 120000}ms` : error.message;
-        logger?.warn(`核稿请求失败（第 ${attempt + 1}/${retries + 1} 次）：${message}`);
-        if (attempt < retries) await sleep(1500 * (attempt + 1));
+        const message = error.name === "AbortError" ? `timeout after ${timeoutMs}ms` : error.message;
+        if (!raw && !/HTTP \d/.test(message)) {
+          record({ attempt: attempt + 1, duration_ms: Date.now() - startedAt, error: message });
+        }
+        logger?.warn(`${label} 请求失败（第 ${attempt + 1}/${retries + 1} 次）：${message}`);
+        if (attempt < retries) await sleep(800 * (attempt + 1));
       } finally {
         clearTimeout(timer);
       }
     }
-    logger?.warn(`核稿服务不可用，将回退到模型校对：${lastError?.message || "unknown"}`);
+    return { ok: false, error: lastError?.message || "unknown error" };
+  }
+
+  async function check(text) {
+    if (!enabled) {
+      return {
+        enabled: false,
+        ok: true,
+        skipped: true,
+        candidates: [],
+        sensitive: [],
+        errors: { correct: null, sensitive: null },
+        timings: {},
+      };
+    }
+
+    const [correct, sensitive] = await Promise.all([
+      postJson(correctEndpoint, { text }, { label: "correct", slot: slots.correct }),
+      postJson(sensitiveEndpoint, { text }, { label: "sensitive", slot: slots.sensitive }),
+    ]);
+
+    const candidates = correct.ok ? selectCandidates(correct.data?.errors) : [];
+    const sensitiveHits = sensitive.ok ? sensitive.data?.sensitive_words || [] : [];
+    const summary = summarizeSensitive(sensitiveHits);
+    logger?.info(
+      `核稿候选 ${candidates.length} 条（接口原始 ${correct.ok ? (correct.data?.errors || []).length : 0} 条），敏感词命中 ${summary.count} 条 / ${summary.unique.length} 个词（仅留痕）`,
+    );
+
     return {
       enabled: true,
-      ok: false,
+      ok: Boolean(correct.ok && sensitive.ok),
       skipped: false,
-      error: lastError?.message || "unknown error",
-      issues: [],
-      corrected_text: text,
-      final_suggestion: null,
+      candidates,
+      sensitive: sensitiveHits,
+      errors: { correct: correct.error || null, sensitive: sensitive.error || null },
+      timings: { correct_ms: correct.duration_ms ?? null, sensitive_ms: sensitive.duration_ms ?? null },
     };
   }
 
@@ -103,82 +131,46 @@ export function createCorrector(correctConfig = {}, logger) {
   return { check, health, enabled };
 }
 
-export function normalizeIssues(data = {}) {
-  const issues = [];
-  for (const issue of data.issues || []) {
-    issues.push({
-      type: issue.type || "typo",
-      verdict: issue.verdict || "",
-      original: issue.original || issue.word || "",
-      corrected: issue.corrected || "",
-      suggestion: issue.suggestion || "",
-      line: issue.line,
-      start: issue.start,
-      end: issue.end,
-      category: issue.category,
+/** 只保留可交给改稿模型的错别字候选；大小写差异与纯 ASCII 短词一律视为噪声。 */
+export function selectCandidates(errors = []) {
+  const seen = new Set();
+  const candidates = [];
+  for (const error of errors || []) {
+    const original = String(error?.original ?? "");
+    const corrected = String(error?.corrected ?? "");
+    if (!original || !corrected || original === corrected) continue;
+    const ascii = /^[\x20-\x7E]+$/.test(original);
+    if (ascii && original.toLowerCase() === corrected.toLowerCase()) continue;
+    if (ascii && original.length <= 3) continue;
+    const key = `${original}\u0000${corrected}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({
+      type: "typo",
+      original,
+      corrected,
+      line: error.line,
+      start: error.start,
+      end: error.end,
     });
   }
-  if (!issues.length) {
-    for (const typo of data.typos || []) {
-      issues.push({
-        type: "typo",
-        verdict: "typo_confirmed",
-        original: typo.original || "",
-        corrected: typo.corrected || "",
-        suggestion: typo.original ? `${typo.original} → ${typo.corrected}` : "",
-        line: typo.line,
-        start: typo.start,
-        end: typo.end,
-      });
-    }
-    for (const word of data.sensitive_words || []) {
-      issues.push({
-        type: "sensitive",
-        verdict: "sensitive_confirmed",
-        original: word.word || "",
-        suggestion: `敏感词：${word.word}（${word.category || ""}）`,
-        line: word.line,
-        category: word.category,
-      });
-    }
-  }
-  // Only confirmed issues are actionable.
-  return issues.filter((issue) => {
-    if (!issue.verdict) return true;
-    return issue.verdict.endsWith("_confirmed");
-  });
+  return candidates;
 }
 
-/**
- * Apply confirmed issues to the original text by literal replacement.
- * Falls back to the service's corrected/final text when replacements cannot be located.
- */
-export function applyCorrections(article, result, { apply = "issues" } = {}) {
-  if (!result || result.skipped) return { text: article, applied: 0 };
-  if (apply === "final" && result.final_suggestion) {
-    return { text: result.final_suggestion, applied: result.issues.length, mode: "final_suggestion" };
+/** 敏感词只留摘要：命中次数、去重词表、分类分布；原文仍由 api/ 留痕保存。 */
+export function summarizeSensitive(hits = []) {
+  const occurrences = new Map();
+  const byCategory = {};
+  for (const hit of hits || []) {
+    const word = String(hit?.word || "").trim();
+    if (!word) continue;
+    occurrences.set(word, (occurrences.get(word) || 0) + 1);
+    const category = hit.category || "unknown";
+    byCategory[category] = (byCategory[category] || 0) + 1;
   }
-  if (apply === "none") return { text: article, applied: 0, mode: "none" };
-
-  let text = article;
-  let applied = 0;
-  for (const issue of result.issues || []) {
-    if (issue.type === "sensitive") continue; // sensitive words need human/LLM judgement
-    const from = issue.original;
-    const to = issue.corrected;
-    if (!from || !to || from === to) continue;
-    if (text.includes(from)) {
-      text = text.split(from).join(to);
-      applied += 1;
-    }
-  }
-  if (applied === 0 && result.corrected_text && result.corrected_text !== article) {
-    // Sentence-level corrections may not be literal replacements; prefer the
-    // service output only when lengths are close enough to avoid truncation.
-    const ratio = result.corrected_text.length / Math.max(1, article.length);
-    if (ratio > 0.9 && ratio < 1.1) {
-      return { text: result.corrected_text, applied: result.issues.length, mode: "corrected_text" };
-    }
-  }
-  return { text, applied, mode: "issues" };
+  return {
+    count: [...occurrences.values()].reduce((sum, n) => sum + n, 0),
+    unique: [...occurrences.keys()],
+    by_category: byCategory,
+  };
 }

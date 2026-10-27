@@ -59,19 +59,27 @@
 | source_hints 覆盖 | `≥ 1/2` 命中 | 选题时模型点名的素材是否真找到 |
 | 时效 | `≤ 90` 天内至少 1 篇命中 | 实现上不区分类型（四个类型的选题窗口都带 fresh_days，无法作为资讯特征判据）；阈值 `gate.fresh_days` 可配 |
 
-## 3. 通道 1：本地知识库 + WeKnora（已有）
+## 3. 通道 1：本地知识库 + WeKnora（已接入）
 
-改动两点：
+现状（以代码为准）：`collectSources` → `searchKnowledge(notes, { topic: 选题标题 })`，
+本地检索**不做日期过滤**（全量索引打分，标题/标签/摘要/正文四路加权），命中条数由
+`knowledge.max_sources` 限制；WeKnora 仅在 `use_weknora=true` 时参与，两路结果交错合并。
 
-1. **source_hints 加权**：选题时模型给过素材标题（`source_hints`），检索命中的
-   文档标题在 hints 列表里 → `score × 1.5`，排在最前。选题的依据本来就是这几篇，
-   写作时应优先吃透。
-2. **命中不足时放宽窗口**：`lookback_days`（365）内不足 `max_sources/2` 篇时，
-   再扫一次全量（不加日期过滤），标记 `fresh=false`。
+原设计的两点改进，落地情况：
+
+1. **source_hints 加权（未实现）**：选题时模型给过素材标题（`source_hints`），检索命中的
+   文档标题在 hints 列表里 → 加权排在最前。选题的依据本来就是这几篇，写作时应优先吃透。
+   实现时只需把 hints 传进 `searchKnowledge`，不新增配置开关。
+2. **放宽窗口（作废）**：本地检索本来就没有时间窗口，无"放宽"可言；时效性由充足性闸门的
+   `gate.fresh_days` 信号负责。原 `defaults.knowledge.lookback_days` 属无人读取的死配置，
+   已从 defaults.yaml 与 `normalizeType` 默认值中删除。
 
 输出结构不变（title/file/date/tags/excerpts/score/origin，均为真实字段名），`origin` 增加 `local|weknora` 已有。
 
 ## 4. 通道 2：外部检索（opencode websearch，已接入）
+
+> 功能与实现方式的展开说明（serve 生命周期、超时与并发、留痕形状、实测数据、已知限制）见
+> [web-search.md](web-search.md)；本节只保留它在三通道设计里的位置。
 
 执行模块：`scripts/lib/web-search.mjs`（独立模块，可单独跑：
 `node scripts/lib/web-search.mjs "关键字组1" "关键字组2" [--model provider/model] [--out result.md]`）。
@@ -86,10 +94,14 @@ defaults.yaml `defaults.knowledge.web-search.model`。
 
 - 输出**原生就是 Markdown**（`## [标题](URL)` + 发布时间 + 页面摘录，单次约 11–21KB / 8 条来源），
   模块不再做格式转换；旧版 JSON 结果列表另有兼容分支。
-- 时延：单关键字组 40–170s（4b/9b 都有实测；模型只出一次 ~20 token 的工具调用，
-  波动主要来自冷加载与托管检索后端，不是模型吞吐）。
+- 时延：单组实测 40–50s（最新真实留痕统计见 [web-search.md](web-search.md) §5；早期观测到 170s 的上限，
+  波动来自冷加载与托管检索后端，不是模型吞吐——模型只出一次 ~20 token 的工具调用。**各组并行**，所以
+  `timeout_ms`（180s）就是外部检索的总时长上限，不随 `max_queries` 线性放大；
+  单组失败只 warn，其余组与本地素材照常并入。
 - serve 生命周期：配置了固定端口就复用（连上且口令对 → 不关；连不上 → 自起自关），
-  自起的 serve 另有 10 分钟最大存活看门狗；启动失败/超时也会按进程树杀掉，不留孤儿。
+  自起的 serve 有存活看门狗 = 单组超时 + 60s 余量（必须大于超时，否则看门狗会先把在跑的
+  检索掐断，客户端只看到一个没头没尾的 `Transport: fetch failed`）；
+  启动失败/超时也会按进程树杀掉，不留孤儿。到点回收会打一条 warn。
   环境变量：`OPENCODE_DEFAULT_MODEL` / `OPENCODE_SERVE_PORT` / `OPENCODE_SERVER_PASSWORD`。
 
 保留备选：搜索 API（Tavily / Bocha 等，`web-search.provider: tavily` + `PB_WEB_SEARCH_API_KEY`）
@@ -145,7 +157,9 @@ defaults.yaml `defaults.knowledge.web-search.model`。
 ## 5. 通道 3：推理知识要点（新增，一次 LLM 调用）
 
 输入：主题 + 论点 + 通道 1/2 的资料（截断到 ~12k 字）；
-输出（schema：`topic.gather_materials` 之外的新增节点 `knowledge_points`）：
+输出（本节点真校验时才有 schema：在 `schemas/topic.yaml` 注册 `knowledge_points`，
+再由 `gather_materials.schema` 指过去——数据结构注册表只放脚本真跑的校验契约；
+未实现前 `gather_materials` 不带 schema，形状只写在节点的 `output_format` 里当备注）：
 
 ```json
 {
@@ -179,7 +193,7 @@ defaults.yaml `defaults.knowledge.web-search.model`。
   ├── web-search/*.md         # 外部检索落地（按关键字组）
   ├── web-search/index.json   # 检索清单（含失败记录）
   └── points-raw.json       # 要点模型原始输出（排错用）
-NN-step/llm/M-label(_F).<model>.json  # 所属步骤 LLM/API 调用 request+response 留痕（M 按步骤内执行顺序递增）
+NN-step/api/子步骤号_轮次(尝试)-label(_F).<模型|provider>.json  # 所属步骤每次外部调用（模型 + 非模型 API）request+response 留痕（主号=步骤内固定子步骤号，步骤号只在目录名 NN-step；轮次=子步骤逻辑调用次数，(尝试)=单次调用内重试；01 步：1-knowledge_search/2-topic/3-select_best/4-classify_type/5-websearch）
 ```
 
 - 完成判据不变：`01-result.json` 存在且 `title` 非空即选题步完成。
@@ -198,7 +212,7 @@ web-search:
   max_per_query: 3         # 每组结果解析取几条
   max_sources: 6           # 最多并入几条外部素材
   excerpt_chars: 800
-  timeout_ms: 600000
+  timeout_ms: 180000     # 单组超时；各组并行 → 也是外部检索总时长上限（缺省兜底 = web-search.mjs 同名常量）
   gate:
     min_hits_ratio: 0.5    # 命中数 < max_sources × 该比例 → 不足
     min_excerpt_chars: 3000

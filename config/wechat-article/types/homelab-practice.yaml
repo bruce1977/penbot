@@ -29,7 +29,9 @@ style:
     - 不提供危险的公网暴露配置
 
 word_limit: 1200-2000
-pass_score: 78
+# 通过线：.env 的 PB_PASS_SCORE 一抬就统一四类（无人值守调闸门），不设时用本类型的值。
+# 审稿轮次不在这里写——单源 defaults.yaml review.max_rounds（PB_REVIEW_ROUNDS）。
+pass_score: "${PB_PASS_SCORE:-78}"
 scoring_criteria:
   - id: reproducibility
     name: 可复现性
@@ -61,10 +63,6 @@ topic:
   fresh_days: 7
   max_candidates: 40
   proposals: 3
-
-review:
-  max_rounds: 3
-  pass_score: 78
 
 prompts:
   outline_extra: "纲要需包含硬件/软件清单、成本区间、至少两个踩坑点。"

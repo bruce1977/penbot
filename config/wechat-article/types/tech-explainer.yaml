@@ -35,7 +35,9 @@ word_limit:
   max: 2800
   target: 2200
 
-pass_score: 82
+# 通过线：.env 的 PB_PASS_SCORE 一抬就统一四类（无人值守调闸门），不设时用本类型的值。
+# 审稿轮次不在这里写——单源 defaults.yaml review.max_rounds（PB_REVIEW_ROUNDS）。
+pass_score: "${PB_PASS_SCORE:-82}"
 scoring_criteria:
   - id: accuracy
     name: 技术准确性
@@ -63,10 +65,6 @@ topic:
   fresh_days: 7
   max_candidates: 40
   proposals: 3
-
-review:
-  max_rounds: 3
-  pass_score: 82
 
 prompts:
   outline_extra: "纲要需包含：读者前置知识、一个核心类比、最小实践步骤、三个常见坑。"

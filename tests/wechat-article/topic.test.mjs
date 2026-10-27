@@ -22,22 +22,27 @@ import {
 /* ------------------------------------------------------------------ */
 
 const STEPS_REL = "config/wechat-article/steps.yaml";
-const TOPIC_PROMPT = loadSteps(STEPS_REL).prompts["topic.select_topic"];
+const PROMPTS = loadSteps(STEPS_REL).prompts;
+const TOPIC_PROMPT = PROMPTS["topic.select_topic"];
 const TOPIC_SCHEMA = loadSteps(STEPS_REL).schemas["topic.select_topic"].output;
 
 test("buildTopicPrompt 的文案来自 topic.select_topic YAML", () => {
+  // 报错里的 id 由调用方从节点配置带来（prompt_id），代码不写死提示词 id。
   assert.throws(
-    () => buildTopicPrompt({ type: {}, candidates: [] }),
+    () => buildTopicPrompt({ promptId: "topic.select_topic", type: {}, candidates: [] }),
     /缺少提示词配置 topic\.select_topic/,
   );
+  assert.throws(
+    () => buildTopicPrompt({ type: {}, candidates: [] }),
+    /缺少提示词配置（节点未声明 prompt id）/,
+  );
   const out = buildTopicPrompt({
-    prompt: { ...TOPIC_PROMPT, system: "自定义：只输出 {{count}} 个主题，规则：{{json_rules}}\n候选：{{candidates}}／热度：{{heatmap}}" },
+    prompt: { ...TOPIC_PROMPT, system: "自定义：只输出 {{count}} 个主题\n候选：{{candidates}}／热度：{{heatmap}}" },
     type: { name: "栏目", style: {} },
     candidates: [{ title: "文章一", daysAgo: 1, fresh: true }],
     count: 2,
   });
-  assert.match(out.system, /^自定义：只输出 2 个主题，规则：只输出一个合法 JSON 对象/);
-  assert.match(out.system, /候选：1\. 《文章一》 · 1 天前（新采集）／热度：（无热度数据）/);
+  assert.match(out.system, /^自定义：只输出 2 个主题\n候选：1\. 《文章一》 · 1 天前（新采集）／热度：（无热度数据）/);
 });
 
 test("buildTopicPrompt uses titles + heatmap only and always asks for topics[]", () => {
@@ -68,7 +73,8 @@ test("buildTopicPrompt uses titles + heatmap only and always asks for topics[]",
   assert.match(prompt.prompt, /"topics"/);
   assert.match(prompt.prompt, /"score"/);
   assert.match(prompt.prompt, /候选列表中出现过的原标题/);
-  // 输出骨架与校验 schema 同源：desc 提示直接来自 topic.select_topic.output
+  // 给模型看的输出骨架内联在 prompts/topic.yaml；schemas/topic.yaml 的
+  // select_topic.output 只管脚本校验，两处由人工保持同形（不互为来源）。
   assert.match(prompt.prompt, /"topic": "一句话主题（不超过 64 字）"/);
 });
 
@@ -89,6 +95,37 @@ test("buildTopicPrompt 传入已写清单时渲染查重段落与规则", () => 
   const empty = buildTopicPrompt({ prompt: TOPIC_PROMPT, type, candidates, count: 3 });
   assert.match(empty.prompt, /已写过的文章（来自发布归档，避免重复选题）：\n（无历史记录）/);
   assert.match(empty.prompt, /与已有文章形成差异/);
+});
+
+/* ------------------------------------------------------------------ */
+/* 条件文案：整句只在注册表里，代码只按条件挑 key                        */
+/* ------------------------------------------------------------------ */
+
+test("buildTopicPrompt 的四个条件分支都从 topic.select_topic 取整句，缺 key 抛错", () => {
+  const base = {
+    prompt: TOPIC_PROMPT,
+    promptId: "topic.select_topic",
+    type: { name: "栏目", style: { audience: "从业者" }, length: { min: 800, max: 1300 } },
+    candidates: [{ title: "文章一", daysAgo: 1 }],
+  };
+  assert.match(buildTopicPrompt({ ...base, mode: "auto" }).prompt, /请从下列近期知识库文章中自动挑选 3 个/);
+  assert.match(buildTopicPrompt({ ...base, mode: "manual", userTopic: "我的题目" }).prompt, /用户已指定主题：我的题目/);
+  assert.match(buildTopicPrompt({ ...base, written: [{ title: "旧文" }] }).prompt, /严禁与上方「已写过的文章」重复/);
+  assert.match(buildTopicPrompt({ ...base, written: [] }).prompt, /与已有文章形成差异/);
+  assert.match(buildTopicPrompt(base).system, /目标读者：从业者/);
+  assert.match(buildTopicPrompt(base).prompt, /目标篇幅 800-1300 字/);
+  // 未定类 / 没写字数区间：整行省略，不换成代码里的默认文案
+  const placeholder = buildTopicPrompt({ ...base, type: { name: "公众号", style: {}, length: null } });
+  assert.doesNotMatch(placeholder.system, /目标读者/);
+  assert.doesNotMatch(placeholder.prompt, /目标篇幅/);
+
+  for (const key of ["mode_line_auto", "dedupe_rule_no_history", "audience_line", "length_range"]) {
+    const broken = { ...TOPIC_PROMPT, [key]: "" };
+    assert.throws(
+      () => buildTopicPrompt({ ...base, prompt: broken }),
+      new RegExp(`缺少提示词文案 topic\\.select_topic\\.${key}`),
+    );
+  }
 });
 
 /* ------------------------------------------------------------------ */
@@ -187,6 +224,8 @@ test("termHeatmap aggregates across documents and marks freshly collected", () =
 test("buildSystemOneBody turns the types into a choice question", () => {
   const body = buildSystemOneBody({
     model: "jev-latest",
+    prompt: PROMPTS["topic.classify_type"],
+    promptId: "topic.classify_type",
     types: [
       {
         id: "ai-news",
@@ -211,9 +250,9 @@ test("buildSystemOneBody turns the types into a choice question", () => {
 });
 
 test("systemOneUrl does not duplicate /v1", () => {
-  assert.equal(systemOneUrl("https://routellm.abacus.ai/v1"), "https://routellm.abacus.ai/v1/systemone");
+  assert.equal(systemOneUrl("https://routellm.abacus.ai/v1", "/v1/systemone"), "https://routellm.abacus.ai/v1/systemone");
   assert.equal(systemOneUrl("https://routellm.abacus.ai", "/v1/systemone"), "https://routellm.abacus.ai/v1/systemone");
-  assert.equal(systemOneUrl("https://routellm.abacus.ai/", "/v1/systemone"), "https://routellm.abacus.ai/v1/systemone");
+  assert.equal(systemOneUrl("https://routellm.abacus.ai/", "v1/systemone"), "https://routellm.abacus.ai/v1/systemone");
 });
 
 test("normalizeClassifyResult reads answers.<question>.choice and clamps confidence", () => {
@@ -258,6 +297,8 @@ test("classifyArticle calls /v1/systemone and parses answers", async () => {
       timeout_ms: 1000,
       max_retries: 0,
       min_confidence: 0.5,
+      prompt: PROMPTS["topic.classify_type"],
+      prompt_id: "topic.classify_type",
     },
     types: [
       { id: "ai-news", name: "AI 资讯快评", enabled: true },
@@ -326,6 +367,8 @@ test("classifyArticle retries 429 before giving up", async () => {
       timeout_ms: 1000,
       max_retries: 1,
       min_confidence: 0.5,
+      prompt: PROMPTS["topic.classify_type"],
+      prompt_id: "topic.classify_type",
     },
     types: [{ id: "ai-news", name: "AI 资讯快评", enabled: true }],
   };
@@ -335,14 +378,18 @@ test("classifyArticle retries 429 before giving up", async () => {
   assert.equal(result.type, "ai-news");
 });
 
-const twoPassConfig = (deep = true) => ({
+const twoPassConfig = (deep = true, promptId = "topic.classify_type") => ({
   classifier: {
     enabled: true,
+    prompt: PROMPTS[promptId],
+    prompt_id: promptId,
     base_url: "http://systemone.local",
     endpoint: "/v1/systemone",
     api_key: "k",
     model: "tev1",
     question: "article_type",
+    topic_question: "topic_pick",
+    check_question: "review_check",
     timeout_ms: 1000,
     max_retries: 0,
     min_confidence: 0.5,
@@ -417,6 +464,38 @@ test("classifyArticle keeps the first answer when the deep pass fails", async ()
   assert.equal(result.first, undefined);
 });
 
+test("判断模型的端点/问题名/闸门参数单源配置：缺字段抛错点名配置路径，不降级成判断模型不可用", async () => {
+  const never = async () => {
+    throw new Error("不应发起网络调用");
+  };
+  const withClassifier = (patch) => {
+    const config = twoPassConfig();
+    return { ...config, classifier: { ...config.classifier, ...patch } };
+  };
+
+  await assert.rejects(
+    classifyArticle({ config: withClassifier({ question: "" }), title: "某模型开源", outline: "## 事实", fetchImpl: never }),
+    /缺少判断模型行为参数：defaults\.yaml classifier\.question/,
+  );
+  await assert.rejects(
+    classifyArticle({ config: withClassifier({ timeout_ms: undefined }), title: "某模型开源", outline: "## 事实", fetchImpl: never }),
+    /判断模型缺少 timeout_ms：config\/models\.yaml/,
+  );
+  await assert.rejects(
+    classifyArticle({ config: withClassifier({ escalate_below: undefined }), title: "某模型开源", outline: "## 事实", fetchImpl: async () => new Response(JSON.stringify(answer("ai-news", 0.9)), { status: 200 }) }),
+    /判断模型缺少 escalate_below：steps 节点 models\.<调用名>\.options/,
+  );
+
+  // cfg 没写模型名时不再伪造 "jev-latest"：请求体不带 model，留痕由 provider 段承担。
+  let seen;
+  const spy = async (url, init) => {
+    seen = JSON.parse(init.body);
+    return new Response(JSON.stringify(answer("ai-news", 0.9)), { status: 200 });
+  };
+  await classifyArticle({ config: withClassifier({ model: "", deep: null }), title: "某模型开源", outline: "## 事实", fetchImpl: spy });
+  assert.ok(!("model" in seen), "请求体不写代码里的模型名副本");
+});
+
 /* ------------------------------------------------------------------ */
 /* systemone 择题判定                                                   */
 /* ------------------------------------------------------------------ */
@@ -428,7 +507,12 @@ const topicCandidates = [
 ];
 
 test("buildTopicChoiceBody 把候选主题编号为 1..N 的 choice 问题", () => {
-  const body = buildTopicChoiceBody({ topics: topicCandidates, model: "tev1" });
+  const body = buildTopicChoiceBody({
+    topics: topicCandidates,
+    model: "tev1",
+    prompt: PROMPTS["topic.select_best"],
+    promptId: "topic.select_best",
+  });
   assert.equal(body.model, "tev1");
   assert.match(body.state, /1\. 《候选标题一》（写作模型评分 90）/);
   assert.match(body.state, /核心判断：判断三/);
@@ -448,7 +532,7 @@ test("selectBestTopic 按 choice 编号返回 index，低置信度时升级二�
     calls += 1;
     return new Response(JSON.stringify({ ...pick("2", 0.8), model: "tev1-1.0" }), { status: 200 });
   };
-  const result = await selectBestTopic({ config: twoPassConfig(), topics: topicCandidates, fetchImpl });
+  const result = await selectBestTopic({ config: twoPassConfig(true, "topic.select_best"), topics: topicCandidates, fetchImpl });
   assert.equal(calls, 1);
   assert.equal(result.ok, true);
   assert.equal(result.index, 1);
@@ -466,7 +550,7 @@ test("selectBestTopic 按 choice 编号返回 index，低置信度时升级二�
     assert.equal(body.questions.topic_pick.type, "choice");
     return new Response(JSON.stringify({ ...pick("3", 0.9), model: "nimble-2.0" }), { status: 200 });
   };
-  const escalated = await selectBestTopic({ config: twoPassConfig(), topics: topicCandidates, fetchImpl: deepFetch });
+  const escalated = await selectBestTopic({ config: twoPassConfig(true, "topic.select_best"), topics: topicCandidates, fetchImpl: deepFetch });
   assert.equal(escalated.ok, true);
   assert.equal(escalated.index, 2);
   assert.equal(escalated.escalated, true);
@@ -482,7 +566,7 @@ test("selectBestTopic 非法编号回退、单候选与 mock 不走网络", asyn
       }),
       { status: 200 },
     );
-  const bad = await selectBestTopic({ config: twoPassConfig(), topics: topicCandidates, fetchImpl });
+  const bad = await selectBestTopic({ config: twoPassConfig(true, "topic.select_best"), topics: topicCandidates, fetchImpl });
   assert.equal(bad.ok, false);
   assert.match(bad.reason, /未知/);
 
@@ -491,12 +575,12 @@ test("selectBestTopic 非法编号回退、单候选与 mock 不走网络", asyn
     touched = true;
     throw new Error("不应调用");
   };
-  const single = await selectBestTopic({ config: twoPassConfig(), topics: [topicCandidates[0]], fetchImpl: guardFetch });
+  const single = await selectBestTopic({ config: twoPassConfig(true, "topic.select_best"), topics: [topicCandidates[0]], fetchImpl: guardFetch });
   assert.equal(single.ok, true);
   assert.equal(single.index, 0);
   assert.equal(touched, false);
 
-  const mock = await selectBestTopic({ config: twoPassConfig(), topics: topicCandidates, mock: true, fetchImpl: guardFetch });
+  const mock = await selectBestTopic({ config: twoPassConfig(true, "topic.select_best"), topics: topicCandidates, mock: true, fetchImpl: guardFetch });
   assert.equal(mock.ok, true);
   assert.equal(mock.index, 0, "mock 取评分最高的一篇");
 });
@@ -513,7 +597,7 @@ test("classifyOrFallback degrades to classifier.default_type", async () => {
 
 test("buildReviewCheckBody 渲染评稿结果，选项是 done/continue", () => {
   const body = buildReviewCheckBody({
-    score: { total: 60, verdict: "revise", issues: [{ severity: "high", dimension: "length", problem: "篇幅不足", fix: "扩写" }], must_fix: ["补 300 字"] },
+    score: { composite_score: 60, verdict: "revise", issues: [{ severity: "high", dimension: "length", problem: "篇幅不足", fix: "扩写" }], must_fix: ["补 300 字"] },
     wordCount: 700,
     length: { min: 800, max: 1300 },
     passScore: 80,
@@ -546,8 +630,8 @@ test("checkRevisionNeeded 低置信度升级二次判断；禁用时回退由调
     return new Response(JSON.stringify(answerCheck("done", 0.9)), { status: 200 });
   };
   const result = await checkRevisionNeeded({
-    config: twoPassConfig(),
-    score: { total: 60, verdict: "revise", issues: [], must_fix: [] },
+    config: twoPassConfig(true, "review.check"),
+    score: { composite_score: 60, verdict: "revise", issues: [], must_fix: [] },
     wordCount: 700,
     length: { min: 800, max: 1300 },
     passScore: 80,

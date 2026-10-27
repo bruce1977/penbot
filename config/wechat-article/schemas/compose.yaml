@@ -1,0 +1,41 @@
+# 输入/输出结构：组稿阶段（04）
+# key = 配置项名；完整 id = <文件名>.<key>，例如 compose.result。
+#
+# 这个文件只放脚本真的会跑的校验契约。04 的两条分支里，配图产物 04-step/images.json
+# 的契约在 revision.yaml（revision.image_generation）；这里放 04-result.json 本体。
+
+schemas:
+  # 04-result.json 本体（两路并发的汇总）：信封 + polish{} + 配图三个数。
+  # 由 image_generation 节点（artifacts 里落 04-result.json 的那个）的 result_schema 引用，
+  # 落盘前跑 validateProduced，不合格只警告不阻塞，结果记 04-result.json#validation。
+  # 每张图的通道/提示词/耗时只落 04-step/images.json；level/gate/attempts_used 为 null
+  # 表示本档没跑闸门（关档或 mock），不是「校验通过」。
+  result:
+    input:
+      composed: "04-step/composed.md（05 的唯一输入）"
+      polished: "04-step/polished.md（分支进度，不是产物承诺）"
+    output:
+      stage: ["string", 1, "compose"]
+      generated_at: ["string", 1]
+      title: ["string", 1, "从 03-result.json 顺延"]
+      type: ["string", 1, "文章类型 id"]
+      files: "object"
+      "files.polished?": ["string", 1, "关档或润色失败回退时为 null：不把审稿稿改名冒充润色稿"]
+      "files.images": ["string", 1, "04-step/images.json"]
+      "files.composed": ["string", 1, "04-step/composed.md"]
+      polish: "object"
+      "polish.ok": ["boolean", 0, "有没有稿子可继续（回退用审稿稿也算 ok）"]
+      "polish.skipped": ["boolean", 0]
+      "polish.level?": ["string", 1, "light|standard|deep"]
+      "polish.fallback": ["boolean", 0]
+      "polish.mock": ["boolean", 0]
+      "polish.model?": ["string", 1]
+      "polish.words": ["number", 0, "润色稿字数"]
+      "polish.attempts_used?": ["number", 0, "闸门总尝试（含首轮）"]
+      "polish.gate?": "object"
+      "polish.error?": ["string", 1]
+      images_planned: ["number", 0, "规划张数，与配图分支开没开无关"]
+      images_success: ["number", 0]
+      images_skipped: ["boolean", 0]
+      images_validation?: "object"
+      validation?: "object"
