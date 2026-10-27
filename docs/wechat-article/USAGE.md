@@ -34,14 +34,18 @@ node scripts/wechat-article.mjs auto --type ai-news --mock
 # 4) 入口 1（自动）：从知识库最新文档选题 + 自动纲要，再往下写
 node scripts/wechat-article.mjs auto --type ai-insight
 
-# 5) 入口 2（手动）：你给标题 + 提纲，直接往下写
+# 5) 入口 2（给定标题）：你给标题，提纲可选（给了按提纲写，不给则模型生成）
 node scripts/wechat-article.mjs manual --type ai-news \
   --title "某模型正式开源" --outline-file outline.md
+
+# 6) 入口 3（给定草稿）：导入一篇外部草稿，只做后期处理（审稿修正 → 润色 → 配图 → 发布）
+node scripts/wechat-article.mjs post --file 草稿.md --slug my-draft
 ```
 
-- 两个入口之后的步骤**完全一致**（初稿 → 审稿 → 组稿 → 发布），都支持 `--stage draft` 之类的提前停止。
+- 三个入口之后的步骤**完全一致**（初稿 → 审稿 → 组稿 → 发布），都支持 `--stage draft` 之类的提前停止。
 - `--type` 也可以不写在命令行：在 `.env` 里设 `PB_ARTICLE_TYPE=ai-news` 即可（命令行 `--type` 优先）。
-- 手动入口的提纲支持三种来源：`--outline-file outline.md`、`--outline "# 标题\n## 小节\n- 要点"`、或直接给 `02-step/outline.json`；标题可以从提纲的 `# 标题` 行推导，省略 `--title`。
+- 手动入口的提纲**可选**，给了支持三种来源：`--outline-file outline.md`、`--outline "# 标题\n## 小节\n- 要点"`、或直接给 `02-step/outline.json`；标题可以从提纲的 `# 标题` 行推导，省略 `--title`。
+- `post` 入口总是新建文章目录（`--slug` 可指定目录名），原草稿文件不动；导入时统一补齐 frontmatter，缺的产物（纲要/初稿输入/素材）在 `NN-result.json#files` 里如实记 `null`，不伪造。
 
 ### 文章目录与断点续跑
 
@@ -226,7 +230,8 @@ node scripts/wechat-article.mjs draft --article <slug> --input <article>/02-step
 | 命令 | 作用 |
 | --- | --- |
 | `auto` | **入口 1**：自动选题（3 个候选 + 评分，判断模型择一）+ 自动纲要，然后往下写（等价于原来的 `run`） |
-| `manual` | **入口 2**：用 `--title` + `--outline`/`--outline-file` 直接往下写，跳过选题与纲要模型 |
+| `manual` | **入口 2**：用 `--title` 给定标题往下写；提纲可选（`--outline`/`--outline-file`，给了按提纲写、跳过纲要模型，不给则收集资料后由模型生成） |
+| `post` | **入口 3**：`--file <稿件.md>` 导入外部草稿，只做后期处理（审稿修正 → 润色 → 配图 → 发布）；总是新建文章目录 |
 | `run` | 完整管线（保留兼容，等同 `auto`） |
 | `topics` | 列出候选文章；`--count N --output <目录>` 生成 N 个候选主题（含提纲）的 Markdown |
 | `classify` | 只用判断模型（systemone）根据标题 + 提纲选类型，打印选择与得分 |
@@ -238,6 +243,9 @@ node scripts/wechat-article.mjs draft --article <slug> --input <article>/02-step
 | `publish` | 发布已有稿件到邮件 / 公众号草稿箱 |
 | `validate` | 校验配置文件（类型、知识库目录、模型引用等） |
 | `doctor` | 检查环境依赖、知识库可达性、各服务连通性 |
+
+> 上表是 `wechat-article.mjs` 的命令。无人值守的 inbox 监听 + draft 巡检由独立入口
+> `npm run pipeline`（`scripts/wechat-article-pipeline.mjs`）承担，见「无人值守编排器」一节。
 
 ### 通用参数
 
@@ -252,10 +260,11 @@ node scripts/wechat-article.mjs draft --article <slug> --input <article>/02-step
 - `--topic-file <path>` 复用已有选题 JSON（如 `01-result.json`）
 - `--sources-file <path>` 复用已有素材 JSON（数组，直接并入 `01-result.json` 的 `sources`，跳过检索）
 - `--outline-file <path>` `manual` / `classify` 的提纲文件（Markdown 或 `02-step/outline.json`）
+- `--title <text>` `manual` / `post` 的文章标题（`post` 缺省从草稿 frontmatter `title` 或一级标题取）
 - `--input <path>` 初稿输入 JSON（标题 + 大纲 + 资料，如 `02-step/draft-input.json`）；`draft` / `run` 用，跳过前置步骤
 - `--knowledge-source <s>` 覆盖知识来源：`local` | `weknora` | `both`
 - `--article <slug>` 选择/续跑 `draft/<slug>/` 这篇文章；`latest` = 最近一篇；分步命令省略时自动选中唯一一篇
-- `--file <path>` `review`/`compose`/`publish` 直接指定稿件文件（`--article <path>` 仍兼容）
+- `--file <path>` `review`/`compose`/`publish` 直接指定稿件文件（`--article <path>` 仍兼容）；`post` 用它给草稿源文件
 - `--slug <name>` 新建文章时覆盖目录名（默认取标题 slug）
 - `--model <id>` 全局覆盖各节点模型 id（如 `llm.local`、`llm.large`；优先级 `--model` > 节点 `models.<调用名>.rounds.<轮次>.id` > `models.<调用名>.levels.<档位>.id` > `models.<调用名>.id` > `type.model`；遗留参数）
 - `--review-model <id>` 覆盖评稿模型 id
@@ -274,11 +283,14 @@ node scripts/wechat-article.mjs draft --article <slug> --input <article>/02-step
 - `--email` / `--no-email` 覆盖邮件开关
 - `--to <address>` 收件人（可多次或用逗号分隔）
 - `--wechat` / `--no-wechat` 覆盖公众号草稿开关
-- `--dry-run` 发布演练：生成 HTML/命令但不真正投递（`05-result.json` 记 `status: dry_run`，不触发归档）
-- `--auto-publish` 跳过配置里的 `auto_publish=false` 门槛（显式要求发布）
+- `--dry-run` 发布演练：生成 HTML/命令但不真正投递（`05-result.json` 记 `status: dry_run`，不触发归档）；`--mock` 运行同样按演练处理（mock 不发真实请求）
+- `--auto-publish` 跳过 `publish.handler_options.auto_publish=false` 的确认门槛（显式要求发布）
 
-> 安全默认：配置里 `publish.auto_publish=false`，且 `email`/`wechat` 默认关闭。只有显式传 `--email`/`--wechat`/`--auto-publish`、`.env` 里抬起对应的 `PB_*` 开关，或直接运行 `publish` 命令，才会真正发布。
-> 三个开关在 `defaults.yaml` 写成 `${PB_AUTO_PUBLISH:-false}` / `${PB_EMAIL_ENABLED:-false}` / `${PB_WECHAT_ENABLED:-false}`，无人值守跑管线时改 `.env` 即可，不用动配置也不用带 flag；命令行 flag 仍优先于环境变量。
+> 投递开关单源在 `config/wechat-article/steps/50-publish.yaml` 的 `publish.handler_options`：
+> `auto_publish` / `email` / `wechat`，仓库默认三个都是 `true`——`auto` 模式一路发布到归档，不带 flag。
+> 要「只落终稿不投递」就把 `auto_publish: false`，要停某个渠道就把对应的 `email` / `wechat` 改成 `false`
+> （类型层 `steps.publish.handler_options` 同样能按类型关）；命令行 `--auto-publish` / `--email` / `--wechat`
+> 仍可临时覆盖。渠道凭据（`PB_RESEND_*` / `WECHAT_MP_*`）留在 `.env`，不再是开关。
 > 环节级开关在 `steps` 节点：`50-publish.yaml` 的 `publish.enabled=false` 时整个发布环节不执行（不落 05 产物、不投递），`archive.enabled=false` 时不入库、不打包、不删除，产物留在 `draft/`。
 
 ## 产出物
@@ -333,7 +345,7 @@ NN-step/api/子步骤号_轮次(尝试)-label(_F).<模型|provider>.json  所属
 2. 整个文章目录打包到 `published/<YYYYMMDD>-<slug>.zip`；
 3. 删除 `draft/<slug>/`。
 
-`skipped`（未启用发布 / `auto_publish=false`）、`dry_run`、`partial`、`failed` 都留在 `draft/`，修好后可重跑。归档是幂等的：zip 路径先写进 `05-result.json`，重跑时已存在的 zip 直接复用。
+`skipped`（未启用发布 / `handler_options.auto_publish=false`）、`dry_run`、`partial`、`failed` 都留在 `draft/`，修好后可重跑。归档是幂等的：zip 路径先写进 `05-result.json`，重跑时已存在的 zip 直接复用。
 
 ## 流程节点（`config/wechat-article/steps/`）
 
@@ -753,10 +765,62 @@ max_retries` 都由 models.yaml 提供，**缺一项就抛错点名 `config/mode
 
 ## 发布
 
-- **邮件**：Resend（`PB_RESEND_API_KEY`、`PB_RESEND_FROM`），本地图片以 CID 内联附件嵌入；发件域名必须在 Resend 里 verified（实测 `myehome.cn:verified`）。开关只看 `defaults.publish.email.enabled`（可写成 `${PB_EMAIL_ENABLED:-false}` 由 `.env` 抬起）与命令行 `--email`。
+- **邮件**：Resend（`PB_RESEND_API_KEY`、`PB_RESEND_FROM`），本地图片以 CID 内联附件嵌入；发件域名必须在 Resend 里 verified（实测 `myehome.cn:verified`）。发不发只看 `steps/50-publish.yaml` 的 `publish.handler_options.email`（默认 `true`）与命令行 `--email`。
 - **公众号草稿**：`npx --yes @wenyan-md/cli publish -f <稿件> --env-file .env`（依赖 `.env` 里的 `WECHAT_MP_APP_ID`/`WECHAT_MP_APP_SECRET`）。`--dry-run` 只打印命令。
   - wenyan CLI 实际读取的变量名是 `WECHAT_APP_ID`/`WECHAT_APP_SECRET`；管线在 spawn 时自动把 `WECHAT_MP_*` 映射过去，两种命名都能用（缺映射时 CLI 报「未提供 AppID」，2026-10-26 实测）。
   - 公众号后台有 **IP 白名单**：本机 IP 不在名单里，取 access_token 就会失败（`40164 invalid ip ... not in whitelist`，本机实测如此），此时草稿箱不会有任何内容。绕过办法是自建 wenyan 的远程发布服务端并在 `defaults.publish.wechat` 配 `server` + `api_key`（代码已支持，密钥在日志与留痕里打码）。
+
+## 无人值守编排器（`npm run pipeline`）
+
+`scripts/wechat-article-pipeline.mjs` 是**常驻编排器**：监听 inbox 素材目录、巡检 `draft/`，
+用子进程把文章一路推进到发布/归档，全程不需要人干预。它**不是** `wechat-article.mjs` 的子命令，
+而是独立入口（lint 规则只允许 comm 模块被主入口引用，编排器只能 spawn 主入口；子进程也天然
+给出「超时 kill」的边界）。
+
+启动：`npm run pipeline`（或 `node scripts/wechat-article-pipeline.mjs`）。两条节奏，**单并发**：
+
+### inbox 监听（素材 → 文章）
+
+- 监听 `BASE_INBOX_FOLDER/wechat-article/*.md`；**`BASE_INBOX_FOLDER` 未配置 = 关闭 inbox，只做 draft 巡检**。
+- 每份素材先用判断模型（`pipeline.classify.model_id`，默认 `systemone.classifier`）分成两类，
+  失败/未配置端点时回退本地规则（成篇正文判草稿素材，否则标题素材）：
+  - **标题素材** → `manual --topic <标题> --outline-file <素材> --stage topic`（素材当提纲）；
+  - **草稿素材** → `post --file <素材> --stage review`（导入后从审稿起跑）。
+- 一旦 `draft/` 下建出新目录（**进入流转**）就删掉 inbox 原稿，避免重复处理；
+  还没进流转（子进程没建目录）就保留原稿，下一轮重试。
+
+### draft 巡检（续跑）
+
+- 每 `pipeline.inspect_ms`（默认每小时）巡检一轮 `draft/`：对每篇未完成的文章按产物
+  （`NN-result.json`，`detectStartStage`）接力推进每个阶段——`auto --article <slug> --stage <阶段>`。
+- **每阶段子进程带自己的超时**（`pipeline.stage_timeouts.<阶段>`）：超时即 kill，下一轮按
+  上一步产物续跑，不丢已完成的阶段。
+- 完成判据 = `05-result.json` 的 `status=published`（或目录已被归档删除）；归档失败不会自动重试。
+
+### 配置（`defaults.yaml` → `pipeline` 段，`${PB_*}` 旋钮）
+
+| 配置 | 环境变量 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `poll_ms` | `PB_PIPELINE_POLL_MS` | 15000 | inbox 扫描间隔（ms） |
+| `inspect_ms` | `PB_PIPELINE_INSPECT_MS` | 3600000 | draft 巡检间隔（每小时） |
+| `max_fails` | `PB_PIPELINE_MAX_FAILS` | 3 | 同一篇连续失败/无进展几次后跳过 |
+| `stage_timeouts.topic` | `PB_TIMEOUT_TOPIC_MS` | 900000 | 选题阶段超时 |
+| `stage_timeouts.draft` | `PB_TIMEOUT_DRAFT_MS` | 1800000 | 初稿阶段超时 |
+| `stage_timeouts.review` | `PB_TIMEOUT_REVIEW_MS` | 2700000 | 审稿阶段超时 |
+| `stage_timeouts.compose` | `PB_TIMEOUT_COMPOSE_MS` | 1800000 | 组稿阶段超时 |
+| `stage_timeouts.publish` | `PB_TIMEOUT_PUBLISH_MS` | 600000 | 发布阶段超时 |
+| `classify.enabled` | `PB_PIPELINE_CLASSIFY` | true | 素材分类开关（关掉直接用本地规则） |
+
+- **inbox 根目录只认环境变量 `BASE_INBOX_FOLDER`**（留空 = 关闭 inbox），实际目录 = `BASE_INBOX_FOLDER/wechat-article`。
+- **素材分类文案单源在 `defaults.yaml` 的 `pipeline.classify`**（`state`/`instructions`/`criteria`）：
+  编排器不是流程节点，提示词不能挂到 `prompts/`（那里有「必须被节点引用」的孤儿检查），
+  故与 `classifier` 的行为参数一样落在 `defaults.yaml`，代码里不留副本。
+- 失败策略与管线一致：单次子进程超时/失败只记一次，下一轮按产物续跑，**不自我修复提示词**；
+  同一篇连续失败/无进展达 `max_fails` 次才标记跳过并记日志（重启 watcher 重置计数）。
+- 注意：编排器会把文章一路推进到**发布并投递**——开关单源在 `steps/50-publish.yaml` 的
+  `publish.handler_options`（默认 `auto_publish` / `email` / `wechat` 全 `true`）。
+  把 `auto_publish` 改成 `false` 会落终稿不投递，`published` 状态不会被置上，
+  编排器会持续尝试该篇的 publish 阶段（受 `max_fails` 保护）。
 
 ## 环境变量（`.env`）
 
@@ -773,12 +837,11 @@ max_retries` 都由 models.yaml 提供，**缺一项就抛错点名 `config/mode
 | `PB_KNOWLEDGE_BASE_PATH` | 知识库根目录（配置里可用 `${...}` 引用） |
 | `KNOWLEDGE_PIPELINE_DIR` | 发布成功后终稿的待入库目录，默认 `D:/knowledge/pipeline` |
 | `BASE_OUTPUT_FOLDER` | 文章根目录（下面自动建 `draft/` 与 `published/`，默认 `output/wechat-article`） |
+| `BASE_INBOX_FOLDER` | 编排器（`npm run pipeline`）的 inbox 素材根目录：监听 `BASE_INBOX_FOLDER/wechat-article/*.md`；**留空 = 关闭 inbox 监听，只做 draft 巡检** |
 | `PB_ARTICLE_TYPE` | 默认文章类型 id（命令行 `--type` 优先；未设置时交给判断模型） |
 | `SYSTEMONE_BASE_URL` / `SYSTEMONE_MODEL1` / `SYSTEMONE_MODEL2` | 判断模型（System One `/v1/systemone`）：`MODEL1` 一次判断（默认 `tev1`），`MODEL2` 二次判断（默认 `nimble`）；留空 base_url 则回退 `classifier.default_type` |
 | `SYSTEMONE_API_KEY` | 判断模型鉴权 key，**可选**：配置了才发送 `Authorization: Bearer`，端点不鉴权时留空 |
 | `PB_USE_WEKNORA` | WeKnora 总开关，默认 `false`（只用本地知识库目录） |
-| `PB_AUTO_PUBLISH` | `defaults.publish.auto_publish` 的取值来源，默认 `false`（落终稿但不投递）；命令行 `--auto-publish` 优先 |
-| `PB_EMAIL_ENABLED` / `PB_WECHAT_ENABLED` | `defaults.publish.email.enabled` / `wechat.enabled` 的取值来源，默认 `false`；命令行 `--email` / `--wechat` 优先 |
 | `PB_REVIEW_ROUNDS` | 审稿轮次上限（默认 3，加载期 clamp 到 1-5）；只对这一篇临时改仍用 `--rounds` |
 | `PB_PASS_SCORE` | 通过线：一抬就统一四个类型；不设时各类型吃自己的 `${PB_PASS_SCORE:-78\|82}` |
 | `PB_KNOWLEDGE_MAX_SOURCES` | 本地素材条数上限（默认 8），同时推导 WeKnora 的 `match_count` 与外部检索的充足性闸门分母 |
@@ -786,9 +849,16 @@ max_retries` 都由 models.yaml 提供，**缺一项就抛错点名 `config/mode
 | `PB_IMAGE_CONCURRENCY` | 配图同时在飞请求数（默认 2）。张数不吃环境变量：由纲要的 `image_plan` 小节规划决定，单次指定用 `--images` |
 | `PB_DE_AI_ENABLED` / `PB_DE_AI_LEVEL` | 04 的去 AI 化分支：关档（不产出 `polished.md`，组稿用审稿稿）/ 选档 `light\|standard\|deep`。命令行 `--de-ai-level` 优先；档位名大小写敏感，写 `Light` 会当成未定义档位抛错 |
 | `PB_IMAGES_ENABLED` | 04 的配图分支：`false` = 不调任何图片通道，标记按 `illustrations.on_failure` 处理，`04-result.json#images_skipped` 记 `true` |
+| `PB_PIPELINE_POLL_MS` / `PB_PIPELINE_INSPECT_MS` | 编排器（`npm run pipeline`）：inbox 扫描间隔 / draft 巡检间隔（默认 15s / 每小时） |
+| `PB_PIPELINE_MAX_FAILS` | 编排器：同一篇连续失败/无进展几次后跳过（默认 3） |
+| `PB_PIPELINE_CLASSIFY` | 编排器：inbox 素材判断模型分类开关（默认 `true`；`false` 直接用本地规则） |
+| `PB_TIMEOUT_TOPIC_MS` / `PB_TIMEOUT_DRAFT_MS` / `PB_TIMEOUT_REVIEW_MS` / `PB_TIMEOUT_COMPOSE_MS` / `PB_TIMEOUT_PUBLISH_MS` | 编排器：各阶段子进程超时（ms，默认 15/30/45/30/10 分钟）；超时 kill 后下轮按产物续跑 |
 
 > 上表后半段的运行时旋钮在 `defaults.yaml` / `steps/*.yaml` / `types/*.yaml` 里一律写成
 > `${PB_*:-默认值}`：无人值守跑管线时只改 `.env`，配置文件保持不动。
+> **例外：投递开关不是环境变量**——`auto_publish` / `email` / `wechat` 单源在
+> `steps/50-publish.yaml` 的 `publish.handler_options`（默认全 `true`，auto 一路发到底；
+> 要停就改配置，不走 `.env`）。
 > `expandEnv` 替换出来是字符串，加载期统一归一——布尔走 `env.mjs#toBool`（steps 节点的 `enabled`
 > 也走它，`"false"` 不会被 `!== false` 当成开），数字走 `env.mjs#toNumber`（`PB_REVIEW_ROUNDS=three`
 > 这种笔误直接抛错，不静默退回默认值）。代码里不再留与配置同值的兜底默认。
@@ -861,6 +931,7 @@ penbot/                               # 目录规范见仓库根 AGENTS.md
 │   │                                 draft-input/article-store/archive/zip/io-record/
 │   │                                 corrector/web-search
 │   └── comm/                         公众号专属：wechat-publish.mjs、wechat-illustrate.mjs
-├── tests/wechat-article/             分阶段测试（npm test 全量）
+├── tests/wechat-article/             分阶段测试（npm test 全量；lint.test.mjs 守 lint 规则与分层）
+├── eslint.config.mjs                 lint 分层规则（npm run lint；标准见 AGENTS.md「JS/mjs 代码规范」）
 └── docs/wechat-article/              USAGE.md + artifacts / topic-selection / materials-collection
 ```

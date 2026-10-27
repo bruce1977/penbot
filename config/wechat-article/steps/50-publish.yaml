@@ -6,8 +6,11 @@
 # result_schema 也真驱动：落 05-result.json 前用紧凑 DSL 校验脚本自己的产物，不合格只警告不阻塞，
 #   结果分别记 05-result.json#validation 与 #archive.validation。
 #   （01–04 的 result 本体用同一个键；节点级 schema 只留给模型输出/中间产物的契约。）
-# 投递哪些渠道的开关单源在 defaults.yaml defaults.publish.*（email/wechat.enabled、auto_publish），
-#   命令行 --email / --wechat / --auto-publish 可临时触发。
+# 三个投递开关单源在本节点 handler_options（auto_publish / email / wechat）：
+#   auto_publish=true = 不再要确认门槛，auto 模式一路发到底；email/wechat 决定投哪些渠道。
+#   渠道参数（收件人、发件人、api_key、命令串等）仍在 defaults.yaml defaults.publish.*。
+#   命令行 --email / --wechat / --auto-publish 可临时覆盖；类型层
+#   steps.publish.handler_options 可按类型关掉某个渠道。
 
 steps:
   publish:
@@ -17,6 +20,12 @@ steps:
     enabled: true
     modes: [auto, manual, run, publish]
     handler: builtin:publish_article
+    # 投递开关（单源）：改这里就改了「自动跑到底发不发、发哪几个渠道」。
+    # 关掉 auto_publish 只停投递、仍落终稿（status=skipped，reason=auto_publish disabled）。
+    handler_options:
+      auto_publish: true
+      email: true
+      wechat: true
     result_schema: publish.publish
     artifacts:
       reads: ["04-step/composed.md"]

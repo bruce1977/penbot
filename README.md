@@ -113,7 +113,14 @@ flowchart LR
 
 ```bash
 node scripts/wechat-article.mjs <command> [options]     # 等价：npm run wechat-article -- <command>
+
+node scripts/wechat-article.mjs auto   --mock            # 不发真实请求跑通 01→05
+node scripts/wechat-article.mjs review --article my-article-slug
 ```
+
+> **`<command>` 是位置参数，不能写成 `--auto`。** `parseArgs` 把任何以 `--` 开头的参数当选项，
+> 所以 `node … --auto` 会让命令为空、**只打印帮助后退出**（不报错、也不跑管线）。命令名一律
+> **不带 `--`**：`auto` / `run` / `manual` / `post` / `topic` / `draft` / `review` / `compose` / `publish` …。
 
 入口只有一个文件（`scripts/wechat-article.mjs`，约 3500 行），启动顺序固定：
 `parseArgs` → `loadDotEnv(项目根/.env)` → `loadConfig`（defaults → models → article-types → types/*.yaml → steps）→ 命令分发。
@@ -124,8 +131,9 @@ node scripts/wechat-article.mjs <command> [options]     # 等价：npm run wecha
 
 | 类别 | 命令 | 作用 |
 | --- | --- | --- |
-| **两个入口** | `auto` | 入口 1：知识库自动选题 → 判断模型定类 → 自动纲要 → 一路往下写 |
-| | `manual` | 入口 2：你给 `--title` + 提纲（`--outline-file` / `--outline`），跳过选题与纲要模型 |
+| **三个入口** | `auto` | 入口 1·全自动：知识库自动选题 → 判断模型定类 → 自动纲要 → 一路往下写 |
+| | `manual` | 入口 2·给定标题：`--title` 必填；提纲可选（`--outline-file` / `--outline`，给了按提纲写，不给则收集资料后由模型生成） |
+| | `post` | 入口 3·给定草稿：`--file <稿件.md>` 导入一篇外部草稿，只做后期处理（审稿修正 → 润色 → 配图 → 发布），标题取自 frontmatter/一级标题/`--title` |
 | | `run` | 完整管线（等价 `auto`，保留兼容） |
 | **分步** | `topic` / `draft` / `review` / `compose` / `publish` | 各阶段单跑，都在同一篇文章目录里追加产物；`--article <slug>` 指定（只有一篇时可省略） |
 | **查看** | `steps` | 列节点、handler、模型调用、产物；`--type <id>` 看类型覆盖后的配置；`--step <name>` 看单节点最终提示词 |
@@ -143,7 +151,10 @@ node scripts/wechat-article.mjs <command> [options]     # 等价：npm run wecha
 | 脚本 | 命令 |
 | --- | --- |
 | `npm run wechat-article` | 管线入口（`--` 后接命令与参数） |
+| `npm run pipeline` | 无人值守编排器（常驻：inbox 素材监听 + draft 巡检续跑，spawn 管线入口；详见 USAGE「无人值守编排器」） |
 | `npm run wechat-article:validate` / `:doctor` | 配置校验 / 环境检查 |
+| `npm run lint` / `lint:fix` | 代码合规检查 / 就地修可修项 |
+| `npm run check` | lint → validate → 全量单测 |
 | `npm test` | 全量测试 |
 | `npm run test:topic` `test:sources` `test:outline` `test:draft` `test:review` `test:compose` `test:publish` `test:steps` `test:infra` | 按阶段跑 |
 
@@ -154,10 +165,30 @@ opencode 只作为**工具节点**（`websearch`）被脚本调用，不作为�
 
 | 组 | 参数 |
 | --- | --- |
-| 输入 | `--type <id>`（仅作定类失败时的回退）· `--topic` · `--title` · `--outline-file` · `--outline` · `--requirements` · `--article` · `--file` · `--slug` · `--input` · `--topic-file` · `--sources-file` · `--from-proposal` |
+| 输入 | `--type <id>`（仅作定类失败时的回退）· `--topic` · `--title`（manual/post）· `--outline-file` / `--outline`（manual，可选）· `--requirements` · `--article` · `--file`（分步指定稿件；post 的草稿源）· `--slug` · `--input` · `--topic-file` · `--sources-file` · `--from-proposal` |
 | 运行 | `--stage topic\|draft\|review\|compose\|publish` · `--mock` · `--verbose` · `--rounds` · `--length-attempts` · `--images 1-5` · `--de-ai-level light\|standard\|deep` · `--knowledge-source local\|weknora\|both` · `--config/--defaults/--models/--steps`（换配置根） |
 | 发布 | `--email/--no-email` · `--wechat/--no-wechat` · `--to` · `--dry-run` · `--auto-publish` |
 | 遗留 | `--model` / `--review-model`：全局覆盖模型 profile，节点配置才是单源，后续清理 |
+
+### 无人值守编排器（`npm run pipeline`）
+
+`scripts/wechat-article-pipeline.mjs` 是常驻进程，**只 spawn 主入口、不 import 它**（lint 规则只允许
+comm 模块被主入口引用；子进程也天然给出「超时 kill」的边界）。两条节奏、单并发：
+
+- **inbox 监听**：`BASE_INBOX_FOLDER/wechat-article/*.md` 里的新素材，判断模型分成「标题素材 /
+  草稿素材」→ 分别走 `manual --topic …` / `post --file …`；一建出 `draft/<slug>/`（进入流转）
+  就删原稿。**`BASE_INBOX_FOLDER` 不配 = 关闭 inbox，仅做 draft 巡检**。
+- **draft 巡检**：每 `PB_PIPELINE_INSPECT_MS`（默认每小时）对 `draft/` 下未完成的文章按产物
+  接力 `auto --article <slug> --stage <阶段>`，每阶段子进程带自己的超时（`PB_TIMEOUT_*_MS`），
+  超时 kill 后下一轮按上一步产物续跑；连续失败/无进展达 `PB_PIPELINE_MAX_FAILS`（默认 3）次才跳过。
+
+```bash
+npm run pipeline        # 前台常驻（Ctrl+C 退出）；用 systemd / 计划任务托管时仍是这一条命令
+```
+
+子进程输出直接转发到终端；每篇文章自己的文本日志仍在 `draft/<slug>/logs/pipeline.log`。
+阈值/开关全部单源 `defaults.yaml` 的 `pipeline` 段（见 §6），细节见
+[USAGE「无人值守编排器」](docs/wechat-article/USAGE.md)。
 
 ---
 
@@ -213,7 +244,7 @@ opencode 只作为**工具节点**（`websearch`）被脚本调用，不作为�
 ### 05 发布 / 归档（`publish`）
 
 - 终稿从 `composed.md`（基准=文章根）挪进 `05-step/final.md`（基准=`05-step/`）时，正文图片引用**同步换基准**，否则 wenyan CLI 与邮件 CID 都找不到图。
-- 渠道开关分三层：节点 `publish.enabled`（整环节）> `auto_publish`（落稿但不投递）> `email.enabled` / `wechat.enabled`（单渠道）。
+- 渠道开关分三层，单源都在 `steps/50-publish.yaml` 的 `publish` 节点：`enabled`（整环节）> `handler_options.auto_publish`（落稿但不投递）> `handler_options.email` / `wechat`（单渠道）；`--auto-publish` / `--email` / `--wechat` 临时覆盖；`--mock` 运行按演练处理（不调外部投递）。
 - `status` 只有 `published`（启用渠道全部成功）才触发归档；`partial` / `failed` / `dry_run` / `skipped` 都留在 `draft/`。
 - 归档序列：写清单 → 打包 → 删目录（知识库入库失败只记录，不阻塞打包；`knowledge_dir` 留空 = 跳过入库）。
 
@@ -236,6 +267,9 @@ $BASE_OUTPUT_FOLDER/                     默认 output/wechat-article
 `NN-step/api/` 留痕命名：`子步骤号_轮次(尝试)-label(_F).<模型|provider>.json`
 （步骤号由目录名承担；轮次按 label 独立计数，换模型不重置；`(尝试)` = 本次调用内的重试；`_F` = 降级兜底调用）。
 **留痕与日志绝不含 Authorization / API key 原文**，大 body 只记摘要。
+
+> 编排器的 inbox 素材目录在 `BASE_INBOX_FOLDER/wechat-article/`（**不在文章输出目录里**）；
+> 素材被路由进 `draft/<slug>/`（进入流转）后，inbox 原文件即删除。
 
 ---
 
@@ -273,9 +307,11 @@ $BASE_OUTPUT_FOLDER/                     默认 output/wechat-article
 | `WECHAT_MP_APP_ID` / `WECHAT_MP_APP_SECRET` | 公众号草稿（spawn 时映射成 CLI 认的 `WECHAT_APP_ID` / `WECHAT_APP_SECRET`） | — |
 | `WEKNORA_BASE_URL` / `WEKNORA_API_KEY` | 远程知识库 | — |
 | `BASE_OUTPUT_FOLDER` | 文章根目录（自动建 `draft/` 与 `published/`） | `output/wechat-article` |
+| `BASE_INBOX_FOLDER` | 编排器素材根目录：监听 `BASE_INBOX_FOLDER/wechat-article/*.md`；**留空 = 关闭 inbox，仅做 draft 巡检** | — |
 | `KNOWLEDGE_PIPELINE_DIR` | 发布成功后终稿的待入库目录 | `D:/knowledge/pipeline` |
 | `PB_ARTICLE_TYPE` | 默认类型 id（`--type` 优先；没设时交给判断模型） | — |
-| **运行时旋钮** `PB_REVIEW_ROUNDS` · `PB_PASS_SCORE` · `PB_KNOWLEDGE_MAX_SOURCES` · `PB_USE_WEKNORA` · `PB_WEB_SEARCH_ENABLED` · `PB_IMAGE_CONCURRENCY` · `PB_DE_AI_ENABLED` · `PB_DE_AI_LEVEL` · `PB_IMAGES_ENABLED` · `PB_AUTO_PUBLISH` · `PB_EMAIL_ENABLED` · `PB_WECHAT_ENABLED` | 审稿轮次 / 通过线 / 素材条数 / 远程库 / 外部检索 / 配图并发 / 去 AI 化开关与档位 / 配图开关 / 三个投递开关 | 3 · **各类型自带**（78 或 82，见 `types/*.yaml`）· 8 · false · true · 2 · true · light · true · false · false · false |
+| **运行时旋钮** `PB_REVIEW_ROUNDS` · `PB_PASS_SCORE` · `PB_KNOWLEDGE_MAX_SOURCES` · `PB_USE_WEKNORA` · `PB_WEB_SEARCH_ENABLED` · `PB_IMAGE_CONCURRENCY` · `PB_DE_AI_ENABLED` · `PB_DE_AI_LEVEL` · `PB_IMAGES_ENABLED` | 审稿轮次 / 通过线 / 素材条数 / 远程库 / 外部检索 / 配图并发 / 去 AI 化开关与档位 / 配图开关 | 3 · **各类型自带**（78 或 82，见 `types/*.yaml`）· 8 · false · true · 2 · true · light · true |
+| **编排器旋钮** `PB_PIPELINE_POLL_MS` · `PB_PIPELINE_INSPECT_MS` · `PB_PIPELINE_MAX_FAILS` · `PB_PIPELINE_CLASSIFY` · `PB_TIMEOUT_TOPIC_MS` · `PB_TIMEOUT_DRAFT_MS` · `PB_TIMEOUT_REVIEW_MS` · `PB_TIMEOUT_COMPOSE_MS` · `PB_TIMEOUT_PUBLISH_MS` | inbox 扫描间隔 / draft 巡检间隔 / 连续失败上限 / 素材分类开关 / 五阶段子进程超时（ms） | 15000 · 3600000 · 3 · true · 900000 · 1800000 · 2700000 · 1800000 · 600000 |
 
 配置里支持 `${VAR}` 与 `${VAR:-默认值}` 展开。完整口径与例外清单见
 [USAGE.md 的环境变量节](docs/wechat-article/USAGE.md)。
@@ -305,6 +341,8 @@ $BASE_OUTPUT_FOLDER/                     默认 output/wechat-article
 npm install                                  # yaml / markdown-it / @opencode/{cli,client} / @wenyan-md/cli
 # 根目录自建 .env（不入库，仓库里没有模板）：变量清单见 §6，缺哪服务的密钥就跳过哪段能力
 
+npm run check                                 # lint → validate → 全量单测，一条命令跑完三道闸门
+npm run lint                                  # 代码合规检查（分层/风格/本仓库不变量，标准见 AGENTS.md）
 npm test                                      # 全量单测（stub/mock，不发真实请求）
 npm run wechat-article:validate               # 校验配置（节点词汇表、handler、依赖、类型覆盖引用）
 npm run wechat-article:doctor                 # 检查环境与节点里出现的所有模型/服务连通性
@@ -331,6 +369,12 @@ npm run wechat-article -- publish --article <slug> --email --wechat
 [tests/wechat-article/steps.test.mjs#L422](tests/wechat-article/steps.test.mjs#L422)
 「真实注册表：提示词与数据结构 id 都被引用」守住，`validate` 不查它。
 
+代码本身另有一道静态闸门：`npm run lint`（ESLint 10 flat config [eslint.config.mjs](eslint.config.mjs)
++ 本地插件 [scripts/lint/penbot-rules.mjs](scripts/lint/penbot-rules.mjs)）查分层依赖方向、
+`.mjs` 扩展名、风格、以及两条本仓库不变量（留痕不许带鉴权字段、成句文案不许抄进代码）；
+规则分层、豁免纪律与「为什么配置单源类不变量不进 lint」写在 [AGENTS.md](agents.md) 的「JS/mjs 代码规范」一节。
+基线是 0 error / 0 warning，新增代码直接达标，不做「先容忍存量再收紧」。
+
 ---
 
 ## 9. 目录结构
@@ -343,10 +387,13 @@ penbot/
 ├── scripts/
 │   ├── lib/                         跨管线共享机制（config/steps 加载、模板渲染、模型客户端、知识检索、留痕…）
 │   ├── comm/                        功能专属模块（wechat-publish、wechat-illustrate），只允许 comm → lib
-│   └── wechat-article.mjs           管线入口（一管线一文件）
-├── tests/wechat-article/            按阶段的测试 + helpers 夹具
+│   ├── lint/penbot-rules.mjs        本仓库不变量的自定义规则（留痕无密钥、文案单源）
+│   ├── wechat-article.mjs           管线入口（一管线一文件）
+│   └── wechat-article-pipeline.mjs  无人值守编排器（inbox 监听 + draft 巡检，spawn 管线入口）
+├── tests/wechat-article/            按阶段的测试 + helpers 夹具 + lint.test.mjs（规则与分层断言）
 ├── docs/wechat-article/             USAGE.md · 5 份 NN_*_step.md · artifacts / topic-selection / web-search / materials-collection
 ├── output/wechat-article/           运行产物（draft/ 与 published/，gitignored）
+├── eslint.config.mjs                lint 分层规则（L1 分层 / L2 风格 / L3 不变量；L4 交给 validate + 单测）
 ├── opencode.json                    OpenCode 斜杠命令与只读写作代理
 ├── agents.md                        工程约定（编排策略、配置单源、产物布局、留痕命名）
 └── package.json

@@ -53,7 +53,7 @@ export function loadTemplate(file, readJson) {
 
 /** Replace {{path.to.value}}; unknown paths become an empty string. */
 export function renderTemplate(text, vars = {}, { keepUnknown = false } = {}) {
-  return String(text ?? "").replace(/\{\{\s*([\w.\[\]-]+)\s*\}\}/g, (_, key) => {
+  return String(text ?? "").replace(/\{\{\s*([\w.[\]-]+)\s*\}\}/g, (_, key) => {
     const value = key
       .split(".")
       .reduce((acc, part) => (acc === undefined || acc === null ? acc : acc[part]), vars);

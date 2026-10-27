@@ -1,14 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { needConfig, needNumber } from "../lib/env.mjs";
-import { ensureDir } from "../lib/fsx.mjs";
 
 /**
  * 发布结果状态：
  *   published = 所有启用的渠道都真实投递成功
  *   partial   = 有成功也有失败
  *   failed    = 启用的渠道全部失败
- *   skipped   = 未启用发布 / auto_publish=false
+ *   skipped   = 未启用发布 / handler_options.auto_publish=false
  *   dry_run   = 演练
  * 只有 published 会触发归档。
  */

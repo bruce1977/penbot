@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { parseArgs, asNumber, asBool, asList } from "./lib/args.mjs";
-import { findProjectRoot, loadDotEnv, env, needConfig, needNumber } from "./lib/env.mjs";
+import { findProjectRoot, loadDotEnv, env, needConfig, needNumber, toBool } from "./lib/env.mjs";
 import { loadConfig, findType, listTypes, getModelProfile, validateConfig, validateWarnings, featurePaths } from "./lib/config.mjs";
-import { ensureDir, writeText, writeJson, readJson, readText, exists, uniqueDir, relativeTo, timestamp, slugify } from "./lib/fsx.mjs";
+import { ensureDir, writeText, writeBinary, writeJson, readJson, readText, exists, relativeTo, timestamp } from "./lib/fsx.mjs";
 import { createLogger } from "./lib/log.mjs";
 import { createModelClient } from "./lib/models.mjs";
-import { ARTIFACT, buildEnvelope, createArticle, detectStartStage, fileFromResult, listWrittenArticles, openArticle, pickArticleFile, readArticleMeta, stageIndex } from "./lib/article-store.mjs";
+import { ARTIFACT, buildEnvelope, createArticle, detectStartStage, fileFromResult, listWrittenArticles, openArticle, pickArticleFile, readArticleMeta, resetStageDir, stageIndex } from "./lib/article-store.mjs";
 import { archiveArticle } from "./lib/archive.mjs";
-import { indexKnowledge, pickRecent, searchKnowledge, searchWeKnora, collectSources, buildTerms, validateProposals, formatSources, landSources, extractExcerpts, daysAgo, isFreshlyCollected, termHeatmap, formatHeatmap } from "./lib/knowledge.mjs";
+import { indexKnowledge, pickRecent, searchWeKnora, collectSources, buildTerms, validateProposals, landSources, extractExcerpts, daysAgo, isFreshlyCollected, termHeatmap, formatHeatmap } from "./lib/knowledge.mjs";
 import {
   buildTopicPrompt,
   buildOutlinePrompt,
@@ -21,6 +22,7 @@ import {
 import {
   normalizeArticle,
   getTitle,
+  firstHeading,
   countWords,
   lengthAction,
   parseImageMarkers,
@@ -30,7 +32,6 @@ import {
   ensureSectionHeadings,
   parseOutlineMarkdown,
   splitFrontmatter,
-  buildFrontmatter,
   stripCodeFence,
   relocateLocalImages,
   verbatimOverlap,
@@ -97,7 +98,6 @@ function stepCallConfig({ config, type }, stepName, label, options = {}, round =
   const call = step?.calls?.[label];
   const resolved = resolveCall(call, round, level);
   const contract = stepCallContract(step, label);
-  const schema = contract?.output_format || {};
   const retryLimit = resolved.options.retry_limit;
   // retry_limit（总尝试上限，含首轮）单源 steps 节点：它不是 models.yaml 的端点字段，
   // 没有"吃端点默认"这条路；代码兜 2 等于允许配置说谎——节点写 3、实际只跑 2 次没人发现。
@@ -222,12 +222,16 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   03-step/（round-N/、reviewed.md）、04-step/（polished.md、images.json、composed.md、images/）、
   05-step/（final.md、final.html）；每步外部调用（模型 + API）留痕在 NN-step/api/，文本日志在 logs/pipeline.log
 
-两个入口（后续步骤完全一致，都可用 --stage 提前停止）:
-  # 入口 1：自动选题 + 自动纲要
-  node scripts/wechat-article.mjs auto --type ai-news --stage draft
+三个入口（后续步骤完全一致，都可用 --stage 提前停止）:
+  # 入口 1：全自动——自动选题 + 收集资料 + 自动纲要
+  node scripts/wechat-article.mjs auto --stage draft
 
-  # 入口 2：手动标题 + 提纲（提纲用「## 小节」+「- 要点」；也可直接给 02-step/outline.json）
+  # 入口 2：给定标题（提纲可选）——给了提纲按提纲写，不给则收集资料后由模型生成
   node scripts/wechat-article.mjs manual --type ai-news --title "文章标题" --outline-file outline.md
+  node scripts/wechat-article.mjs manual --type ai-news --title "文章标题"
+
+  # 入口 3：给定草稿——只做后期处理（审稿修正 → 润色 → 配图 → 发布）
+  node scripts/wechat-article.mjs post --file 草稿.md --slug my-draft
 
 中断续跑（从最后一个产物继续，不会重复已完成阶段）:
   node scripts/wechat-article.mjs auto --article <slug>
@@ -244,11 +248,11 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   --steps <path>         步骤配置，默认 config/wechat-article/steps.yaml
   --type <id>            文章类型 id（历史遗留，现仅作判断模型失败时的回退；定类由 systemone 完成）
   --article <slug>       选择/续跑 draft 下的文章；latest = 最近一篇；分步命令省略时自动选中唯一一篇
-  --file <path>          review/compose/publish 直接指定稿件文件（也可继续用 --article <path>）
+  --file <path>          review/compose/publish 指定稿件文件；post 入口的草稿源文件
   --slug <name>          新建文章时覆盖目录名（默认取标题的 slug）
-  --title <text>         手动入口的文章标题
-  --outline-file <path>  手动入口 / classify 的提纲文件（.md 或 .json）；分步时也可复用自动生成的 02-step/outline.json
-  --outline <text>       手动入口的内联提纲（Markdown 或 JSON）
+  --title <text>         手动 / post 入口的文章标题（post 缺省从草稿 frontmatter 或一级标题取）
+  --outline-file <path>  手动入口的提纲文件（.md 或 .json，可选）；分步时也可复用自动生成的 02-step/outline.json
+  --outline <text>       手动入口的内联提纲（Markdown 或 JSON，可选）
   --topic <text>         手动指定主题（省略则自动选题；手动时跳过选题模型调用）
   --from-proposal <n>    复用文章目录里 01-step/proposal.json 的第 n 个候选主题（需配合 --article）
   --requirements <text>  手动补充写作要求
@@ -276,7 +280,7 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   --to <address>              收件人（可多次或逗号分隔）
   --wechat / --no-wechat      覆盖公众号草稿开关
   --dry-run                   发布演练：不发邮件、不真正投递草稿
-  --auto-publish              跳过 publish 的确认门槛（等价于配置 auto_publish=true）
+  --auto-publish              跳过 publish 的确认门槛（等价于节点 handler_options.auto_publish=true）
 
   只有至少一个渠道真实投递成功（status=published）才会归档：
   终稿复制到类型配置的 knowledge_dir → 整个文章目录打包到 published/ → 删除 draft/<slug>/。
@@ -287,6 +291,7 @@ const HELP = `wechat-article ${VERSION} — 微信公众号文章自动化管线
   node scripts/wechat-article.mjs run --type ai-insight --mock
   node scripts/wechat-article.mjs run --type ai-news --topic "某模型开源" --requirements "重点写对开发者的影响"
   node scripts/wechat-article.mjs draft --input output/wa-demo/02-step/draft-input.json
+  node scripts/wechat-article.mjs post --file 草稿.md --mock --stage compose
   node scripts/wechat-article.mjs review --article my-article-slug
   node scripts/wechat-article.mjs publish --article my-article-slug --to me@example.com
   node scripts/wechat-article.mjs classify --title "某模型开源" --outline-file outline.md
@@ -334,9 +339,10 @@ async function main() {
     case "classify":
       return cmdClassify(config, options);
     case "kbs":
-      return cmdListKbs(config, options);
+      return cmdListKbs(config);
     case "auto":
     case "manual":
+    case "post":
     case "topic":
     case "draft":
     case "run":
@@ -457,14 +463,14 @@ function cmdSteps(config, options = {}) {
   }
   const type = options.type
     ? (() => {
-        try {
-          return findType(config, options.type);
-        } catch (error) {
-          console.error(error.message);
-          process.exitCode = 1;
-          return null;
-        }
-      })()
+      try {
+        return findType(config, options.type);
+      } catch (error) {
+        console.error(error.message);
+        process.exitCode = 1;
+        return null;
+      }
+    })()
     : null;
   if (options.type && !type) return;
 
@@ -752,23 +758,29 @@ async function cmdDoctor(config, options) {
   add(`配图 Pollinations（${channelRole("pollinations")}）`, poll?.enabled !== false && Boolean(poll?.base_url), poll?.base_url || "缺少 base_url：defaults.yaml illustrations.pollinations.base_url");
 
   const pub = config.defaults?.publish || {};
+  // 发不发、发哪个渠道单源在 steps 节点 publish.handler_options（类型层可覆盖）；
+  // doctor 只看节点默认值——各类型的覆盖在这里无从判断，也不该在代码里假设。
+  const delivery = resolveStep("publish", { steps: config.steps })?.handler_options || {};
+  // 值可能由 ${...} 抬成字符串：doctor 的判定与运行期一样先归一成真布尔。
+  const emailOn = toBool(delivery.email, false);
+  const wechatOn = toBool(delivery.wechat, false);
   // 凭据只看配置：defaults.yaml 已用 ${PB_RESEND_API_KEY} 把 .env 展开进来，
   // 这里再 env() 一次等于给同一项开第二个读取口（配置删掉这行 doctor 照样报绿）。
   const emailKey = pub.email?.api_key;
-  if (pub.email?.enabled) {
+  if (emailOn) {
     add("邮件 Resend", Boolean(emailKey), [
       emailKey ? "已配置 key" : "缺少 PB_RESEND_API_KEY",
       (pub.email.to || []).length ? `收件人 ${String((pub.email.to || []).length)} 个` : "未配置收件人",
     ].join("；"));
   } else {
-    add("邮件 Resend", true, "未启用（publish.email.enabled 或 --email 打开）");
+    add("邮件 Resend", true, "未启用（publish 节点 handler_options.email 或 --email 打开）");
   }
 
-  if (pub.wechat?.enabled) {
+  if (wechatOn) {
     const hasId = Boolean(env("WECHAT_MP_APP_ID") || env("WECHAT_APP_ID"));
     add("公众号 Wenyan", hasId, hasId ? "已配置 WECHAT_MP_APP_ID" : "缺少 WECHAT_MP_APP_ID");
   } else {
-    add("公众号 Wenyan", true, "未启用（publish.wechat.enabled 或 --wechat 打开）");
+    add("公众号 Wenyan", true, "未启用（publish 节点 handler_options.wechat 或 --wechat 打开）");
   }
 
   // 归档：知识库入库目录可写 + zip 落点存在（archive.enabled 整体开关看 steps 节点）
@@ -840,7 +852,7 @@ async function cmdClassify(config, options) {
 /* topics                                                              */
 /* ------------------------------------------------------------------ */
 
-async function cmdListKbs(config, options) {
+async function cmdListKbs(config) {
   const wk = config.defaults?.knowledge?.weknora || {};
   const base = String(wk.base_url || "").replace(/\/+$/, "");
   if (!base) throw new Error("未配置 WeKnora base_url（在 config 或 WEKNORA_BASE_URL 中设置）");
@@ -870,10 +882,10 @@ async function cmdTopics(config, options) {
   const needLocal = type.knowledge.source === "local" || type.knowledge.source === "both";
   const notes = needLocal
     ? indexKnowledge(type, {
-        logger,
-        maxFileBytes: needNumber(type.knowledge.max_file_bytes, "defaults.yaml defaults.knowledge.max_file_bytes"),
-        cacheDir: path.join(PROJECT_ROOT, ".temp", "wechat-article"),
-      })
+      logger,
+      maxFileBytes: needNumber(type.knowledge.max_file_bytes, "defaults.yaml defaults.knowledge.max_file_bytes"),
+      cacheDir: path.join(PROJECT_ROOT, ".temp", "wechat-article"),
+    })
     : [];
   const candidates = await buildCandidates({ type, logger }, notes);
   const w = topicWindows(type);
@@ -1041,7 +1053,7 @@ async function generateProposals({ config, type, pool, count, models, logger, mo
     }));
   }
 
-  let rawTopics = [];
+  let rawTopics;
   const input = buildTopicInput(type, pool);
   const call = stepCallConfig({ config, type }, "select_topic", "select", options);
   const prompt = buildTopicPrompt({
@@ -1219,7 +1231,6 @@ async function cmdPipeline(config, options, command) {
   const existing = selector ? openArticle(config, selector) : null;
   let typeInfo = await resolveTypeForEntry(config, options, {
     title: entryTitle,
-    command,
     existing,
   });
   let type;
@@ -1238,8 +1249,9 @@ async function cmdPipeline(config, options, command) {
 
   const verbose = asBool(options.verbose);
   const mock = asBool(options.mock);
-  const fullPipeline = ["run", "auto", "manual"].includes(command);
+  const fullPipeline = ["run", "auto", "manual", "post"].includes(command);
   const manualEntry = command === "manual";
+  const postEntry = command === "post";
   const stopStage = fullPipeline ? String(options.stage || "publish") : command;
   const inputArg = options.input || options["draft-input"];
   const inputProvided = Boolean(inputArg);
@@ -1259,6 +1271,8 @@ async function cmdPipeline(config, options, command) {
   let article = existing;
   if (article) {
     // 续跑已有文章，后面按最后一个产物判断从哪开始。
+  } else if (postEntry) {
+    article = importDraftArticle(config, options, { title: entryTitle, type });
   } else if (manualEntry) {
     article = createArticle(config, { title: entryTitle, slug: options.slug, type, entry: command });
   } else if (inputProvided) {
@@ -1320,7 +1334,9 @@ async function cmdPipeline(config, options, command) {
       ? `管线启动：类型待定（选题后由判断模型定类；知识库并集 ${type.knowledge_dirs.length} 个目录）`
       : `管线启动：${type.name}（${type.id}）`,
   );
-  logger.info(`入口：${manualEntry ? "手动（标题 + 提纲）" : "自动（基于知识库选题 + 自动纲要）"}`);
+  logger.info(
+    `入口：${manualEntry ? "手动（标题" + (hasOutlineInput(options) ? " + 提纲" : "，提纲由模型生成") + "）" : postEntry ? "后期处理（导入已有草稿，跳过选题/纲要/初稿）" : "自动（基于知识库选题 + 自动纲要）"}`,
+  );
   logger.info(`类型来源：${TYPE_SOURCE_LABEL[typeInfo.source] || typeInfo.source}`);
   if (typeInfo.classification?.reason) logger.info(`分类理由：${typeInfo.classification.reason}`);
   logger.info(`文章根目录：${config.project.base_output_folder}`);
@@ -1337,7 +1353,7 @@ async function cmdPipeline(config, options, command) {
     ctx.models = createModelClient(config, logger, recorder);
     if (article) recorder.setStepDir(path.join(article.dir, "01-step"));
 
-    const resume = Boolean(article?.existing);
+    const resume = Boolean(article?.existing || postEntry);
     const resumeStage = fullPipeline && resume ? detectStartStage(article.dir) : "topic";
     const resumeIndex = stageIndex(resumeStage);
     if (resume) logger.info(`断点续跑：从 ${resumeStage} 阶段开始`);
@@ -1346,7 +1362,7 @@ async function cmdPipeline(config, options, command) {
     const earlyFiles = [ARTIFACT.topic, ARTIFACT.outline];
     const earlyMissing = !article || earlyFiles.some((name) => !exists(path.join(article.dir, name)));
     const needLocal = type.knowledge.source === "local" || type.knowledge.source === "both";
-    if (!inputProvided) {
+    if (!inputProvided && !postEntry) {
       if (needLocal && earlyMissing) {
         ctx.notes = indexKnowledge(type, {
           logger,
@@ -1476,7 +1492,8 @@ async function cmdPipeline(config, options, command) {
 
       // Stage 2（合并的 draft 阶段）：纲要 → 组装初稿输入 →（下面写初稿）----
       recorder.setStepDir(path.join(article.dir, "02-step"));
-      outline = manualEntry ? buildManualOutline(ctx, topic) : await resolveOutline(ctx, sources, resume);
+      outline =
+        manualEntry && hasOutlineInput(options) ? buildManualOutline(ctx, topic) : await resolveOutline(ctx, sources, resume);
       ctx.outline = outline;
       writeJson(path.join(article.dir, ARTIFACT.outline), outline);
       writeText(path.join(article.dir, ARTIFACT.outlineMd), renderOutlineMarkdown(outline, topic.title || topic.topic));
@@ -1525,16 +1542,18 @@ async function cmdPipeline(config, options, command) {
       ctx.state.stages.draft = { ok: true, words: countWords(articleText), sections: (ctx.outline?.outline || []).length, file: draftFile };
     }
     const draftStage = ctx.outline || { outline: [], image_plan: [] };
+    // files 地图只记真实存在的产物（post 导入的稿件没有纲要/初稿输入，相应位置记 null）。
+    const draftFiles = {
+      outline: exists(path.join(article.dir, ARTIFACT.outline)) ? ARTIFACT.outline : null,
+      outlineMd: exists(path.join(article.dir, ARTIFACT.outlineMd)) ? ARTIFACT.outlineMd : null,
+      draftInput: exists(path.join(article.dir, ARTIFACT.draftInput)) ? ARTIFACT.draftInput : null,
+      draft: draftRel,
+    };
     writeJson(path.join(article.dir, ARTIFACT.draft), validateResult({
       ...buildEnvelope(article.dir, "draft", {
         title: ctx.topic?.title || draftStage.title || "",
         type: type.id,
-        files: {
-          outline: ARTIFACT.outline,
-          outlineMd: ARTIFACT.outlineMd,
-          draftInput: ARTIFACT.draftInput,
-          draft: ARTIFACT.draftMd,
-        },
+        files: draftFiles,
       }),
       sections: (draftStage.outline || []).length,
       images_planned: (draftStage.image_plan || []).length,
@@ -1651,6 +1670,41 @@ function finish(ctx) {
 /* ------------------------------------------------------------------ */
 /* stage implementations                                               */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Entry 3 (post)：把外部草稿导进一篇新文章，跳过选题/资料/纲要/初稿。
+ * 落 01-result.json（信封 + 导入元数据）、02-step/draft.md、02-result.json，
+ * detectStartStage 据此从 review 阶段接着跑（审稿修正 → 润色配图 → 发布）。
+ * 原文件不动；正文统一补齐 frontmatter（publish/wenyan 依赖 title 元数据）。
+ */
+export function importDraftArticle(config, options, { title, type }) {
+  const draftFile = path.resolve(PROJECT_ROOT, String(options.file));
+  const normalized = normalizeArticle(stripCodeFence(readText(draftFile)), { title: title || undefined });
+  const article = createArticle(config, { title, slug: options.slug, type, entry: "post" });
+  ensureDir(path.join(article.dir, "02-step"));
+  writeText(path.join(article.dir, ARTIFACT.draftMd), normalized);
+  writeJson(path.join(article.dir, ARTIFACT.topic), {
+    ...buildEnvelope(article.dir, "topic", { title, type: type.id, files: { topicMd: null, proposal: null } }),
+    topic: title,
+    thesis: "",
+    angle: "导入已有草稿",
+    rationale: `post 入口导入：${options.file}`,
+    keywords: [],
+    source_hints: [],
+    sources: [],
+  });
+  writeJson(path.join(article.dir, ARTIFACT.draft), {
+    ...buildEnvelope(article.dir, "draft", {
+      title,
+      type: type.id,
+      files: { outline: null, outlineMd: null, draftInput: null, draft: ARTIFACT.draftMd },
+    }),
+    sections: (normalized.match(/^##\s.+$/gm) || []).length,
+    images_planned: 0,
+    words: countWords(normalized),
+  });
+  return { ...article, existing: true };
+}
 
 async function resolveTopic(ctx, notes, resume) {
   const { options, logger, outputDir } = ctx;
@@ -1771,6 +1825,14 @@ async function mergeWebSearchSources(ctx, topic, local) {
     logger.warn(`外部检索不可用：${error.message}`);
     return local;
   }
+}
+
+/** manual 入口是否真的带了提纲（裸 flag `--outline` 不算）。 */
+export function hasOutlineInput(options) {
+  return Boolean(
+    (options["outline-file"] && options["outline-file"] !== true) ||
+      (options.outline !== undefined && options.outline !== true),
+  );
 }
 
 /**
@@ -2000,13 +2062,13 @@ function buildProposalPayload(type, input, topics, { mock = false, picked = null
     // systemone 择题判定（从 topics 里选第 index 个）；判定不可用或单候选时为 null
     picked: picked
       ? {
-          index: picked.index,
-          title: chosen?.title || chosen?.topic || "",
-          confidence: picked.confidence,
-          model: picked.model,
-          escalated: Boolean(picked.escalated),
-          first_choice: picked.first ? Number(picked.first.type) || null : null,
-        }
+        index: picked.index,
+        title: chosen?.title || chosen?.topic || "",
+        confidence: picked.confidence,
+        model: picked.model,
+        escalated: Boolean(picked.escalated),
+        first_choice: picked.first ? Number(picked.first.type) || null : null,
+      }
       : null,
   };
 }
@@ -2177,7 +2239,7 @@ async function generateDraft(ctx, input) {
   article = normalizeArticle(stripCodeFence(article), { title: input.title, type: type.id });
   article = ensureSectionHeadings(article, input.outline.map((section) => section.heading));
   const count = resolveImageCount(type, { image_plan: input.images }, { count: options.images ? asNumber(options.images) : undefined });
-  article = normalizeImageMarkers(article, count, input.images, { format: type.illustrations.position_format });
+  article = normalizeImageMarkers(article, count, { format: type.illustrations.position_format });
   // 篇幅不在这里调：修正环节（reviewLoop → reviseWithLengthCheck）内置字数校验。
   return article;
 }
@@ -2219,24 +2281,6 @@ function lengthInput(ctx, article) {
 }
 
 /**
- * 重跑审稿阶段前清掉上一进程的轮次目录与留痕：子步骤/尝试计数器每次进程都从 1 开始，
- * 旧 (尝试) 文件不会被覆盖，留着会让本次运行看起来调用了更多次；同时删掉
- * reviewed.md / 03-result.json，保证「存在即完成」只对最后一次运行成立。
- */
-function resetReviewArtifacts(outputDir) {
-  const stepDir = path.join(outputDir, ARTIFACT.reviewDir);
-  if (fs.existsSync(stepDir)) {
-    for (const entry of fs.readdirSync(stepDir)) {
-      if (entry === "api" || /^round-\d+/.test(entry)) {
-        fs.rmSync(path.join(stepDir, entry), { recursive: true, force: true });
-      }
-    }
-  }
-  fs.rmSync(path.join(outputDir, ARTIFACT.reviewed), { force: true });
-  fs.rmSync(path.join(outputDir, ARTIFACT.review), { force: true });
-}
-
-/**
  * 审稿轮次与通过线单源配置，代码不兜 3 / 80（那两份副本与 defaults.yaml 同值，
  * 抬 PB_REVIEW_ROUNDS / PB_PASS_SCORE 就白抬了）：
  *   max_rounds → --rounds > defaults.yaml defaults.review.max_rounds（类型可覆盖），clamp 1-5；
@@ -2259,7 +2303,7 @@ function passScoreOf(type) {
 
 async function reviewLoop(ctx, article) {
   const { type, logger, options } = ctx;
-  resetReviewArtifacts(ctx.outputDir);
+  resetStageDir(ctx.outputDir, "review");
   const maxRounds = maxRoundsOf(type, options.rounds);
   const passScore = passScoreOf(type);
   const history = [];
@@ -2448,8 +2492,7 @@ function scoreArticleResult(score, logger) {
   return score;
 }
 
-export function normalizeScore(type, result, wordCount, { model = "" } = {}) {
-  // 通过线单源配置（passScoreOf 缺了会抛错点名路径），这里不再兜 80。
+export function normalizeScore(type, result, wordCount, { model = "" } = {}) {  // 通过线单源配置（passScoreOf 缺了会抛错点名路径），这里不再兜 80。
   const passScore = passScoreOf(type);
   const dims = type.scoring.dimensions.map((dimension) => {
     const found = (result.dimensions || []).find((d) => d.id === dimension.id || d.name === dimension.name);
@@ -2573,7 +2616,7 @@ async function reviseWithLengthCheck(ctx, article, { corrections = [], score = n
       });
       candidate = normalizeArticle(stripCodeFence(text), { title: getTitle(article), type: type.id });
       candidate = ensureSectionHeadings(candidate, input.outline.map((section) => section.heading));
-      candidate = normalizeImageMarkers(candidate, markers, input.images, { format: imageFormat });
+      candidate = normalizeImageMarkers(candidate, markers, { format: imageFormat });
     } catch (error) {
       lastError = error;
       failReason = { words: null, action: null, error: error.message };
@@ -2668,6 +2711,7 @@ export function composeBranches(ctx) {
  */
 async function composeArticle(ctx, article) {
   const { type, logger, options, outputDir, outline } = ctx;
+  resetStageDir(outputDir, "compose");
   const count = resolveImageCount(type, outline, { count: options.images ? asNumber(options.images) : undefined });
   const plans = planImages(outline, count, { cover: type.illustrations.cover !== false });
   const imageStep = resolveStep("image_generation", { steps: ctx.config?.steps, type });
@@ -2868,7 +2912,7 @@ async function polishArticle(ctx, article) {
     }
     let polished = normalizeArticle(stripCodeFence(text), { title: getTitle(article), type: type.id });
     polished = ensureSectionHeadings(polished, input.outline.map((section) => section.heading));
-    polished = normalizeImageMarkers(polished, markers, input.images, { format: imageFormat });
+    polished = normalizeImageMarkers(polished, markers, { format: imageFormat });
     const signals = polishSignals(article, polished, range, maxOverlap);
     tried.push({ polished, signals, attempt });
     if (signals.ok) {
@@ -2937,7 +2981,7 @@ async function generateArticleImages(ctx, plans, imageStep) {
     const scene = (type.illustrations.scenes || {});
     images = plans.map((plan) => {
       const file = path.join(imagesDir, `${String(plan.index).padStart(2, "0")}_mock.png`);
-      if (!exists(file)) fs.writeFileSync(file, MOCK_PNG);
+      if (!exists(file)) writeBinary(file, MOCK_PNG);
       const size = scene[plan.scene] || scene["article-inline"];
       if (!Number(size?.width) || !Number(size?.height)) {
         throw new Error(`缺少配图尺寸：defaults.yaml illustrations.scenes.${plan.scene}（或 article-inline）的 width/height`);
@@ -2964,15 +3008,52 @@ async function generateArticleImages(ctx, plans, imageStep) {
   return { images, validation };
 }
 
+/**
+ * 投递台账（05-step/delivered.json）。外部副作用不像产物文件可以重跑覆盖：公众号草稿箱
+ * 投成功一次就多一篇，邮件重发就是骚扰。所以每个渠道投递**前后各记一次**，按终稿内容摘要
+ * 关联——同一份稿子已记 delivered 的渠道跳过重投；稿子改了（摘要变）才允许重投；
+ * 停在 attempting = 上次发起后没拿到结果，状态未知，宁可不投也要交人工确认。
+ * 台账只记渠道、摘要、时间与不含密钥的结果摘要（message id / 退出码）。
+ */
+export function readDeliveryLedger(outputDir) {
+  return readJsonSafe(path.join(outputDir, ARTIFACT.delivered)) || {};
+}
+
+function recordDelivery(outputDir, channel, entry) {
+  const ledger = readDeliveryLedger(outputDir);
+  const at = new Date().toISOString();
+  ledger[channel] = { ...entry, at };
+  ledger.updated_at = at;
+  writeJson(path.join(outputDir, ARTIFACT.delivered), ledger);
+  return ledger;
+}
+
+/** 本渠道对这份终稿的投递状态：delivered | attempting | failed | none（没记过或稿子变了）。 */
+function deliveryState(ledger, channel, digest) {
+  const entry = ledger[channel];
+  return !entry || entry.digest !== digest ? "none" : entry.status;
+}
+
+/** 终稿内容摘要：台账用它判断「是不是同一份稿子」，摘要不同的投递记录互不相干。 */
+function digestText(text) {
+  return createHash("sha256").update(String(text)).digest("hex").slice(0, 16);
+}
+
 export async function publishArticle(ctx, article) {
   const { type, logger, options, outputDir, stamp } = ctx;
   const publishConfig = type.publish || {};
   const publishStep = resolveStep("publish", { steps: ctx.config?.steps, type });
-  const autoPublish = publishConfig.auto_publish === true || asBool(options["auto-publish"]);
-  const dryRun = asBool(options["dry-run"]);
+  // 三个投递开关单源在 steps 节点 publish.handler_options；命令行只做临时覆盖。
+  // 三个键必填：缺了直接点名配置路径，不静默当成 false——那会让「自动跑到底」悄悄变成 skipped。
+  const delivery = publishStep?.handler_options || {};
+  const deliverySwitch = (key) => toBool(needConfig(delivery[key], `steps/50-publish.yaml 的 publish.handler_options.${key}`), false);
+  const autoPublish = deliverySwitch("auto_publish") || asBool(options["auto-publish"]);
+  // `--mock` 的承诺是「不发真实请求」（HELP 里就写着），邮件/公众号投递也是外部请求：
+  // 开关默认全开后，mock 运行必须自动按演练处理，否则验证流程会真的发出邮件。
+  const dryRun = asBool(options["dry-run"]) || Boolean(ctx.mock);
 
-  const emailEnabled = options.email !== undefined ? asBool(options.email) : publishConfig.email?.enabled === true;
-  const wechatEnabled = options.wechat !== undefined ? asBool(options.wechat) : publishConfig.wechat?.enabled === true;
+  const emailEnabled = options.email !== undefined ? asBool(options.email) : deliverySwitch("email");
+  const wechatEnabled = options.wechat !== undefined ? asBool(options.wechat) : deliverySwitch("wechat");
 
   const title = getTitle(article, ctx.topic?.title || "未命名文章");
   const finalFile = path.join(outputDir, ARTIFACT.final);
@@ -2995,6 +3076,9 @@ export async function publishArticle(ctx, article) {
   // 否则外部发布器（wenyan CLI 按稿件文件所在目录解析相对路径）找不到配图。
   const { markdown: finalArticle, images: finalImages } = relocateLocalImages(article, outputDir, path.dirname(finalFile));
   writeText(finalFile, finalArticle);
+  // 投递前先看台账：这份终稿（按摘要认定）哪些渠道已经投过了。
+  let ledger = readDeliveryLedger(outputDir);
+  const digest = digestText(finalArticle);
 
   const result = {
     ...buildEnvelope(outputDir, "publish", {
@@ -3023,7 +3107,7 @@ export async function publishArticle(ctx, article) {
   }
 
   if (!autoPublish && !dryRun) {
-    logger.warn("publish.auto_publish=false：已生成终稿但未自动发布。加 --auto-publish 或 --email/--wechat 显式触发。");
+    logger.warn("publish 节点 handler_options.auto_publish=false：已生成终稿但未自动发布。加 --auto-publish 或 --email/--wechat 显式触发。");
     result.status = "skipped";
     result.reason = "auto_publish disabled";
     return persist();
@@ -3034,9 +3118,18 @@ export async function publishArticle(ctx, article) {
     const html = emailShell(title, await markdownToHtml(bodyOnly(finalArticle)));
     const htmlFile = writeText(path.join(outputDir, ARTIFACT.finalHtml), html);
     result.files.html = relativeTo(outputDir, htmlFile);
-    result.email = dryRun
-      ? { success: true, dryRun: true, to }
-      : await sendEmail({
+    const state = dryRun ? "none" : deliveryState(ledger, "email", digest);
+    if (state === "delivered") {
+      logger.warn(`邮件不重投：台账（${ARTIFACT.delivered}）记这份终稿已于 ${ledger.email.at} 投递成功；改了稿子才会重投`);
+      result.email = { success: true, skipped: "already_delivered", to };
+    } else if (state === "attempting") {
+      logger.warn(`邮件状态未知：上次发起后没拿到结果，不自动重投——请人工确认收件箱，再删掉 ${ARTIFACT.delivered} 里的 email 记录`);
+      result.email = { success: false, skipped: "delivery_state_unknown", to };
+    } else {
+      if (!dryRun) recordDelivery(outputDir, "email", { status: "attempting", digest, to });
+      result.email = dryRun
+        ? { success: true, dryRun: true, to }
+        : await sendEmail({
           to,
           subject: renderSubject(needConfig(publishConfig.email?.subject, "defaults.yaml defaults.publish.email.subject"), { title, date: stamp.date, type: type.name }),
           html,
@@ -3046,17 +3139,45 @@ export async function publishArticle(ctx, article) {
           recorder: ctx.recorder,
           slot: API_SLOT.publish.email,
         });
+      if (!dryRun) {
+        ledger = recordDelivery(outputDir, "email", {
+          status: result.email.success ? "delivered" : "failed",
+          digest,
+          to,
+          message_id: result.email.id ?? null,
+          error: result.email.error ?? null,
+        });
+      }
+    }
   }
 
   if (wechatEnabled) {
-    result.wechat = await publishToWechat({
-      markdownFile: finalFile,
-      config: { ...publishConfig.wechat, dry_run: dryRun || publishConfig.wechat?.dry_run },
-      logger,
-      recorder: ctx.recorder,
-      slot: API_SLOT.publish.wechat,
-      envFile: path.resolve(PROJECT_ROOT, publishConfig.wechat?.env_file || ".env"),
-    });
+    const state = dryRun ? "none" : deliveryState(ledger, "wechat", digest);
+    if (state === "delivered") {
+      logger.warn(`公众号草稿箱不重投：台账（${ARTIFACT.delivered}）记这份终稿已于 ${ledger.wechat.at} 投递成功；改了稿子才会重投`);
+      result.wechat = { success: true, skipped: "already_delivered" };
+    } else if (state === "attempting") {
+      logger.warn(`公众号状态未知：上次发起后没拿到结果，不自动重投——请人工确认草稿箱，再删掉 ${ARTIFACT.delivered} 里的 wechat 记录`);
+      result.wechat = { success: false, skipped: "delivery_state_unknown" };
+    } else {
+      if (!dryRun) recordDelivery(outputDir, "wechat", { status: "attempting", digest });
+      result.wechat = await publishToWechat({
+        markdownFile: finalFile,
+        config: { ...publishConfig.wechat, dry_run: dryRun || publishConfig.wechat?.dry_run },
+        logger,
+        recorder: ctx.recorder,
+        slot: API_SLOT.publish.wechat,
+        envFile: path.resolve(PROJECT_ROOT, publishConfig.wechat?.env_file || ".env"),
+      });
+      if (!dryRun && !publishConfig.wechat?.dry_run) {
+        recordDelivery(outputDir, "wechat", {
+          status: result.wechat.success ? "delivered" : "failed",
+          digest,
+          exit_code: result.wechat.code ?? null,
+          error: result.wechat.success ? null : String(result.wechat.error || `退出码 ${result.wechat.code}`).slice(0, 200),
+        });
+      }
+    }
   }
 
   result.status = derivePublishStatus({ dryRun, emailEnabled, wechatEnabled, email: result.email, wechat: result.wechat });
@@ -3148,8 +3269,9 @@ async function cmdPublishOnly(config, options) {
   const recorder = createRecorder();
   recorder.setStepDir(path.join(target.dir, "05-step"));
   const ctx = { config, type, logger, recorder, options, outputDir: target.dir, stamp, topic: { title: getTitle(article) } };
-  // Explicit invocation of `publish` counts as consent.
-  const result = await publishArticle({ ...ctx, type: { ...type, publish: { ...type.publish, auto_publish: true } } }, article);
+  // Explicit invocation of `publish` counts as consent: 走与 --auto-publish 同一个覆盖口，
+  // 不让配置里的 handler_options.auto_publish=false 把人工命令挡在门外。
+  const result = await publishArticle({ ...ctx, options: { ...options, "auto-publish": true } }, article);
 
   // 真实投递成功且稿件在 draft/<slug>/ 里 → 打包并清理；archive 节点关掉则整段跳过。
   if (!stepEnabled("archive", config, type)) {
@@ -3287,12 +3409,6 @@ function diffSummary(before, after) {
   return `# 修正摘要\n\n- 修正前：${beforeWords} 字\n- 修正后：${afterWords} 字\n- 变化：${afterWords - beforeWords} 字\n`;
 }
 
-function requireOption(options, name) {
-  const value = options[name];
-  if (!value || value === true) throw new Error(`缺少参数 --${name}`);
-  return String(value);
-}
-
 /**
  * Apply --knowledge-source, respecting the global WeKnora switch
  * (knowledge.use_weknora / PB_USE_WEKNORA).
@@ -3372,7 +3488,7 @@ const TYPE_SOURCE_LABEL = {
  * auto 入口（没有标题/提纲）返回 deferred：类型在选题之后由判断模型确定，
  * --type 只是分类失败时的回退提示，不再预先定类。
  */
-async function resolveTypeForEntry(config, options, { title = "", command, existing } = {}) {
+async function resolveTypeForEntry(config, options, { title = "", existing } = {}) {
   if (existing?.article?.type) return { typeId: existing.article.type, source: "article" };
 
   const inputArg = options.input || options["draft-input"];
@@ -3449,24 +3565,47 @@ function outlineJsonToText(text) {
 
 /**
  * Fail fast on bad entry arguments, before spending time on retrieval/models.
- * Entry 2 (manual) needs a title and an outline; either may come from the file.
+ * Entry 2 (manual) needs a title; the outline is optional (missing → 模型生成).
+ * Entry 3 (post) needs a draft file; the title comes from it (or --title).
  * Returns the title to use (empty for other entries).
  */
-function assertEntryInputs(options, command) {
+export function assertEntryInputs(options, command) {
+  if (command === "post") {
+    const draftArg = options.file;
+    if (!draftArg || draftArg === true) {
+      throw new Error("post 入口需要草稿：用 --file <稿件.md> 给一份已有文档（--title 可覆盖标题，--slug 可指定目录名）");
+    }
+    if (options["outline-file"] || options.outline !== undefined) {
+      throw new Error("post 入口不做选题与纲要：--outline / --outline-file 只用于 manual 入口");
+    }
+    if (options.article && options.article !== true) {
+      throw new Error("post 入口总是新建文章目录：续跑/重跑已有文章请用 run --article <slug>");
+    }
+    const draftFile = path.resolve(PROJECT_ROOT, String(draftArg));
+    if (!fs.existsSync(draftFile)) throw new Error(`--file 不存在：${draftFile}`);
+    const given = String(options.title || "").trim();
+    if (given) return given;
+    const { data, body } = splitFrontmatter(stripCodeFence(fs.readFileSync(draftFile, "utf8")));
+    const title = String(data.title || "").trim() || firstHeading(body);
+    if (title) return title;
+    throw new Error("无法从草稿里取标题：文件需要 frontmatter title 或一级标题（# 标题），或用 --title \"标题\" 指定");
+  }
   if (command !== "manual") return "";
   const fileArg = options["outline-file"];
-  const inline = options.outline !== undefined ? String(options.outline) : "";
-  if (!fileArg && !inline.trim()) {
-    throw new Error('manual 入口需要提纲：用 --outline-file <提纲.md> 或 --outline "…" 提供（也可直接传 02-step/outline.json）');
-  }
-  let text = inline;
-  if (fileArg) {
+  if (fileArg === true) throw new Error("--outline-file 需要一个文件路径参数");
+  if (options.outline === true) throw new Error('--outline 需要提纲文本：--outline "## 小节…" 或 --outline-file <提纲.md>');
+  const hasOutline = hasOutlineInput(options);
+  let text = options.outline !== undefined && options.outline !== true ? String(options.outline) : "";
+  if (fileArg && fileArg !== true) {
     const file = path.resolve(PROJECT_ROOT, String(fileArg));
     if (!fs.existsSync(file)) throw new Error(`--outline-file 不存在：${file}`);
     text = fs.readFileSync(file, "utf8");
   }
   const given = String(options.title || options.topic || "").trim();
   if (given) return given;
+  if (!hasOutline) {
+    throw new Error('manual 入口需要标题：用 --title "文章标题"（提纲可选，不给则由模型根据资料生成）');
+  }
   if (fileArg && String(fileArg).toLowerCase().endsWith(".json")) {
     try {
       const json = JSON.parse(text);

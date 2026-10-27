@@ -29,6 +29,7 @@ schemas:
       "email.to[]": ["string", 1]
       "email.id?": ["string", 1, "Resend 返回的邮件 id"]
       "email.error?": ["string", 1]
+      "email.skipped?": ["string", 1, "already_delivered（台账记已投成功）| delivery_state_unknown（台账停在 attempting，需人工确认）"]
       wechat?: "object"
       "wechat.success": "boolean"
       "wechat.dryRun?": "boolean"
@@ -36,6 +37,7 @@ schemas:
       "wechat.output?": ["string", 1, "CLI 输出的尾部"]
       "wechat.code?": ["number", "CLI 退出码"]
       "wechat.error?": ["string", 1]
+      "wechat.skipped?": ["string", 1, "already_delivered | delivery_state_unknown，口径同 email.skipped"]
       reason?: ["string", 1, "status=skipped 时的原因"]
       validation?: "object"
       archivedAt?: ["string", 1, "归档时间（归档环节写入）"]

@@ -23,7 +23,7 @@
 | `review` | 否 | 只覆盖 `correct_cn`（核稿端点/鉴权/超时）。`max_rounds` 与 `pass_score` 不在这里写：前者单源 `defaults.yaml review.max_rounds`（`PB_REVIEW_ROUNDS`），后者用上面的顶层 `pass_score`；评稿/修正模型在 steps 节点配置 |
 | `steps` | 否 | 按节点覆盖 `enabled` / `handler_options` / `prompt` / `schema`（`prompt` 和 `schema` 写注册表 id）；模型调用不在 type 层覆盖 |
 | `prompts` | 否 | 旧字段：`outline_extra` / `draft_extra` / `revise_extra`，会追加到对应节点的 `prompt.extra` |
-| `publish` | 否 | 一般不用配；邮件/公众号渠道开关与知识库归档目录统一在 `config/wechat-article/defaults.yaml` 的 `defaults.publish`。环节级开关是 steps 节点 `publish.enabled` / `archive.enabled`，type 层要关就在 `steps:` 里覆盖 |
+| `publish` | 否 | 一般不用配；渠道参数（收件人、发件人、命令串、超时重试）与知识库归档目录统一在 `config/wechat-article/defaults.yaml` 的 `defaults.publish`。发不发、发哪个渠道在 `steps/50-publish.yaml` 的 `publish.handler_options`（默认全 `true`），type 层要关就在 `steps.publish.handler_options` 里覆盖；环节级开关是 steps 节点 `publish.enabled` / `archive.enabled` |
 
 ## 例子
 

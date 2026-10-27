@@ -109,7 +109,7 @@ test("image_position_format drives marker generation, parsing and replacement", 
   });
   assert.equal(replaced, "![封面](images/01.png)");
 
-  const ensured = ensureImageMarkers("## A\n\n正文段落。\n\n## B\n\n正文段落。", 1, [{ description: "示意图" }], { format });
+  const ensured = ensureImageMarkers("## A\n\n正文段落。\n\n## B\n\n正文段落。", 1, { format });
   assert.match(ensured, /<<img:1>>/);
   assert.equal(parseImageMarkers(ensured, { format }).length, 1);
 });
@@ -117,7 +117,7 @@ test("image_position_format drives marker generation, parsing and replacement", 
 test("normalizeImageMarkers renumbers custom-format markers and strips payloads", () => {
   const format = "<!-- img:{index} -->";
   const md = "<!-- img:5|甲 -->\n\n<!-- img:5|重复 -->\n\n<!-- img:9|乙 -->";
-  const out = normalizeImageMarkers(md, 2, [], { format });
+  const out = normalizeImageMarkers(md, 2, { format });
   const markers = parseImageMarkers(out, { format });
   assert.deepEqual(markers.map((m) => m.index), [1, 2]);
   assert.ok(!out.includes("甲"));
@@ -126,10 +126,7 @@ test("normalizeImageMarkers renumbers custom-format markers and strips payloads"
 
 test("ensureImageMarkers 补齐缺失的裸标记，序号连续", () => {
   const md = `${buildFrontmatter({ title: "T" }).trimEnd()}\n\n第一段。\n\n第二段。\n\n第三段。`;
-  const out = ensureImageMarkers(md, 2, [
-    { position: "cover", description: "封面画面", prompt: "cover art" },
-    { position: "inline_1", description: "第二节示意图" },
-  ]);
+  const out = ensureImageMarkers(md, 2);
   const markers = parseImageMarkers(out);
   assert.deepEqual(markers.map((m) => m.index), [1, 2]);
   assert.match(out, /\[\[img:1\]\]/);

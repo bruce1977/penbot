@@ -7,6 +7,7 @@ import path from "node:path";
 import { stringify as stringifyYaml } from "yaml";
 
 import { parseArgs, asBool, asNumber, asList } from "../../scripts/lib/args.mjs";
+import { walkFiles, readJson, writeBinary, writeJson, writeText } from "../../scripts/lib/fsx.mjs";
 import { expandEnv } from "../../scripts/lib/env.mjs";
 import {
   loadConfig,
@@ -21,6 +22,7 @@ import {
   normalizeModelMap,
 } from "../../scripts/lib/config.mjs";
 import { parseJsonFromText, extractAgentText } from "../../scripts/lib/models.mjs";
+import { getStep, loadSteps } from "../../scripts/lib/steps.mjs";
 import {
   ARTIFACT,
   buildEnvelope,
@@ -31,11 +33,83 @@ import {
   listWrittenArticles,
   openArticle,
   readArticleMeta,
+  resetStageDir,
 } from "../../scripts/lib/article-store.mjs";
 import { tempDir, rawConfig } from "./helpers.mjs";
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 const DEFAULT_CONFIG_REL = "config/wechat-article/article-types.yaml";
+
+/* ------------------------------------------------------------------ */
+/* fsx 原子落盘                                                        */
+/* ------------------------------------------------------------------ */
+
+test("writeText/writeJson/writeBinary 原子落盘：不留 .tmp，重跑覆盖同一路径", () => {
+  const root = tempDir("wa-fsx-");
+  const resultFile = path.join(root, "01-step/01-result.json");
+  writeJson(resultFile, { stage: "topic" });
+  writeJson(resultFile, { stage: "draft" });
+  assert.deepEqual(readJson(resultFile), { stage: "draft" });
+  writeText(path.join(root, "02-step/draft.md"), "# 标题\n");
+  writeBinary(path.join(root, "04-step/images/01.png"), Buffer.from("png"));
+  assert.deepEqual(walkFiles(root, (file) => file.endsWith(".tmp")), []);
+});
+
+test("rename 失败时不留半截文件：抛错并清掉自己的 .tmp", () => {
+  const root = tempDir("wa-fsx-fail-");
+  const taken = path.join(root, "taken");
+  fs.mkdirSync(taken);
+  fs.writeFileSync(path.join(taken, "holder.txt"), "x", "utf8");
+  assert.throws(() => writeText(taken, "新内容"));
+  assert.equal(fs.existsSync(`${taken}.tmp`), false);
+});
+
+/* ------------------------------------------------------------------ */
+/* 阶段重跑前的残留清理                                                  */
+/* ------------------------------------------------------------------ */
+
+test("resetStageDir 清掉上一趟中断的残留：留痕、轮次目录、本阶段中间产物与 result", () => {
+  const root = tempDir("wa-reset-");
+  for (const rel of [
+    "03-step/api/3_1(2)-revise.json",
+    "03-step/round-1/score.json",
+    "03-step/reviewed.md",
+    "03-result.json",
+    "04-step/api/1_1-de_ai.json",
+    "04-step/polished.md",
+    "04-step/images/01_mock.png",
+    "04-step/composed.md",
+    "04-result.json",
+    "05-step/final.md",
+    "05-step/delivered.json",
+  ]) {
+    const file = path.join(root, rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, "{}", "utf8");
+  }
+
+  assert.deepEqual(resetStageDir(root, "review").sort(), [
+    "03-result.json",
+    "03-step/api",
+    "03-step/round-1",
+    "03-step/reviewed.md",
+  ].sort());
+  assert.equal(fs.existsSync(path.join(root, "04-step/polished.md")), true, "别阶段的产物不能顺手清");
+  assert.equal(fs.existsSync(path.join(root, "05-step/final.md")), true);
+
+  assert.deepEqual(resetStageDir(root, "compose").sort(), [
+    "04-result.json",
+    "04-step/api",
+    "04-step/composed.md",
+    "04-step/images",
+    "04-step/polished.md",
+  ].sort());
+
+  // publish 不参与重置：05-step/delivered.json 是外部副作用的唯一凭据，清了就会重复投递。
+  assert.deepEqual(resetStageDir(root, "publish"), []);
+  assert.equal(fs.existsSync(path.join(root, "05-step/delivered.json")), true);
+  assert.deepEqual(resetStageDir(root, "topic"), []);
+});
 
 /* ------------------------------------------------------------------ */
 /* args                                                                */
@@ -138,36 +212,33 @@ test("normalizeConfig normalizes weights, dirs and numeric ranges", () => {
   assert.equal(type.scoring.pass_score, type.review.pass_score);
 });
 
-test("publish 投递开关把 env 字符串归成真布尔", () => {
+test("defaults.publish 只留渠道参数，投递开关单源在 steps 节点", () => {
   const dir = tempDir("wa-cfg-");
   const raw = rawConfig(dir);
   raw.defaults.publish = {
-    auto_publish: "${PB_AUTO_PUBLISH:-false}",
-    email: { enabled: "true", to: ["a@x.com"] },
-    wechat: { enabled: "0" },
+    email: { to: ["a@x.com"] },
+    wechat: { theme: "default" },
   };
   const config = normalizeConfig(raw, dir);
-  // doctor 读 defaults 段、运行时读类型合并后的 publish，两边口径必须一致。
-  assert.equal(config.defaults.publish.auto_publish, false);
-  assert.equal(config.defaults.publish.email.enabled, true);
+  // 渠道参数按类型合并；开关不在这段里生成（否则就有了第二个读取口）。
   const publish = config.types[0].publish;
-  assert.equal(publish.auto_publish, false);
-  assert.equal(publish.email.enabled, true);
-  assert.equal(publish.wechat.enabled, false);
   assert.deepEqual(publish.email.to, ["a@x.com"]);
+  assert.equal(publish.email.enabled, undefined);
+  assert.equal(publish.wechat.enabled, undefined);
+  assert.equal(publish.auto_publish, undefined);
 });
 
-test("PB_EMAIL_ENABLED 抬起 defaults.yaml 的邮件开关", () => {
-  process.env.PB_EMAIL_ENABLED = "true";
-  try {
-    const config = loadConfig(DEFAULT_CONFIG_REL, { root: PROJECT_ROOT });
-    assert.equal(config.defaults.publish.email.enabled, true);
-    assert.equal(config.types[0].publish.email.enabled, true);
-  } finally {
-    delete process.env.PB_EMAIL_ENABLED;
-  }
-  const off = loadConfig(DEFAULT_CONFIG_REL, { root: PROJECT_ROOT });
-  assert.equal(off.types[0].publish.email.enabled, false);
+test("投递开关单源在 steps/50-publish.yaml 的 publish.handler_options", () => {
+  const config = loadConfig(DEFAULT_CONFIG_REL, { root: PROJECT_ROOT });
+  const publish = getStep(loadSteps("config/wechat-article/steps.yaml", { root: PROJECT_ROOT }), "publish");
+  // 默认全开 = auto 模式一路发布到底（要停投递就在这里关）。
+  assert.deepEqual(publish.handler_options, { auto_publish: true, email: true, wechat: true });
+  // 三个 PB_* 投递开关已删除：同一件事只留配置这一个口。
+  assert.equal(config.defaults.publish.auto_publish, undefined);
+  assert.equal(config.defaults.publish.email.enabled, undefined);
+  assert.equal(config.defaults.publish.wechat.enabled, undefined);
+  const defaultsText = fs.readFileSync(path.join(PROJECT_ROOT, "config/wechat-article/defaults.yaml"), "utf8");
+  assert.doesNotMatch(defaultsText, /PB_(AUTO_PUBLISH|EMAIL_ENABLED|WECHAT_ENABLED)/);
 });
 
 test("PB_* 抬起的可变阈值在加载期归成数字/布尔", () => {
@@ -245,10 +316,11 @@ test("loadConfig reads the YAML base config and config/types/*.yaml", () => {
   assert.equal(config.classifier.topic_question, "topic_pick");
   assert.equal(config.classifier.check_question, "review_check");
   assert.equal(path.isAbsolute(config.project.base_output_folder), true);
-  // defaults.yaml 的三个投递开关写成 ${PB_*:-false}，加载后必须是真布尔（默认全关）。
-  assert.equal(config.types[0].publish.auto_publish, false);
-  assert.equal(config.types[0].publish.email.enabled, false);
-  assert.equal(config.types[0].publish.wechat.enabled, false);
+  // 渠道参数从 defaults.publish 透传；投递开关不在这段（单源在 steps 节点 handler_options）。
+  assert.equal(config.types[0].publish.auto_publish, undefined);
+  assert.equal(config.types[0].publish.email.enabled, undefined);
+  assert.equal(config.types[0].publish.wechat.enabled, undefined);
+  assert.ok(config.types[0].publish.email.to.length > 0);
 });
 
 test("models.yaml groups llm / systemone and resolves model ids", () => {

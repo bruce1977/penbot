@@ -153,8 +153,7 @@ export function normalizeConfig(config, root = process.cwd()) {
     use_weknora: toBool(defaults.knowledge?.use_weknora, true),
   };
   // doctor 读 config.defaults.publish，运行时读类型合并后的 publish —
-  // 先把 defaults 段的开关归成真布尔，两边口径才一致。
-  defaults.publish = normalizePublish(defaults.publish);
+  // 渠道参数（收件人/命令串等）两边口径一致即可；投递开关单源在 steps 节点。
   // defaults.yaml 里可翻转的阈值同样写成 `${PB_*:-默认}`（由 .env 抬起），expandEnv 之后是字符串。
   // doctor 读 defaults 段、运行时读类型合并后的值，先把 defaults 归成数字，两边口径才一致；
   // 类型自己写的值在 normalizeType 里归一。
@@ -407,11 +406,12 @@ function normalizeType(type, defaults, root, config) {
   if (illMax !== undefined) illustrations.max = illMax;
   if (illCount !== undefined) illustrations.count = illCount;
 
-  const publish = normalizePublish({
+  // 渠道参数（收件人/发件人/命令串等）按类型覆盖；发不发、发哪个渠道在 steps 节点 handler_options。
+  const publish = {
     ...deepMerge(defaults.publish || {}, type.publish || {}),
     email: { ...(defaults.publish?.email || {}), ...(type.publish?.email || {}) },
     wechat: { ...(defaults.publish?.wechat || {}), ...(type.publish?.wechat || {}) },
-  });
+  };
 
   const knowledgeDirs = (Array.isArray(type.knowledge_base_path)
     ? type.knowledge_base_path
@@ -666,20 +666,6 @@ export function validateWarnings(config) {
     }
   }
   return warnings;
-}
-
-/**
- * 三个投递开关（auto_publish / email.enabled / wechat.enabled）归成真布尔。
- * defaults.yaml 把它们写成 `${PB_AUTO_PUBLISH:-false}` 等形式，由 .env 抬起；
- * expandEnv 替换出来的是字符串，而读取端混用 `=== true`（入口）与真值判断（doctor），
- * 不归一会让 "false" 在真值判断里当成开。
- */
-function normalizePublish(publish = {}) {
-  const out = { ...publish, email: { ...(publish.email || {}) }, wechat: { ...(publish.wechat || {}) } };
-  out.auto_publish = toBool(out.auto_publish, false);
-  out.email.enabled = toBool(out.email.enabled, false);
-  out.wechat.enabled = toBool(out.wechat.enabled, false);
-  return out;
 }
 
 /**

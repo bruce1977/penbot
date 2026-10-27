@@ -205,7 +205,7 @@ $BASE_OUTPUT_FOLDER/                 # 环境变量，默认 output/wechat-artic
 | --- | --- | --- |
 | `published` | 所有启用的渠道都真实投递成功 | ✅ |
 | `partial` | 部分渠道成功（如邮件成功、公众号失败） | ❌（等待重试或人工决定） |
-| `skipped` | email/wechat 未启用，或 `auto_publish=false` | ❌ |
+| `skipped` | email/wechat 未启用，或 `handler_options.auto_publish=false` | ❌ |
 | `dry_run` | 演练（含渠道级 `dry_run`） | ❌ |
 | `failed` | 渠道全部失败 | ❌ |
 
@@ -227,7 +227,7 @@ $BASE_OUTPUT_FOLDER/                 # 环境变量，默认 output/wechat-artic
 }
 ```
 
-- 渠道投递的两个开关单源在 `defaults.publish.email.enabled` / `wechat.enabled`（`auto_publish` 决定要不要真的投递，`--email/--wechat/--auto-publish` 临时覆盖）；`steps` 节点 `publish.enabled: false` 是**整个环节的开关**，关掉时连 `05-step/final.md` 都不落、`05-result.json` 也不写，04 的 `composed.md` 保持为最终稿。
+- 投递开关（`auto_publish` / `email` / `wechat`）单源在 `steps/50-publish.yaml` 的 `publish.handler_options`（默认全 `true`，auto 模式一路发布到归档；`--email/--wechat/--auto-publish` 临时覆盖）；`steps` 节点 `publish.enabled: false` 是**整个环节的开关**，关掉时连 `05-step/final.md` 都不落、`05-result.json` 也不写，04 的 `composed.md` 保持为最终稿。
 - 两个渠道都是外部调用，都进 `05-step/api/` 留痕：`1_1-email.resend.json`（邮件）、`2_1-publish.wenyan-md.json`（公众号 CLI，`API_SLOT.publish`）。CLI 的 `--api-key` 参数与输出里回显的密钥一律打码成 `***`，日志与留痕都不落原文。演练（`--dry-run`）不发生真实调用，因此**不产生留痕**。
 - `05-step/final.md` 的图片引用基准是 **`05-step/` 自己**（正文写成 `../04-step/images/01_x.png`），与 `04-step/composed.md`（基准=文章根目录）差一层；落盘时由 `relocateLocalImages` 改写，缺失或远程的图片原样保留。`final.html` 用同一套串，邮件发送时按这个串替换成 `cid:`。wenyan CLI 按稿件文件所在目录解析相对路径，所以这一步不做就传不上图。
 - wenyan CLI 读的是 `WECHAT_APP_ID`/`WECHAT_APP_SECRET`；管线配的 `WECHAT_MP_APP_ID`/`WECHAT_MP_APP_SECRET` 在 spawn 时自动映射（`wechatChildEnv`）。公众号正文一张图都没有时 CLI 会报「你必须指定一张封面图或者在正文中至少出现一张图片」——配图环节关掉或全部失败时，公众号渠道必然失败，邮件不受影响。

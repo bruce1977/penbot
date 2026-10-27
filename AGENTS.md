@@ -23,6 +23,24 @@ opencode 只作为工具节点（如 websearch）被脚本调用，不作为编�
 > 只有 04 的两条分支（`de_ai`/配图）是明确例外：它们失败**只降级**、不中断，汇总进
 > `04-result.json`——那是设计好的降级，不是漏掉的闸门。
 
+### 无人值守编排器（`scripts/wechat-article-pipeline.mjs`）
+
+常驻进程（`npm run pipeline`）：监听 `BASE_INBOX_FOLDER/wechat-article/*.md`，把 inbox 素材经
+判断模型分成「标题素材 / 草稿素材」路由到 `manual` / `post` 入口（进入流转即删原稿）；再巡检
+`draft/` 按产物（`detectStartStage`）接力 `auto --article <slug> --stage <阶段>` 推进，每阶段
+子进程带自己的超时（`defaults.yaml` `pipeline.stage_timeouts`），超时 kill 后下轮按产物续跑。
+
+- **它是独立入口，不 import 主入口**：lint 规则只允许 comm 模块被主入口引用，编排器另起文件
+  只能 spawn `wechat-article.mjs`；子进程也天然给出「超时 kill」的边界。
+- **阈值/开关单源 `defaults.yaml` 的 `pipeline` 段**（`${PB_*}` 旋钮），消费点 `needNumber` 抛错
+  点名配置路径；单次子进程失败只记一次、下轮按产物续跑，同一篇连续失败/无进展达 `pipeline.max_fails`
+  才标记跳过并记日志——与「编排的失败处理策略」两层一致，不自我修复提示词。
+- **inbox 根目录只认 `BASE_INBOX_FOLDER`**（留空 = 关闭 inbox，仅做 draft 巡检），不是 `${PB_*}` 旋钮。
+- **素材分类文案单源 `defaults.yaml` 的 `pipeline.classify`**（`state` / `instructions` / `criteria`）：
+  编排器不是流程节点，提示词挂到 `prompts/` 会撞「必须被节点引用」的孤儿检查，故与 `classifier`
+  的行为参数一样落 `defaults.yaml`；判断能力复用 `lib/classify.mjs#classifyChoice`（通用单选，
+  文案由调用方从配置读出传入、代码不留副本），端点不可用回退本地规则（成篇正文判草稿素材），不阻塞。
+
 ## 目录规范（目标结构）
 
 ```
@@ -38,10 +56,13 @@ penbot/
 ├── scripts/
 │   ├── lib/                         # 共享机制模块，无功能前缀
 │   ├── comm/                        # 功能专属模块，文件名以功能前缀开头
+│   ├── lint/penbot-rules.mjs        # 自定义 ESLint 规则（本仓库不变量，不发包）
 │   ├── wechat-article.mjs           # 入口 ×3，一管线一文件
+│   ├── wechat-article-pipeline.mjs  # 编排器：inbox 监听 + draft 巡检（常驻，spawn 主入口）
 │   ├── micro-news.mjs
 │   └── web-novel.mjs
-├── tests/<feature>/*.test.mjs
+├── tests/<feature>/*.test.mjs       # 含 lint.test.mjs：规则能报 + L1 分层/命名对真实目录断言
+├── eslint.config.mjs                # L1/L2/L3 分层规则（L4 流程契约不 lint，见「JS/mjs 代码规范」）
 ├── docs/<feature>/                  # USAGE.md + NN_<stage>_step.md（分步文档）+ 设计文档
 └── output/<feature>/                # 运行产物（draft/published）
 ```
@@ -79,8 +100,12 @@ penbot/
 - **运行时能翻转的开关与阈值一律写成 `${PB_*:-默认值}`**，无人值守跑管线时只改 `.env`，
   配置文件保持不动。当前清单：`PB_REVIEW_ROUNDS`、`PB_PASS_SCORE`、
   `PB_KNOWLEDGE_MAX_SOURCES`、`PB_WEB_SEARCH_ENABLED`、`PB_IMAGE_CONCURRENCY`、
-  `PB_DE_AI_ENABLED` / `PB_DE_AI_LEVEL` / `PB_IMAGES_ENABLED`、三个投递开关
-  （`PB_AUTO_PUBLISH` / `PB_EMAIL_ENABLED` / `PB_WECHAT_ENABLED`）。
+  `PB_DE_AI_ENABLED` / `PB_DE_AI_LEVEL` / `PB_IMAGES_ENABLED`、编排器
+  （`PB_PIPELINE_POLL_MS` / `PB_PIPELINE_INSPECT_MS` / `PB_PIPELINE_MAX_FAILS` /
+  `PB_PIPELINE_CLASSIFY` / 五个 `PB_TIMEOUT_*_MS`）。inbox 根目录只认 `BASE_INBOX_FOLDER`
+  （留空 = 关闭 inbox，仅做 draft 巡检），不是 `${PB_*}` 旋钮。
+  **投递开关是例外**：`auto_publish` / `email` / `wechat` 是步骤节点的 `handler_options`
+  （`steps/50-publish.yaml`），不是环境变量——auto 模式默认一路发布到底，改开关改配置。
   **类型身份留在类型文件里当裸值**：字数区间、评分维度与权重、`image_count` 区间、风格与
   提示词 extra——它们不是运行时旋钮（张数由纲要 `image_plan` 规划，单次指定走 `--images`）。
 - **同一件事只有一个环境变量口**：换模型用 `models.yaml` 已有的
@@ -299,9 +324,13 @@ penbot/
   label = 代码固化的调用名；降级兜底调用尾部标 `_F`；服务段模型调用记模型名、非模型调用记 provider 名。
   管线增删或调整步骤/子步骤时必须同步 `API_SLOT` 的归属与编号。
   **绝不能包含 Authorization / API key**（大 body 只记摘要，如邮件记 html_chars、附件只记文件名与字节数）。
-- 发布（05）与归档只有**一层开关**：steps 节点 `publish.enabled=false` = 整个发布环节不执行
+- 发布（05）与归档的开关全部落在 steps 节点上：`publish.enabled=false` = 整个发布环节不执行
   （不落 `05-step/final.md` / `05-result.json`、不投递），`archive.enabled=false` = 不入库、不打包、
-  不删 `draft/`。渠道级开关在 `defaults.publish.email.enabled` / `wechat.enabled`（CLI `--email`/`--wechat` 覆盖），
+  不删 `draft/`。**投递开关单源在 `publish.handler_options` 的 `auto_publish` / `email` / `wechat`**
+  （默认全 `true` = auto 模式一路发布到归档；类型层 `steps.publish.handler_options` 可按类型关），
+  CLI `--auto-publish` / `--email` / `--wechat` 只做临时覆盖，**不再有 `PB_AUTO_PUBLISH` /
+  `PB_EMAIL_ENABLED` / `PB_WECHAT_ENABLED` 环境变量口**（同一件事只留一处）。
+  `defaults.publish.email` / `wechat` 只放渠道参数（收件人、发件人、命令串、超时重试）；
   禁止在 `defaults.publish.archive` 里放第二个同名 `enabled`。知识库入库只由
   `defaults.publish.archive.knowledge_dir` 决定：留空 = 跳过复制（`05-result.json#archive.knowledge`
   记 `{ok:true,skipped:true}`），仍照常打包与清理；入库失败只记录、不阻塞打包。
@@ -357,6 +386,39 @@ penbot/
   就同步改 `README.md` + 对应 `NN_*_step.md` + `docs/<feature>/USAGE.md`，
   与「改契约同一遍同步 AGENTS.md 与项目记忆」是同一条纪律。
 
+## JS/mjs 代码规范（lint）
+
+工具链：ESLint 10 flat config（根目录 `eslint.config.mjs`）+ 本地插件
+`scripts/lint/penbot-rules.mjs`（不发包）。命令：`npm run lint`、`npm run lint:fix`、
+`npm run check`（lint → validate → 全量单测）。**不引入 Prettier/ESBFmt 等格式化器**：
+`--fix` 只允许做与规则直接相关的空白/引号/分号改动，风格之外的整体重排会把 diff 变成噪音，
+审查不到真实变更。
+
+规则按四层分工，**只有 L1–L3 进 lint**：
+
+| 层 | 内容 | 谁来守 |
+| --- | --- | --- |
+| L1 分层与命名 | `lib/` 不得 import `comm/`（依赖方向只允许 comm → lib）；`comm/*.mjs` 必须带功能前缀；comm 模块只被所属管线入口与 `tests/` 引用 | `no-restricted-imports`（config 的 `scripts/lib/**` 块）+ `tests/wechat-article/lint.test.mjs` 对真实目录结构断言 |
+| L2 语法与风格 | Node ESM（相对 `import`/`export` 必须带 `.mjs`）、缩进 2、双引号（模板串与转义例外）、分号、`no-var`/`prefer-const`/`eqeqeq`/`no-unused-vars`/`no-empty`(允许空 catch)/`no-undef`/`no-shadow` | 内置规则 + `no-restricted-syntax` 三条 esquery 选择器 |
+| L3 本仓库不变量 | 留痕载荷不许出现鉴权字段名或鉴权值读取（`api_key`/`authorization`/`secret`/`token`…）；成句中文文案（默认 ≥60 个中日韩字符）不许抄进代码——提示词与整句文案单源 `prompts/*.yaml` | `penbot/trace-no-secrets`、`penbot/no-prompt-literals`（均为本地插件规则） |
+| L4 流程契约 | 配置读取端不留同值兜底、`ARTIFACT` 产物路径单源、`API_SLOT` 与步骤增删同步、类型字段必填 | **不 lint**——AST 判不出来，硬写规则等于配一条没人读的规则；由 `validate`（加载期 + `validateSteps`）与 220 条单测守 |
+
+- **豁免必须写明理由，且不许腐烂**：`linterOptions.reportUnusedDisableDirectives = "error"`，
+  一条已经不需要的 `eslint-disable` 本身就是错误。优先用 config 里的**具名文件块**开口
+  （如 `scripts/lib/log.mjs` = 日志 sink 本身，`no-console` 对它没有意义），
+  其次用**作用域尽量小**的文件内注释（如 `scripts/lib/web-search.mjs` 的独立 CLI 分支
+  只在 `if (import.meta.url === …)` 块内 `/* eslint-disable no-console -- 理由 */` 包住）。
+  **禁止整文件 `/* eslint-disable */`**，也禁止为了跑通而关掉整条规则。
+- **`no-console` 的口径**：`lib/**` 一律 error（管线输出走 `createLogger`，落 `logs/pipeline.log`），
+  入口脚本不限制（它就是给人看的那一层），`lib/log.mjs` 与 lib 文件自带的独立 CLI 分支按上条豁免。
+- **L3 两条规则自己要有测试**：`tests/wechat-article/lint.test.mjs` 用 `Linter` API
+  喂违规样例与干净样例，确认规则真的会报（也确认报错/日志/帮助文本语境、`HELP`
+  这类豁免变量、非留痕调用不产误报）。这与「配置点了必须真驱动」是同一条纪律——
+  配了不报的规则和配了不读的配置一样是说谎。
+- 基线（2026-10-27 落地时）：`scripts/` + `tests/` 全量 **0 error / 0 warning**，
+  所以这四层从第一天就是 error 级、不存在"先容忍存量再收紧"的过渡态。新增文件必须直接达标；
+  真要放宽某条规则，先想清楚这条规则是不是有消费方，而不是先加 `--fix` 修不掉的豁免。
+
 ## 运行环境
 
 - 根目录 `.env`（不入库、不打印值）；脚本经 `loadDotEnv` 加载。
@@ -367,5 +429,7 @@ penbot/
 ## 测试
 
 - 根目录 `npm test` 跑全量；按阶段有 `test:topic`、`test:sources` 等分脚本。
+- `npm run check` = lint → `wechat-article:validate` → 全量单测；改完代码默认跑这条，
+  三道闸门各守一面（见「JS/mjs 代码规范」与「配置与提示词」）。
 - 改 lib 路径常量时保持各功能可注入自己的 config 根目录，入口不得硬编码
   其他功能的配置路径。

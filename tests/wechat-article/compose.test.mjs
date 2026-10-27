@@ -123,7 +123,7 @@ test("顶层 negative_prompt 落到通道参数，通道段写了同名键才覆
 test("rateLimitBackoff 只认限速报错并按 Retry after 退避，上限 120 秒", () => {
   assert.equal(rateLimitBackoff('download HTTP 402: {"error":{"code":"FREE_LIMIT","message":"1 image every 45 seconds per IP. Retry after 29s"}}'), 29000);
   assert.equal(rateLimitBackoff('download HTTP 503: {"error":{"code":"SERVICE_UNAVAILABLE","message":"at its limit right now"}}'), 45000);
-  assert.equal(rateLimitBackoff('download HTTP 402: Retry after 9999s'), 120000);
+  assert.equal(rateLimitBackoff("download HTTP 402: Retry after 9999s"), 120000);
   assert.equal(rateLimitBackoff("missing ModelScope API key"), 0);
   assert.equal(rateLimitBackoff("download HTTP 404: not found"), 0);
 });

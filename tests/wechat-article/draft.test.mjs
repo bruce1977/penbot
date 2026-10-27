@@ -356,7 +356,7 @@ test("buildRevisePrompt 的三种重试原因与「无问题」占位都取注�
     const broken = { ...REVISE_PROMPT, [key]: "" };
     assert.throws(
       () => buildRevisePrompt({ prompt: broken, promptId: "revision.revision", type: REVISE_TYPE, article: "正文", ...args }),
-      new RegExp(`缺少提示词文案 revision\.revision\.${key}`),
+      new RegExp(`缺少提示词文案 revision\\.revision\\.${key}`),
     );
   }
 });

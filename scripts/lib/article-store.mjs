@@ -31,6 +31,7 @@ export const ARTIFACT = {
   publish: "05-result.json",
   final: "05-step/final.md",
   finalHtml: "05-step/final.html",
+  delivered: "05-step/delivered.json",
   log: "logs/pipeline.log",
 };
 
@@ -98,6 +99,40 @@ export const STAGES = ["topic", "draft", "review", "compose", "publish", "archiv
 export function stageIndex(stage) {
   const index = STAGES.indexOf(stage);
   return index < 0 ? STAGES.length : index;
+}
+
+/**
+ * 重跑某阶段前清掉上一趟中断留下的残留（管线随时可能被超时杀掉/断电，
+ * `NN-step/` 里会留下上次的中间产物与留痕；轮次与尝试计数器每进程从 1 起，
+ * 旧文件留着就等于让这次运行看起来调用了更多次，旧的 polished.md 更会冒充这次的产物）。
+ * 只清「这个阶段的产物没写完」时可能存在的那部分：留痕目录、轮次目录、该阶段的中间产物
+ * 与它自己的 result。
+ * publish 不参与——05-step/ 里的投递台账（delivered.json）是外部副作用的唯一凭据，
+ * 清目录等于把「这份稿子已经投过了」的记忆一起删掉，重跑就会重复投递。
+ */
+const STAGE_RESET = {
+  review: [ARTIFACT.reviewed, ARTIFACT.review],
+  compose: [ARTIFACT.polished, ARTIFACT.images, ARTIFACT.composed, ARTIFACT.imagesDir, ARTIFACT.compose],
+};
+
+export function resetStageDir(outputDir, stage) {
+  const files = STAGE_RESET[stage];
+  if (!files) return [];
+  const stepDir = `${String(stageIndex(stage) + 1).padStart(2, "0")}-step`;
+  const removed = [];
+  const targets = [`${stepDir}/api`, ...files];
+  if (fs.existsSync(path.join(outputDir, stepDir))) {
+    for (const entry of fs.readdirSync(path.join(outputDir, stepDir))) {
+      if (/^round-\d+/.test(entry)) targets.push(`${stepDir}/${entry}`);
+    }
+  }
+  for (const rel of targets) {
+    const full = path.join(outputDir, rel);
+    if (!fs.existsSync(full)) continue;
+    fs.rmSync(full, { recursive: true, force: true });
+    removed.push(rel);
+  }
+  return removed;
 }
 
 export function baseFolder(config) {
@@ -242,7 +277,7 @@ export function openArticle(config, selector) {
   }
   const items = listArticles(config);
   if (items.length === 0) {
-    throw new Error(`没有进行中的文章：${roots.draft}\n先用 auto / manual 创建一篇`);
+    throw new Error(`没有进行中的文章：${roots.draft}\n先用 auto / manual / post 创建一篇`);
   }
   if (items.length > 1 && selector !== "latest") {
     const list = items.map((item) => `  - ${item.slug}（${item.title}）`).join("\n");

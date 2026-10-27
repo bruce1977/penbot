@@ -230,12 +230,134 @@ test("dry-run 落盘的终稿与邮件 HTML 用同一套相对 05-step/ 的图�
   const type = {
     id: "t",
     name: "T",
-    publish: { auto_publish: false, email: { enabled: true, to: ["someone@example.com"] }, wechat: { enabled: false } },
+    publish: { email: { to: ["someone@example.com"] } },
+    // 投递开关单源在 steps 节点 handler_options，type 层 steps.<step>.handler_options 覆盖。
+    steps: { publish: { handler_options: { auto_publish: false, email: true, wechat: false } } },
   };
   const result = await publishArticle(publishCtx({ dir, type, options: { "dry-run": true } }), md);
   assert.equal(result.status, "dry_run");
   assert.match(fs.readFileSync(path.join(dir, ARTIFACT.final), "utf8"), /\]\(\.\.\/04-step\/images\/01_modelscope\.png\)/);
   assert.match(fs.readFileSync(path.join(dir, ARTIFACT.finalHtml), "utf8"), /src="\.\.\/04-step\/images\/01_modelscope\.png"/);
+});
+
+/* ------------------------------------------------------------------ */
+/* 投递台账（外部副作用不接受"重跑覆盖"）                                */
+/* ------------------------------------------------------------------ */
+
+/** 假投递命令：被调用一次就往计数文件写一行，退出码 0（等价于草稿箱投递成功）。 */
+function deliveryStub(dir) {
+  const stub = path.join(dir, "fake-publish-cli.mjs");
+  fs.writeFileSync(
+    stub,
+    [
+      "import fs from \"node:fs\";",
+      "fs.appendFileSync(process.env.PB_TEST_DELIVERY_COUNTER, \"call\\n\");",
+      "console.log(\"draft created\");",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  return stub;
+}
+
+function wechatType(stub) {
+  return {
+    id: "t",
+    name: "T",
+    publish: { wechat: { command: `node ${stub}` } },
+    steps: { publish: { handler_options: { auto_publish: true, email: false, wechat: true } } },
+  };
+}
+
+test("投递台账：同一份终稿重跑不再调投递命令，改了稿子才重投", async () => {
+  const dir = tempDir("wa-ledger-");
+  const counter = path.join(dir, "calls.txt");
+  const stub = deliveryStub(dir);
+  process.env.PB_TEST_DELIVERY_COUNTER = counter;
+  const calls = () => (fs.existsSync(counter) ? fs.readFileSync(counter, "utf8").split("\n").filter(Boolean).length : 0);
+  try {
+    const first = await publishArticle(publishCtx({ dir, type: wechatType(stub) }), ARTICLE_MD);
+    assert.equal(first.status, "published");
+    assert.equal(calls(), 1);
+    const ledgerFile = path.join(dir, ARTIFACT.delivered);
+    const ledger = JSON.parse(fs.readFileSync(ledgerFile, "utf8"));
+    assert.equal(ledger.wechat.status, "delivered");
+    assert.match(ledger.wechat.digest, /^[0-9a-f]{16}$/);
+
+    const second = await publishArticle(publishCtx({ dir, type: wechatType(stub) }), ARTICLE_MD);
+    assert.equal(second.wechat.skipped, "already_delivered");
+    assert.equal(second.wechat.success, true);
+    assert.equal(second.status, "published", "已投成功仍算发布完成，归档照常");
+    assert.equal(calls(), 1, "台账记过 delivered 的渠道不能重投");
+
+    const third = await publishArticle(publishCtx({ dir, type: wechatType(stub) }), `${ARTICLE_MD}\n\n又补了一段。\n`);
+    assert.equal(third.wechat.skipped, undefined);
+    assert.equal(calls(), 2, "终稿改了（摘要变了）就该重投");
+    assert.notEqual(JSON.parse(fs.readFileSync(ledgerFile, "utf8")).wechat.digest, ledger.wechat.digest);
+  } finally {
+    delete process.env.PB_TEST_DELIVERY_COUNTER;
+  }
+});
+
+test("台账停在 attempting = 状态未知：不自动重投，且不算发布成功", async () => {
+  const dir = tempDir("wa-ledger-unknown-");
+  const counter = path.join(dir, "calls.txt");
+  const stub = deliveryStub(dir);
+  process.env.PB_TEST_DELIVERY_COUNTER = counter;
+  const calls = () => (fs.existsSync(counter) ? fs.readFileSync(counter, "utf8").split("\n").filter(Boolean).length : 0);
+  try {
+    await publishArticle(publishCtx({ dir, type: wechatType(stub) }), ARTICLE_MD);
+    assert.equal(calls(), 1);
+
+    // 模拟"发起后进程被杀，没拿到结果"：状态退回 attempting，摘要仍是这份终稿的。
+    const ledgerFile = path.join(dir, ARTIFACT.delivered);
+    const torn = JSON.parse(fs.readFileSync(ledgerFile, "utf8"));
+    torn.wechat.status = "attempting";
+    fs.writeFileSync(ledgerFile, JSON.stringify(torn, null, 2), "utf8");
+
+    const result = await publishArticle(publishCtx({ dir, type: wechatType(stub) }), ARTICLE_MD);
+    assert.equal(result.wechat.skipped, "delivery_state_unknown");
+    assert.equal(result.wechat.success, false);
+    assert.equal(result.status, "failed", "状态未知不能当成已发布（否则归档会把没投出去的稿子清掉）");
+    assert.equal(calls(), 1, "宁可不投，也不赌上次没落账的那次没成功");
+  } finally {
+    delete process.env.PB_TEST_DELIVERY_COUNTER;
+  }
+});
+
+test("邮件渠道同一条台账：摘要已记 delivered 就跳过，不发 SMTP 但仍落 html", async () => {
+  const dir = tempDir("wa-ledger-email-");
+  const counter = path.join(dir, "calls.txt");
+  const stub = deliveryStub(dir);
+  process.env.PB_TEST_DELIVERY_COUNTER = counter;
+  const ledgerFile = path.join(dir, ARTIFACT.delivered);
+  try {
+    // 先让公众号渠道真投一次，从台账里拿这份终稿的真实摘要——
+    // 摘要口径是「挪完图片引用之后的终稿」，手写算不出来，只能问台账。
+    await publishArticle(publishCtx({ dir, type: wechatType(stub) }), ARTICLE_MD);
+    const { digest } = JSON.parse(fs.readFileSync(ledgerFile, "utf8")).wechat;
+
+    // 把同一摘要挂到 email 名下，模拟「这封邮件上次已经发成功」
+    fs.writeFileSync(
+      ledgerFile,
+      JSON.stringify({ email: { status: "delivered", digest, at: "2026-10-27T00:00:00.000Z" } }, null, 2),
+      "utf8",
+    );
+
+    const type = {
+      id: "t",
+      name: "T",
+      publish: { email: { to: ["a@b.c"] } },
+      steps: { publish: { handler_options: { auto_publish: true, email: true, wechat: false } } },
+    };
+    const result = await publishArticle(publishCtx({ dir, type }), ARTICLE_MD);
+    assert.equal(result.email.skipped, "already_delivered");
+    assert.equal(result.status, "published");
+    assert.equal(fs.existsSync(path.join(dir, ARTIFACT.finalHtml)), true, "跳过发送也要落邮件 HTML");
+    assert.equal(fs.readFileSync(counter, "utf8").split("\n").filter(Boolean).length, 1, "email 渠道跳过不该再动投递命令");
+  } finally {
+    delete process.env.PB_TEST_DELIVERY_COUNTER;
+  }
 });
 
 test("stepEnabled 默认放行，type 层 enabled=false 才关", () => {
@@ -251,7 +373,6 @@ test("publish 节点 enabled=false：整环节不执行，05 产物一个都不�
     id: "t",
     name: "T",
     steps: { publish: { enabled: false } },
-    publish: { auto_publish: true, email: { enabled: true }, wechat: { enabled: true } },
   };
   const result = await publishArticle(publishCtx({ dir, type }), ARTICLE_MD);
   assert.equal(result.status, "skipped");
@@ -260,16 +381,73 @@ test("publish 节点 enabled=false：整环节不执行，05 产物一个都不�
   assert.equal(fs.existsSync(path.join(dir, ARTIFACT.publish)), false);
 });
 
+test("投递开关单源在 publish 节点的 handler_options，auto 默认一路发布到底", () => {
+  const opts = getStep(STEPS, "publish").handler_options;
+  assert.deepEqual(opts, { auto_publish: true, email: true, wechat: true });
+});
+
+test("命令行 --wechat 覆盖节点里的渠道开关（节点开关不是最终门槛）", async () => {
+  const dir = tempDir("wa-publish-cli-switch-");
+  const counter = path.join(dir, "calls.txt");
+  const stub = deliveryStub(dir);
+  process.env.PB_TEST_DELIVERY_COUNTER = counter;
+  try {
+    const type = {
+      id: "t",
+      name: "T",
+      publish: { wechat: { command: `node ${stub}` } },
+      steps: { publish: { handler_options: { auto_publish: true, email: false, wechat: false } } },
+    };
+    const result = await publishArticle(publishCtx({ dir, type, options: { wechat: true } }), ARTICLE_MD);
+    assert.equal(result.status, "published");
+    assert.equal(result.channels.wechat, true);
+    assert.equal(fs.readFileSync(counter, "utf8").split("\n").filter(Boolean).length, 1);
+  } finally {
+    delete process.env.PB_TEST_DELIVERY_COUNTER;
+  }
+});
+
+test("--mock 不发真实请求：投递按演练处理，不调外部投递命令", async () => {
+  const dir = tempDir("wa-publish-mock-");
+  const counter = path.join(dir, "calls.txt");
+  const stub = deliveryStub(dir);
+  process.env.PB_TEST_DELIVERY_COUNTER = counter;
+  try {
+    const ctx = { ...publishCtx({ dir, type: wechatType(stub) }), mock: true };
+    const result = await publishArticle(ctx, ARTICLE_MD);
+    assert.equal(result.status, "dry_run");
+    assert.equal(fs.existsSync(counter), false, "mock 运行不能真的调投递命令");
+  } finally {
+    delete process.env.PB_TEST_DELIVERY_COUNTER;
+  }
+});
+
+test("投递开关三个键必填：缺了抛错点名配置路径，不静默当成 false", async () => {
+  const dir = tempDir("wa-publish-noswitch-");
+  const bare = { ...STEPS.byName.get("publish"), handler_options: {} };
+  const byName = new Map(STEPS.byName);
+  byName.set("publish", bare);
+  const steps = {
+    ...STEPS,
+    steps: STEPS.steps.map((step) => (step.step_name === "publish" ? bare : step)),
+    byName,
+  };
+  await assert.rejects(
+    () => publishArticle(publishCtx({ dir, type: { id: "t", name: "T" }, steps }), ARTICLE_MD),
+    /publish\.handler_options\.auto_publish/,
+  );
+});
+
 test("dry-run 发布：05-result.json 用相对路径、按 schema 校验通过、CLI 密钥打码", async () => {
   const dir = tempDir("wa-publish-dryrun-");
   const type = {
     id: "t",
     name: "T",
     publish: {
-      auto_publish: false,
-      email: { enabled: true, to: ["someone@example.com"] },
-      wechat: { enabled: true, api_key: "sekret-wechat-key", command: "npx --yes @wenyan-md/cli" },
+      email: { to: ["someone@example.com"] },
+      wechat: { api_key: "sekret-wechat-key", command: "npx --yes @wenyan-md/cli" },
     },
+    steps: { publish: { handler_options: { auto_publish: false, email: true, wechat: true } } },
   };
   const result = await publishArticle(publishCtx({ dir, type, options: { "dry-run": true } }), ARTICLE_MD);
 
@@ -286,7 +464,7 @@ test("dry-run 发布：05-result.json 用相对路径、按 schema 校验通过�
 
 test("05 产物形状偏离 schema 时按真实数据判定，不合格项如实记进 validation", async () => {
   const dir = tempDir("wa-publish-schema-");
-  const type = { id: "t", name: "T", publish: { auto_publish: true, email: { enabled: false }, wechat: { enabled: false } } };
+  const type = { id: "t", name: "T", steps: { publish: { handler_options: { email: false, wechat: false } } } };
   const result = await publishArticle(publishCtx({ dir, type }), ARTICLE_MD);
   assert.equal(result.status, "skipped");
   assert.equal(result.validation.checked, true);

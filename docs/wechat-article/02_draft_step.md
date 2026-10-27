@@ -21,6 +21,9 @@ npm run wechat-article -- auto --stage draft                      # 管线入口
                                                               失败 → 分节逐节生成（兜底）
 ```
 
+> `manual` 入口给了提纲时走 `--outline-file`/`--outline` 里的提纲（跳过 ①）；不给提纲则正常执行 ①③。
+> `post` 入口**不跑本步**：草稿在导入时直接落 `02-step/draft.md` 与 `02-result.json`（`files` 里 `outline`/`outlineMd`/`draftInput` 如实记 `null`），从这里直接续 review。
+
 | # | 做什么 | 实现 | 关键配置 |
 | --- | --- | --- | --- |
 | ① | 纲要：小节 + 要点 + `image_plan`（配图计划） | `outline.models.outline`，子步骤 `01` | 模型 `llm.large`，提示词+契约 `outline.outline`，`retry_limit: 2`、`timeout: 1200000` |

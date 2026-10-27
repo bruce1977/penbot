@@ -5,9 +5,13 @@
   "description": "Script-driven writing pipelines: wechat-article, micro-news, web-novel.",
   "type": "module",
   "scripts": {
-    "wechat-article": "node scripts/wechat-article.mjs",
+    "wechat-article": "node --env-file=.env scripts/wechat-article.mjs auto",
     "wechat-article:doctor": "node scripts/wechat-article.mjs doctor",
     "wechat-article:validate": "node scripts/wechat-article.mjs validate",
+    "pipeline": "node scripts/wechat-article-pipeline.mjs",
+    "lint": "eslint scripts tests",
+    "lint:fix": "eslint scripts tests --fix",
+    "check": "npm run lint && npm run wechat-article:validate && npm test",
     "test": "node --test tests/wechat-article/*.test.mjs",
     "test:steps": "node --test tests/wechat-article/steps.test.mjs",
     "test:infra": "node --test tests/wechat-article/infra.test.mjs tests/wechat-article/markdown.test.mjs",
@@ -28,5 +32,10 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.13.0",
+    "globals": "^17.13.0"
   }
 }

@@ -132,6 +132,50 @@ export async function classifyArticle({ config, cfg: cfgArg, title, outline, log
 }
 
 /**
+ * 通用单选判断：给一份「状态文案 + 判据文案 + 选项」，用 systemone 判一次。
+ * 不走两段式升级（轻量判断不需要 escalate），但复用 askSystemOne 的重试/留痕/解析。
+ * 文案（state / instructions / criteria）由调用方从配置读出传入，代码不留副本——
+ * 与 classify_type 的规则一致；选项 id 就是答案。
+ * 返回 { ok, type: 选中项, confidence, ... }；未配置端点/网络/解析问题都不抛出，
+ * 返回 { ok:false, reason } 由调用方回退本地规则（判断模型不可用是设计好的降级）。
+ * question（问题名）缺失是工程错误：答案要从 answers.<question> 读，没名字取不到。
+ */
+export async function classifyChoice({
+  cfg = {},
+  question,
+  prompt = {},
+  vars = {},
+  options = [],
+  logger,
+  fetchImpl = fetch,
+  mock = false,
+  mockChoice,
+  recorder,
+  slot,
+  label = "classify_choice",
+} = {}) {
+  if (!question) throw new Error("classifyChoice 缺少 question（问题名单源配置，如 defaults.yaml pipeline.classify.question）");
+  if (mock) return { ok: true, type: mockChoice || options[0]?.id || "", confidence: 1, model: "mock", escalated: false };
+  if (!options.length) return { ok: false, reason: "没有选项" };
+  // base_url 缺失 = 判断模型不可用，走降级而不是抛错（端点级必填只对真要用的调用生效）。
+  if (!cfg.base_url) return { ok: false, reason: "未配置判断模型端点（config/models.yaml systemone.*）" };
+
+  const promptId = cfg.prompt_id || "调用方配置（如 defaults.yaml pipeline.classify）";
+  const body = {
+    ...(cfg.model ? { model: cfg.model } : {}),
+    state: renderState(prompt, promptId, vars),
+    questions: {
+      [question]: {
+        type: "choice",
+        instructions: promptText(prompt, "instructions", promptId),
+        criteria: prompt.criteria && typeof prompt.criteria === "object" ? prompt.criteria : {},
+      },
+    },
+  };
+  return askSystemOne({ cfg, model: cfg.model, body, options, question, logger, fetchImpl, recorder, label, slot });
+}
+
+/**
  * 选题判定：写作模型给出候选主题（标题 + 评分 + 依据），systemone 选一个最值得写的。
  * 选项编号 "1".."N"；返回 { ok, index }，失败由调用方回退到评分第一篇。
  */

@@ -176,7 +176,7 @@ test("buildOutlinePrompt 的素材与配图整句从注册表取，缺 key 抛�
         topic: { topic: "主题" },
         sources: [],
       }),
-      new RegExp(`缺少提示词文案 outline\.outline\.${key}`),
+      new RegExp(`缺少提示词文案 outline\\.outline\\.${key}`),
     );
   }
 });

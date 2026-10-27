@@ -52,7 +52,6 @@ export function parseSimpleYaml(yamlText) {
   const data = {};
   const lines = String(yamlText || "").split(/\r?\n/);
   let currentKey = null;
-  let currentList = null;
 
   for (const raw of lines) {
     if (!raw.trim() || raw.trim().startsWith("#")) continue;
@@ -60,7 +59,6 @@ export function parseSimpleYaml(yamlText) {
     if (listItem && currentKey) {
       if (!Array.isArray(data[currentKey])) data[currentKey] = [];
       data[currentKey].push(unquote(listItem[1].trim()));
-      currentList = data[currentKey];
       continue;
     }
     const pair = raw.match(/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/);
@@ -69,10 +67,8 @@ export function parseSimpleYaml(yamlText) {
     const value = pair[2].trim();
     if (value === "") {
       data[currentKey] = [];
-      currentList = data[currentKey];
     } else {
       data[currentKey] = unquote(value);
-      currentList = null;
     }
   }
   return data;
@@ -214,7 +210,7 @@ export function lengthAction(wordCount, { min, max } = {}) {
  * ——誊抄稿的禁用词数量和原稿一模一样。
  */
 export function verbatimOverlap(source, revised, { window = 20, step = 5 } = {}) {
-  const key = (text) => String(text).replace(/[\s#*_`>|\[\]!-]/g, "");
+  const key = (text) => String(text).replace(/[\s#*_`>|[\]!-]/g, "");
   const ref = key(source);
   const out = key(revised);
   if (out.length < window) return 0;
@@ -293,7 +289,7 @@ export function replaceImageMarkers(markdown, replacements, { onFailure = "comme
 }
 
 /** Insert missing markers near paragraph boundaries when the model ignored them. */
-export function ensureImageMarkers(markdown, count, plans = [], { format } = {}) {
+export function ensureImageMarkers(markdown, count, { format } = {}) {
   const markers = parseImageMarkers(markdown, { format });
   if (markers.length >= count) return markdown;
   const { data, body } = splitFrontmatter(markdown);
@@ -316,10 +312,10 @@ export function ensureImageMarkers(markdown, count, plans = [], { format } = {})
  * drop duplicate indices, cap at `count`, renumber sequentially
  * (1..N in document order), then pad when there are too few.
  */
-export function normalizeImageMarkers(markdown, count, plans = [], { format } = {}) {
+export function normalizeImageMarkers(markdown, count, { format } = {}) {
   const text = String(markdown || "");
   const markers = parseImageMarkers(text, { format });
-  if (markers.length === 0) return ensureImageMarkers(text, count, plans, { format });
+  if (markers.length === 0) return ensureImageMarkers(text, count, { format });
 
   const limit = Number.isFinite(count) && count > 0 ? count : Infinity;
   const keep = new Map();
@@ -332,7 +328,7 @@ export function normalizeImageMarkers(markdown, count, plans = [], { format } = 
     keep.set(marker.start, { index: next });
     next += 1;
   }
-  if (keep.size === 0) return ensureImageMarkers(text, count, plans, { format });
+  if (keep.size === 0) return ensureImageMarkers(text, count, { format });
 
   let out = "";
   let cursor = 0;
@@ -347,7 +343,7 @@ export function normalizeImageMarkers(markdown, count, plans = [], { format } = 
   }
   out += text.slice(cursor);
 
-  return keep.size < limit ? ensureImageMarkers(out, count, plans, { format }) : out;
+  return keep.size < limit ? ensureImageMarkers(out, count, { format }) : out;
 }
 
 /**

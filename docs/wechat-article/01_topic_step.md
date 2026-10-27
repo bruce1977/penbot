@@ -15,6 +15,7 @@ npm run wechat-article -- auto   --stage topic               # 管线入口，�
 ## 执行序列
 
 `auto` 入口的顺序是**先选题、后定类**（定类需要标题 + 论点）；`manual` / `--topic` 直接定类。
+`post` 入口**不跑本步**（不选题、不定类、不收集素材）：导入时直接落一份 `01-result.json` 信封（`angle: "导入已有草稿"`、`sources: []`），类型取 `--type` → `classifier.default_type` 兜底，供 02–05 顺延。
 括号里是 `01-step/api/` 留痕文件的子步骤号。
 
 ```

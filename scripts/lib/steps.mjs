@@ -513,7 +513,7 @@ function readYamlFile(file, label) {
   try {
     data = parseYaml(fs.readFileSync(file, "utf8"));
   } catch (error) {
-    throw new Error(`${label}解析失败：${file}（${error.message}）`);
+    throw new Error(`${label}解析失败：${file}（${error.message}）`, { cause: error });
   }
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     throw new Error(`${label}根节点必须是对象：${file}`);
@@ -725,9 +725,9 @@ export function resolveStep(stepOrName, { steps, type } = {}) {
   const schema = override.schema === undefined
     ? null
     : resolveSchemaRef(override.schema, {
-        schemas: steps?.schemas || {},
-        step: step.step_name,
-      });
+      schemas: steps?.schemas || {},
+      step: step.step_name,
+    });
 
   return {
     ...step,
@@ -815,7 +815,7 @@ export function validateSteps(steps, { types = [], stages, skippable } = {}) {
     // 契约可以写在节点级（单调用/无调用节点）或调用级（多调用节点），任一处有就算声明。
     const hasFormat = (key) =>
       Object.keys(step[key] || {}).length > 0 ||
-      Object.keys(step.calls || {}).some((label) => Object.keys(stepCallContract(step, label)?.[key] || {}).length > 0);
+      Object.keys(step.calls || {}).some((callName) => Object.keys(stepCallContract(step, callName)?.[key] || {}).length > 0);
     if (!hasFormat("input_format")) warnings.push(`步骤 ${label} 未声明 input_format`);
     // 产物契约（result_schema）也算声明过输出格式：publish/archive 这类节点没有模型输出，
     // 它校验的就是自己落的 NN-result.json。

@@ -12,7 +12,9 @@ npm run wechat-article -- publish --article <slug> --email --wechat         # �
 npm run wechat-article -- auto                                              # 管线入口，一路跑到归档
 ```
 
-无人值守时不带 flag：把 `.env` 的 `PB_AUTO_PUBLISH` / `PB_EMAIL_ENABLED` / `PB_WECHAT_ENABLED` 抬起即可。
+无人值守时不带 flag：开关单源在 `config/wechat-article/steps/50-publish.yaml` 的
+`publish.handler_options`（`auto_publish` / `email` / `wechat`，仓库默认三个都是 `true`，
+`auto` 模式一路发到底）。要停投递或只发一个渠道就改这一处，不用带 flag。
 
 ## 执行序列
 
@@ -37,16 +39,16 @@ npm run wechat-article -- auto                                              # �
 | `published` | 启用的渠道全部 `success: true` | 是 |
 | `partial` | 部分渠道成功 | 否 |
 | `failed` | 全部失败 | 否 |
-| `dry_run` | `--dry-run`，或渠道级 `dry_run: true` | 否 |
-| `skipped` | `publish.enabled=false` / 两个渠道都关 / `auto_publish=false` 且没显式触发 | 否 |
+| `dry_run` | `--dry-run`、`--mock`（mock 的承诺是不发真实请求），或渠道级 `dry_run: true` | 否 |
+| `skipped` | `publish.enabled=false` / 两个渠道都关 / `handler_options.auto_publish=false` 且没显式触发 | 否 |
 
-**三个开关是不同层次，别混**：
+**几个开关是不同层次，别混**（投递开关单源都在 `steps/50-publish.yaml` 的 `publish` 节点）：
 
 | 开关 | 关掉的效果 |
 | --- | --- |
 | steps 节点 `publish.enabled: false` | 整个环节不执行：不落 `05-step/final.md`、不落 `05-result.json`、不投递 |
-| `defaults.publish.auto_publish: false`（`PB_AUTO_PUBLISH`） | 落终稿但**不投递**（`status: skipped`，`reason: auto_publish disabled`） |
-| `defaults.publish.email.enabled` / `wechat.enabled`（`PB_EMAIL_ENABLED` / `PB_WECHAT_ENABLED`） | 只关这一个渠道；两个都关 = `skipped` |
+| `publish.handler_options.auto_publish: false` | 落终稿但**不投递**（`status: skipped`，`reason: auto_publish disabled`）；`--auto-publish` 或 `publish` 命令可临时跳过这道门槛 |
+| `publish.handler_options.email` / `wechat: false` | 只关这一个渠道；两个都关 = `skipped`（`reason: email/wechat disabled`）；`--email` / `--wechat` 临时覆盖 |
 | steps 节点 `archive.enabled: false` | 不入库、不打包、不删 `draft/` |
 | `defaults.publish.archive.knowledge_dir` 留空 | 只跳过复制到知识库，照常打包与清理（`archive.knowledge` 记 `{ok:true,skipped:true}`） |
 
@@ -78,6 +80,11 @@ npm run wechat-article -- auto                                              # �
 | --- | --- | --- | --- | --- |
 | `publish` | `builtin:publish_article` | 无 | `publish.publish`（校验 `05-result.json` 本体，结果记 `#validation`） | `05-step/final.md`、`05-step/final.html?`、`05-result.json` |
 | `archive` | `builtin:archive_article` | 无 | `publish.archive`（校验 `#archive`，结果记 `#archive.validation`） | `05-result.json`（并入 archive）、`published/<date>-<slug>.zip` |
+
+`publish.handler_options` 是投递开关单源：`auto_publish` / `email` / `wechat`（仓库默认全 `true`，
+即 `auto` 模式一路发布到归档；三个键必填，缺了运行期抛错点名 `publish.handler_options.<键>`）；
+类型层 `steps.publish.handler_options` 可按类型关掉某个渠道。
+渠道参数（收件人、发件人、命令串、超时重试）仍在 `defaults.yaml` 的 `defaults.publish.*`。
 
 不合格只警告不阻塞；`checked: false` 表示节点没挂契约，不是「校验通过」。
 

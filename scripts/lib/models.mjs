@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { ensureDir } from "./fsx.mjs";
+import { ensureDir, writeText } from "./fsx.mjs";
 import { validateTemplateSchema } from "./template.mjs";
 
 /**
@@ -124,8 +124,8 @@ export function createModelClient(config, logger, recorder) {
       const callLabel = `${label || profileName}${attempt > 1 ? `#retry${attempt - 1}` : ""}`;
       const callPrompt = failures.length
         ? `## 上次输出未通过校验，逐条改正后重新输出完整 JSON（字段名与类型必须与输出结构完全一致，不要只给片段）\n${failures
-            .map((e, i) => `${i + 1}. ${e}`)
-            .join("\n")}\n\n${prompt}`
+          .map((e, i) => `${i + 1}. ${e}`)
+          .join("\n")}\n\n${prompt}`
         : prompt;
       const result = await json(profileName, { system, prompt: callPrompt, label, slot, timeout, temperature, maxTokens, attempt });
       const report = schema ? validateTemplateSchema(result, schema) : { ok: true, errors: [], warnings: [] };
@@ -231,7 +231,7 @@ async function callOllama(profile, { system, prompt, format, temperature, maxTok
     }
     return content.trim();
   } catch (error) {
-    if (controller.signal.aborted) throw new Error(`Ollama 请求超时（${cap}ms 总限时）`);
+    if (controller.signal.aborted) throw new Error(`Ollama 请求超时（${cap}ms 总限时）`, { cause: error });
     throw error;
   } finally {
     clearTimeout(timer);
@@ -276,7 +276,7 @@ async function callOpenAI(profile, { system, prompt, temperature, maxTokens, for
     if (!content.trim()) throw new Error("OpenAI-compatible API returned empty content");
     return content.trim();
   } catch (error) {
-    if (controller.signal.aborted) throw new Error(`OpenAI 请求超时（${cap}ms 总限时）`);
+    if (controller.signal.aborted) throw new Error(`OpenAI 请求超时（${cap}ms 总限时）`, { cause: error });
     throw error;
   } finally {
     clearTimeout(timer);
@@ -353,7 +353,7 @@ async function callOpencode(profile, { system, prompt, label }) {
   const tempDir = ensureDir(path.join(os.tmpdir(), "penbot-wechat-article"));
   const promptFile = path.join(tempDir, `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.md`);
   const fullPrompt = system ? `# 系统指令\n\n${system}\n\n# 任务\n\n${prompt}` : prompt;
-  fs.writeFileSync(promptFile, fullPrompt, "utf8");
+  writeText(promptFile, fullPrompt);
 
   const args = [];
   const instruction = String(needProfile(profile, "instruction")).replaceAll(
@@ -371,7 +371,6 @@ async function callOpencode(profile, { system, prompt, label }) {
     args.push(instruction);
   }
 
-  const started = Date.now();
   const result = await runProcess(command, args, {
     cwd: workdir,
     timeoutMs: Number(needProfile(profile, "timeout_ms")),

@@ -10,10 +10,32 @@ export function readText(file) {
   return fs.readFileSync(file, "utf8");
 }
 
-export function writeText(file, text) {
+/**
+ * 原子落盘：先写同目录 `<file>.tmp` 再 rename 替换。
+ * 管线随时可能被中断（超时杀进程/断电），裸 writeFileSync 会留下半截 JSON
+ * 或半截终稿——续跑时要么读崩，要么把撕裂的 composed.md 发出去。
+ * 同卷 rename 是原子的，读者只会看到旧版或新版；崩溃残留的 `*.tmp` 由 watcher 清扫。
+ */
+function atomicWrite(file, data) {
   ensureDir(path.dirname(file));
-  fs.writeFileSync(file, text, "utf8");
+  const tmp = `${file}.tmp`;
+  try {
+    fs.writeFileSync(tmp, data, "utf8");
+    fs.renameSync(tmp, file);
+  } catch (error) {
+    fs.rmSync(tmp, { force: true });
+    throw error;
+  }
   return file;
+}
+
+export function writeText(file, text) {
+  return atomicWrite(file, text);
+}
+
+/** 二进制产物（配图、mock PNG）同样原子落盘：半截 PNG 会让发布侧 mime 与内容不符。 */
+export function writeBinary(file, buffer) {
+  return atomicWrite(file, buffer);
 }
 
 export function readJson(file, fallback = undefined) {
@@ -21,14 +43,12 @@ export function readJson(file, fallback = undefined) {
     return JSON.parse(fs.readFileSync(file, "utf8"));
   } catch (error) {
     if (fallback !== undefined) return fallback;
-    throw new Error(`Cannot read JSON ${file}: ${error.message}`);
+    throw new Error(`Cannot read JSON ${file}: ${error.message}`, { cause: error });
   }
 }
 
 export function writeJson(file, value) {
-  ensureDir(path.dirname(file));
-  fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n", "utf8");
-  return file;
+  return atomicWrite(file, JSON.stringify(value, null, 2) + "\n");
 }
 
 export function exists(file) {

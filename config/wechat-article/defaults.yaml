@@ -39,10 +39,58 @@ classifier:
   default_type: ai-news
 
 # ---------------------------------------------------------------------------
+# 编排器（scripts/wechat-article-pipeline.mjs）：inbox 监听 + draft 巡检的无人值守推进
+#
+# 运行时能翻转的开关/阈值一律写成 ${PB_*:-默认}：无人值守跑时只改 .env，这个文件不动。
+# inbox 根目录不在这里配——只认环境变量 BASE_INBOX_FOLDER（留空 = 关闭 inbox 监听，
+# watcher 仅做 draft 巡检），实际目录 = BASE_INBOX_FOLDER/wechat-article。
+#
+# 推进模型：单并发。inbox 素材先经判断模型分成「标题素材 / 草稿素材」，分别走 manual / post
+# 入口建目录（进入流转即删 inbox 原稿），随后每阶段用 `auto --article <slug> --stage <阶段>`
+# 接力推进；每个阶段子进程带自己的超时，超时 kill 后下一轮按上一步产物续跑。
+# ---------------------------------------------------------------------------
+pipeline:
+  # inbox 扫描间隔（ms）：新素材多久被发现一次
+  poll_ms: "${PB_PIPELINE_POLL_MS:-15000}"
+  # draft 巡检间隔（ms）：续跑巡检多久跑一轮（本地模型慢，整篇 30 分钟目标 → 每小时巡检一次）
+  inspect_ms: "${PB_PIPELINE_INSPECT_MS:-3600000}"
+  # 同一篇文章连续失败 / 无进展达几次就标记跳过（不再自动重试），记日志等人处理
+  max_fails: "${PB_PIPELINE_MAX_FAILS:-3}"
+  # 每阶段子进程超时（ms）：超时即 kill，下一轮按产物从该阶段续跑
+  stage_timeouts:
+    topic: "${PB_TIMEOUT_TOPIC_MS:-900000}"      # 15 分钟：选题 + 素材收集
+    draft: "${PB_TIMEOUT_DRAFT_MS:-1800000}"     # 30 分钟：纲要 + 初稿（本地写作模型慢）
+    review: "${PB_TIMEOUT_REVIEW_MS:-2700000}"   # 45 分钟：核稿 + 修正 + 评稿多轮循环
+    compose: "${PB_TIMEOUT_COMPOSE_MS:-1800000}" # 30 分钟：去 AI 化 + 配图（并发）
+    publish: "${PB_TIMEOUT_PUBLISH_MS:-600000}"  # 10 分钟：终稿 + 投递 + 归档
+  # inbox 素材分类（标题素材 → manual --topic，草稿素材 → post --file）。
+  # 判断请求文案（state / instructions / criteria）单源在这里：watcher 不是流程节点，
+  # 不能把提示词挂到 prompts/（那里有「必须被节点引用」的孤儿检查），故与 classifier
+  # 的行为参数一样落在 defaults.yaml，代码里不留副本。
+  classify:
+    enabled: "${PB_PIPELINE_CLASSIFY:-true}"
+    # 判断用的 systemone 模型 id（models.yaml systemone.* 里的一个）
+    model_id: systemone.classifier
+    # questions 里的问题名，答案从 answers.<question> 读取
+    question: material_kind
+    # {{text}} = 素材正文（截断），{{title}} = 首个标题/文件名
+    state: |
+      判断下面这份 inbox 素材属于哪一类，只看它是否已有成篇正文。
+      标题：{{title}}
+      素材：
+      {{text}}
+    instructions: |
+      根据素材内容判断它是「标题素材」还是「草稿素材」：标题素材从选题开始写，
+      草稿素材已有成篇正文、直接进入审稿。
+    criteria:
+      topic: 只有标题、简短提纲或零散想法，没有成篇正文，需要从选题/初稿开始。
+      draft: 已有成篇正文（完整段落的 Markdown 稿件），可直接进入审稿。
+
+# ---------------------------------------------------------------------------
 # 文章类型默认值：所有类型先吃这里，再被 config/types/<id>.yaml 覆盖
 #
 # 运行时可翻转的开关/阈值一律写成 ${PB_*:-默认值}：无人值守跑管线时只改 .env，
-# 这个文件保持不动（口径与 publish 的三个投递开关一致）。
+# 这个文件保持不动（例外：投递开关是 steps 节点的 handler_options，见 steps/50-publish.yaml）。
 # expandEnv 替换出来的是字符串，加载期 scripts/lib/config.mjs 统一归一：
 # 布尔走 toBool，数字走 Number + 有限性检查，代码里不再留同值兜底。
 # ---------------------------------------------------------------------------
@@ -146,10 +194,8 @@ defaults:
       max_retries: 2
 
   publish:
-    # 三个投递开关都可以由 .env 抬起：无人值守跑管线时改 .env，不用动配置也不用带 flag。
-    # expandEnv 替换出来的是字符串，加载期（config.mjs）统一归成真布尔——
-    # 读取端用的是 === true / 真值判断，不归一就会让 "false" 当成开。
-    auto_publish: "${PB_AUTO_PUBLISH:-false}"
+    # 投递开关（发不发、发哪个渠道）单源在 steps/50-publish.yaml 的 publish.handler_options；
+    # 这里只放渠道参数。命令行 --email / --wechat / --auto-publish 可临时覆盖。
     archive:
       # 归档环节整体开关在 steps 节点 archive.enabled（关掉 = 不入库、不打包、不删 draft）。
       # 这里只管知识库入库：knowledge_dir 留空 = 跳过复制，仍照常打包与清理。
@@ -157,7 +203,6 @@ defaults:
       knowledge_dir: "${KNOWLEDGE_PIPELINE_DIR:-D:/knowledge/pipeline}"
       filename: "{date}-{slug}.md"
     email:
-      enabled: "${PB_EMAIL_ENABLED:-false}"
       to: ["jiangyifeng@myehome.cn"]
       from: "${PB_RESEND_FROM:-penbot@myehome.cn}"
       api_key: "${PB_RESEND_API_KEY}"
@@ -169,7 +214,6 @@ defaults:
       # 单次投递的 HTTP 重试次数（留痕里是 (尝试) 标注，不推轮次）。
       retries: 2
     wechat:
-      enabled: "${PB_WECHAT_ENABLED:-false}"
       theme: default
       highlight: solarized-light
       env_file: .env

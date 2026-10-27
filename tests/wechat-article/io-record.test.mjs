@@ -186,7 +186,7 @@ test("jsonValidated retries with failure reasons prepended, then throws when exh
     assert.match(bodies[1], /\n\n原始提示词$/);
 
     // attempts 用尽仍失败 → throw，错误里带最后一次失败原因
-    globalThis.fetch = async (url, init) => ({ ok: true, status: 200, body: streamBody('{"title":"只有标题"}') });
+    globalThis.fetch = async () => ({ ok: true, status: 200, body: streamBody('{"title":"只有标题"}') });
     await assert.rejects(
       client.jsonValidated("llm.t", { prompt: "p", schema, label: "outline", attempts: 2 }),
       /outline 输出校验失败：.*sections 缺失/,

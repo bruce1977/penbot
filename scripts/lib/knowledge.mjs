@@ -383,7 +383,7 @@ function cleanWeKnoraContent(text) {
     .replace(/\r/g, "")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
-    .replace(/^[\s*\-]+$/gm, "")
+    .replace(/^[\s*-]+$/gm, "")
     .trim();
 }
 
@@ -409,12 +409,12 @@ export async function collectSources(type, { topic, notes = [], logger, mock = f
   const local =
     source === "local" || source === "both"
       ? searchKnowledge(notes, {
-          topic: query,
-          keywords: [],
-          limit: localLimit,
-          excerptChars: excerptCharsOf(type),
-          exclude,
-        }).map((item) => ({ ...item, origin: "local" }))
+        topic: query,
+        keywords: [],
+        limit: localLimit,
+        excerptChars: excerptCharsOf(type),
+        exclude,
+      }).map((item) => ({ ...item, origin: "local" }))
       : [];
 
   const remote =
@@ -447,7 +447,7 @@ function interleave(a, b, limit) {
   return out;
 }
 
-const TITLE_NOISE = /[\s\u3000/\\\-_－—()（）\[\]【】{}「」『』"'‘’“”!！?？.。:：;；、,，]+/g;
+const TITLE_NOISE = /[\s\u3000/\\\-_－—()（）[\]【】{}「」『』"'‘’“”!！?？.。:：;；、,，]+/g;
 
 function normTitle(text) {
   return String(text || "").toLowerCase().replace(TITLE_NOISE, "");

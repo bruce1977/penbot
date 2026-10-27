@@ -24,10 +24,9 @@ import { ensureDir, writeJson } from "./fsx.mjs";
 const MAX_PENDING = 500;
 
 function safeName(value) {
-  return String(value || "")
-    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_")
-    .trim()
-    .slice(0, 60);
+  // Windows 文件名禁用控制字符，这里就是要连着 \x00-\x1f 一起洗掉。
+  // eslint-disable-next-line no-control-regex
+  return String(value || "").replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").trim().slice(0, 60);
 }
 
 /** 从 `NN-step` 目录名解析步骤号；解析不出返回空。 */

@@ -1,7 +1,6 @@
-import fs from "node:fs";
 import path from "node:path";
 import { needNumber } from "../lib/env.mjs";
-import { ensureDir, sleep } from "../lib/fsx.mjs";
+import { ensureDir, sleep, writeBinary } from "../lib/fsx.mjs";
 import { renderTemplate, validateProduced } from "../lib/template.mjs";
 
 // 尺寸场景与通道参数单源 defaults.yaml illustrations：代码里不留副本，缺字段直接抛错点名
@@ -320,8 +319,7 @@ async function download(url, dest, timeout) {
   const buffer = Buffer.from(await res.arrayBuffer());
   if (buffer.length < 2048) throw new Error(`downloaded file too small (${buffer.length} bytes)`);
   const target = withImageExtension(dest, res.headers.get("content-type"), buffer);
-  ensureDir(path.dirname(target));
-  fs.writeFileSync(target, buffer);
+  writeBinary(target, buffer);
   return target;
 }
 

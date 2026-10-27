@@ -15,7 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { OpenCode } from "@opencode/client";
 import { needNumber } from "./env.mjs";
-import { ensureDir, slugify } from "./fsx.mjs";
+import { ensureDir, slugify, writeJson, writeText } from "./fsx.mjs";
 import { assessSourceSufficiency } from "./knowledge.mjs";
 
 const SERVE_TIMEOUT_MS = 30000;
@@ -70,9 +70,9 @@ export async function startServe({
   const proc =
     process.platform === "win32"
       ? spawn([serveBin.includes(" ") ? `"${serveBin}"` : serveBin, ...serveArgs].join(" "), {
-          shell: true,
-          windowsHide: true,
-        })
+        shell: true,
+        windowsHide: true,
+      })
       : spawn(serveBin, serveArgs, { windowsHide: true });
   let stdout = "";
   let stderr = "";
@@ -135,9 +135,9 @@ export async function startServe({
   const lifetimeTimer =
     maxLifetimeMs > 0
       ? setTimeout(() => {
-          logger?.warn?.(`opencode serve 到达存活期（${maxLifetimeMs}ms），主动回收`);
-          kill();
-        }, maxLifetimeMs)
+        logger?.warn?.(`opencode serve 到达存活期（${maxLifetimeMs}ms），主动回收`);
+        kill();
+      }, maxLifetimeMs)
       : null;
   lifetimeTimer?.unref?.(); // 定时器本身不阻止 node 正常退出
 
@@ -454,7 +454,7 @@ export async function gatherWebSearch({
       continue;
     }
     const rel = `01-step/web-search/${slugify(r.query, "web-search")}.md`;
-    fs.writeFileSync(path.join(articleDir, rel), r.markdown, "utf8");
+    writeText(path.join(articleDir, rel), r.markdown);
     const blocks = parseSearchMarkdown(r.markdown, {
       limit: needNumber(cfg.max_per_query, where("max_per_query")),
       excerptChars: needNumber(cfg.excerpt_chars, where("excerpt_chars")),
@@ -476,7 +476,7 @@ export async function gatherWebSearch({
     }
     index.push({ query: r.query, file: rel, status: blocks.length ? "ok" : "empty", hits: blocks.length });
   }
-  fs.writeFileSync(path.join(dir, "index.json"), `${JSON.stringify(index, null, 2)}\n`, "utf8");
+  writeJson(path.join(dir, "index.json"), index);
 
   const capped = entries.slice(0, needNumber(cfg.max_sources, where("max_sources")));
   logger?.info?.(
@@ -489,6 +489,7 @@ export async function gatherWebSearch({
 /* 独立运行入口：node scripts/lib/web-search.mjs "关键字组" [...]   */
 /* ------------------------------------------------------------------ */
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  /* eslint-disable no-console -- 独立 CLI 分支：stdout 就是它的输出通道，stderr 是它的日志 */
   // 独立运行入口不经过流水线，自行加载根目录 .env（已有环境变量优先）
   const { loadDotEnv } = await import("./env.mjs");
   loadDotEnv();
@@ -514,4 +515,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (outFile) fs.writeFileSync(outFile, md, "utf8");
   else console.log(md);
   process.exitCode = out.some((r) => r.error) ? 2 : 0;
+  /* eslint-enable no-console */
 }
