@@ -9,6 +9,7 @@
     "wechat-article:doctor": "node scripts/wechat-article.mjs doctor",
     "wechat-article:validate": "node scripts/wechat-article.mjs validate",
     "pipeline": "node scripts/wechat-article-pipeline.mjs",
+    "pipeline:watch": "node scripts/wechat-article-pipeline.mjs --watch",
     "lint": "eslint scripts tests",
     "lint:fix": "eslint scripts tests --fix",
     "check": "npm run lint && npm run wechat-article:validate && npm test",

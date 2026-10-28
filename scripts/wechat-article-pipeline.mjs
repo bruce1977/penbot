@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * wechat-article-pipeline.mjs — inbox 监听 + draft 巡检的无人值守编排器。
+ * wechat-article-pipeline.mjs — inbox 摄取 + draft 巡检的编排器（默认一次性，`--watch` 常驻）。
  *
  * 职责（两条独立节奏，单并发）：
  *   1. inbox 监听：`BASE_INBOX_FOLDER/wechat-article/*.md` 里的新素材，先用判断模型分成
@@ -20,6 +20,16 @@
  *
  * 所有阈值/开关单源 `config/wechat-article/defaults.yaml` 的 `pipeline` 段（`${PB_*}` 旋钮），
  * inbox 根目录只认环境变量 `BASE_INBOX_FOLDER`（留空 = 关闭 inbox，仅做 draft 巡检）。
+ *
+ * 运行方式（默认一次性，适合交给系统定时任务按 job 调度）：
+ *   - `npm run pipeline`          一次性：处理当前积压（inbox 快照 + 一轮 draft 巡检）后退出；
+ *     失败/无进展时退出码 = 1，调度器可据此告警；无事可做退出码 = 0。
+ *   - `npm run pipeline:watch`    常驻监听：跑完不退出，按 poll_ms / inspect_ms 持续轮询。
+ *     等价于 `--watch` 或 `PB_PIPELINE_WATCH=true`；`--once` 可显式覆盖回一次性。
+ *
+ * 典型定时调度（每隔一段时间跑一次，跑完就退）：
+ *   - Linux/macOS：`0,30 * * * * cd /path/to/penbot && npm run pipeline >> logs/pipeline.log 2>&1`
+ *   - Windows 任务计划：程序 `npm.cmd`，参数 `run pipeline`，起始于仓库根目录。
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -29,7 +39,7 @@ import { findProjectRoot, loadDotEnv, needNumber, toBool } from "./lib/env.mjs";
 import { loadConfig } from "./lib/config.mjs";
 import { classifyChoice } from "./lib/classify.mjs";
 import { ARTIFACT, detectStartStage, ensureLayout, listArticles, readStageResult } from "./lib/article-store.mjs";
-import { ensureDir, exists, sleep } from "./lib/fsx.mjs";
+import { ensureDir, exists, readJson, sleep, writeJson } from "./lib/fsx.mjs";
 
 const PROJECT_ROOT = findProjectRoot();
 const ENTRY = path.join(PROJECT_ROOT, "scripts", "wechat-article.mjs");
@@ -112,13 +122,18 @@ function draftSlugs(config) {
 /* inbox 素材：读取、标题、分类                                          */
 /* ------------------------------------------------------------------ */
 
-function nextInboxFile(inboxDir) {
-  if (!exists(inboxDir)) return "";
-  const names = fs
+/** inbox 里当前待处理的素材（按文件名排序，全量）；目录未配置/不存在返回空。 */
+function inboxFiles(inboxDir) {
+  if (!inboxDir || !exists(inboxDir)) return [];
+  return fs
     .readdirSync(inboxDir)
     .filter((name) => name.toLowerCase().endsWith(".md"))
-    .sort();
-  return names.length ? path.join(inboxDir, names[0]) : "";
+    .sort()
+    .map((name) => path.join(inboxDir, name));
+}
+
+function nextInboxFile(inboxDir) {
+  return inboxFiles(inboxDir)[0] || "";
 }
 
 /** 从素材里取标题：frontmatter title > 一级标题 > 首个非空行 > 文件名。 */
@@ -208,6 +223,13 @@ function killTree(pid) {
   }
 }
 
+/**
+ * 当前正在跑的子进程。SIGINT 时按进程树杀掉它：Windows 上父进程退出**不会**顺带
+ * 回收子进程，不杀就会留下 wechat-article.mjs 及其拉起的 opencode serve 孤儿进程
+ * （脚本注释里"由 OS 回收"的说法在 win32 不成立）。
+ */
+let activeChild = null;
+
 /** 跑一次 `wechat-article.mjs <args>`，带超时；返回 { code, signal, timedOut, error }。 */
 export function runStage(args, timeoutMs) {
   return new Promise((resolve) => {
@@ -216,6 +238,7 @@ export function runStage(args, timeoutMs) {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
+    activeChild = child;
     let timedOut = false;
     let settled = false;
     const timer = setTimeout(() => {
@@ -226,6 +249,7 @@ export function runStage(args, timeoutMs) {
     const settle = (value) => {
       if (settled) return;
       settled = true;
+      if (activeChild === child) activeChild = null;
       clearTimeout(timer);
       resolve(value);
     };
@@ -321,7 +345,7 @@ function recordOutcome(state, slug, outcome) {
     state.noProgress.delete(slug);
     if (fails >= state.maxFails) {
       state.skipped.add(slug);
-      log(`${slug}: 连续失败 ${fails} 次，跳过（处理后重启 watcher 可重置）`);
+      log(`${slug}: 连续失败 ${fails} 次，已跳过（记入 ${STATE_FILE}；人工处理后删掉该条 skipped 即可重新纳入）`);
     }
     return;
   }
@@ -335,14 +359,58 @@ function recordOutcome(state, slug, outcome) {
   }
 }
 
-/** 巡检一轮 draft：对每篇未完成、未跳过的文章接力推进。 */
+/** 巡检状态的落盘文件：`<BASE_OUTPUT_FOLDER>/.pipeline-state.json`（与 draft/ 同级）。 */
+const STATE_FILE = ".pipeline-state.json";
+
+/**
+ * 跨进程持久化失败 / 无进展 / 跳过计数。
+ * 定时任务每次都是新进程，内存 Map 会归零——一篇永远修不好的草稿会被每个周期无限重试，
+ * 所以计数必须落盘，`pipeline.max_fails` 的语义才成立。
+ * 已归档/删除的文章在加载时清掉其条目，避免 skipped 永久残留。
+ */
+function loadState(config, maxFails) {
+  const state = { failCounts: new Map(), noProgress: new Map(), skipped: new Set(), lastInspect: 0, maxFails };
+  const file = path.join(ensureLayout(config).base, STATE_FILE);
+  let raw;
+  try {
+    raw = readJson(file);
+  } catch {
+    return state; // 首次运行 / 文件损坏：从空状态开始
+  }
+  for (const [slug, count] of Object.entries(raw?.fail_counts || {})) state.failCounts.set(slug, Number(count) || 0);
+  for (const [slug, count] of Object.entries(raw?.no_progress || {})) state.noProgress.set(slug, Number(count) || 0);
+  for (const slug of raw?.skipped || []) state.skipped.add(String(slug));
+  for (const slug of [...state.skipped]) {
+    if (!exists(articleDir(config, slug))) state.skipped.delete(slug);
+  }
+  return state;
+}
+
+function saveState(config, state) {
+  const file = path.join(ensureLayout(config).base, STATE_FILE);
+  try {
+    writeJson(file, {
+      updated_at: new Date().toISOString(),
+      fail_counts: Object.fromEntries(state.failCounts),
+      no_progress: Object.fromEntries(state.noProgress),
+      skipped: [...state.skipped],
+    });
+  } catch (error) {
+    log(`WARN 写巡检状态失败（${STATE_FILE}）：${error.message}`);
+  }
+}
+
+/** 巡检一轮 draft：对每篇未完成、未跳过的文章接力推进；返回本轮各篇的 outcome。 */
 export async function inspectDraft(config, pipelineCfg, state) {
+  const outcomes = [];
   for (const article of listArticles(config)) {
     if (state.skipped.has(article.slug)) continue;
     if (isPublished(article.dir)) continue;
     const outcome = await advanceDraft(config, pipelineCfg, article.slug);
     recordOutcome(state, article.slug, outcome);
+    outcomes.push({ slug: article.slug, ...outcome });
   }
+  return outcomes;
 }
 
 /* ------------------------------------------------------------------ */
@@ -354,29 +422,69 @@ function ensureDirs(config, inboxDir) {
   if (inboxDir) ensureDir(inboxDir);
 }
 
+/**
+ * 一次性模式（默认行为；`--once` 可显式声明）：把当前积压处理干净后返回，由 main() 结束进程。
+ *   - inbox 只处理「进入本次时的快照」，不因某份素材反复失败而无限重试（保留原稿交给人）；
+ *   - draft 只巡检一轮：advanceDraft 内部已把单篇接力到 done / failed / 无进展。
+ * 返回 { total, incomplete }，供 main() 决定退出码（调度器据此判断这次是否需人工关注）。
+ */
+async function runOnce(config, pipelineCfg, state, inboxDir) {
+  const outcomes = [];
+  for (const file of inboxFiles(inboxDir)) {
+    if (!exists(file)) continue; // 同一轮里可能已被归档/人工移走
+    try {
+      const outcome = await processInbox(config, pipelineCfg, file);
+      recordOutcome(state, outcome.slug, outcome);
+      outcomes.push({ ...outcome, slug: outcome.slug || path.basename(file) });
+    } catch (error) {
+      log(`处理 ${path.basename(file)} 异常：${error.message}`);
+      outcomes.push({ slug: path.basename(file), done: false, failed: true });
+    }
+  }
+  outcomes.push(...(await inspectDraft(config, pipelineCfg, state)));
+  return { total: outcomes.length, incomplete: outcomes.filter((outcome) => !outcome.done).length };
+}
+
 async function main() {
   loadDotEnv(PROJECT_ROOT);
   const config = loadConfig(ARTICLE_TYPES_CONFIG, { root: PROJECT_ROOT });
   const pipelineCfg = config.pipeline || {};
   const inboxDir = resolveInboxDir();
   ensureDirs(config, inboxDir);
+  const maxFails = needNumber(pipelineCfg.max_fails, "defaults.yaml pipeline.max_fails");
+  // 默认一次性：交给系统定时任务（cron / Windows 任务计划）按 job 调度。
+  // 常驻监听要显式开：`--watch` 或 PB_PIPELINE_WATCH=true；同时给 --once 时以 --once 为准。
+  const watch =
+    (toBool(process.env.PB_PIPELINE_WATCH, false) || process.argv.includes("--watch")) &&
+    !process.argv.includes("--once");
+  const state = loadState(config, maxFails);
+  const where = `inbox=${inboxDir || "（未配置 BASE_INBOX_FOLDER，仅做 draft 巡检）"}，draft=${draftRoot(config)}`;
+
+  if (!watch) {
+    log(`一次性巡检开始：${where}`);
+    const summary = await runOnce(config, pipelineCfg, state, inboxDir);
+    saveState(config, state);
+    if (summary.total === 0) log("没有待处理的 inbox 素材或未完成草稿，退出");
+    else log(`本次处理 ${summary.total} 项，其中未完成 ${summary.incomplete} 项`);
+    // 失败 / 无进展 = 退出码 1，让调度器能识别这次 job 需要人工关注。
+    if (summary.incomplete > 0) process.exitCode = 1;
+    return;
+  }
+
   const pollMs = needNumber(pipelineCfg.poll_ms, "defaults.yaml pipeline.poll_ms");
   const inspectMs = needNumber(pipelineCfg.inspect_ms, "defaults.yaml pipeline.inspect_ms");
-  const maxFails = needNumber(pipelineCfg.max_fails, "defaults.yaml pipeline.max_fails");
-  const state = { failCounts: new Map(), noProgress: new Map(), skipped: new Set(), lastInspect: 0, maxFails };
-  log(
-    `watcher 启动：inbox=${inboxDir || "（未配置 BASE_INBOX_FOLDER，仅做 draft 巡检）"}，` +
-      `draft=${draftRoot(config)}，巡检间隔 ${Math.round(inspectMs / 1000)}s，max_fails=${maxFails}`,
-  );
+  log(`watcher 启动（常驻监听，--watch）：${where}，巡检间隔 ${Math.round(inspectMs / 1000)}s，max_fails=${maxFails}`);
   for (;;) {
     try {
       const file = inboxDir ? nextInboxFile(inboxDir) : "";
       if (file) {
         const outcome = await processInbox(config, pipelineCfg, file);
         recordOutcome(state, outcome.slug, outcome);
+        saveState(config, state);
       } else if (Date.now() - state.lastInspect >= inspectMs) {
         state.lastInspect = Date.now();
         await inspectDraft(config, pipelineCfg, state);
+        saveState(config, state);
       }
     } catch (error) {
       log(`巡检异常：${error.message}`);
@@ -386,10 +494,18 @@ async function main() {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
-  process.on("SIGINT", () => {
-    log("收到 SIGINT，退出 watcher（正在跑的子进程由 OS 回收，产物续跑不受影响）");
+  const shutdown = (signal) => {
+    // 先杀正在跑的子进程树，再退出：否则 win32 上子进程（及其 opencode serve）
+    // 会变成孤儿继续跑，看起来就像"退不干净的 watch 进程"。
+    if (activeChild?.pid) {
+      log(`收到 ${signal}，先回收正在跑的子进程（pid ${activeChild.pid}）`);
+      killTree(activeChild.pid);
+    }
+    log(`收到 ${signal}，退出 watcher（已跑完的阶段产物保留，下次按产物续跑）`);
     process.exit(0);
-  });
+  };
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
   main().catch((error) => {
     console.error(`watcher 启动失败：${error.message}`);
     process.exit(1);

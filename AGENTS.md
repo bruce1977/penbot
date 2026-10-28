@@ -25,10 +25,19 @@ opencode 只作为工具节点（如 websearch）被脚本调用，不作为编�
 
 ### 无人值守编排器（`scripts/wechat-article-pipeline.mjs`）
 
-常驻进程（`npm run pipeline`）：监听 `BASE_INBOX_FOLDER/wechat-article/*.md`，把 inbox 素材经
+默认**一次性跑完即退**（`npm run pipeline`）：摄取 `BASE_INBOX_FOLDER/wechat-article/*.md`，把 inbox 素材经
 判断模型分成「标题素材 / 草稿素材」路由到 `manual` / `post` 入口（进入流转即删原稿）；再巡检
 `draft/` 按产物（`detectStartStage`）接力 `auto --article <slug> --stage <阶段>` 推进，每阶段
-子进程带自己的超时（`defaults.yaml` `pipeline.stage_timeouts`），超时 kill 后下轮按产物续跑。
+子进程带自己的超时（`defaults.yaml` `pipeline.stage_timeouts`），超时 kill 后下次调度按产物续跑。
+
+- **默认交给系统定时任务按 job 调度**（cron / Windows 任务计划），不常驻：一轮处理完
+  「inbox 快照 + 一轮 draft 巡检」即返回；失败 / 无进展时**退出码 = 1**，调度器可据此告警，
+  无事可做退出码 = 0。要常驻监听需显式 `npm run pipeline:watch`（`--watch` / `PB_PIPELINE_WATCH=true`）。
+- **巡检状态落盘** `<BASE_OUTPUT_FOLDER>/.pipeline-state.json`（失败 / 无进展 / 已跳过计数）：
+  定时任务每次都是新进程，内存 Map 会归零——不落盘的话 `pipeline.max_fails` 形同虚设，
+  一篇永远修不好的草稿会被每个周期无限重试、每次还退出码 1。已归档文章的陈旧条目在加载时清理。
+- **SIGINT / SIGTERM 先按进程树杀掉正在跑的子进程再退出**：Windows 上父进程退出不会回收子进程，
+  否则会留下 `wechat-article.mjs` 及其拉起的 `opencode serve` 孤儿（曾误以为"watch 进程退不干净"）。
 
 - **它是独立入口，不 import 主入口**：lint 规则只允许 comm 模块被主入口引用，编排器另起文件
   只能 spawn `wechat-article.mjs`；子进程也天然给出「超时 kill」的边界。
@@ -58,7 +67,7 @@ penbot/
 │   ├── comm/                        # 功能专属模块，文件名以功能前缀开头
 │   ├── lint/penbot-rules.mjs        # 自定义 ESLint 规则（本仓库不变量，不发包）
 │   ├── wechat-article.mjs           # 入口 ×3，一管线一文件
-│   ├── wechat-article-pipeline.mjs  # 编排器：inbox 监听 + draft 巡检（常驻，spawn 主入口）
+│   ├── wechat-article-pipeline.mjs  # 编排器：inbox 监听 + draft 巡检（默认一次性，--watch 才常驻；spawn 主入口）
 │   ├── micro-news.mjs
 │   └── web-novel.mjs
 ├── tests/<feature>/*.test.mjs       # 含 lint.test.mjs：规则能报 + L1 分层/命名对真实目录断言
@@ -101,8 +110,8 @@ penbot/
   配置文件保持不动。当前清单：`PB_REVIEW_ROUNDS`、`PB_PASS_SCORE`、
   `PB_KNOWLEDGE_MAX_SOURCES`、`PB_WEB_SEARCH_ENABLED`、`PB_IMAGE_CONCURRENCY`、
   `PB_DE_AI_ENABLED` / `PB_DE_AI_LEVEL` / `PB_IMAGES_ENABLED`、编排器
-  （`PB_PIPELINE_POLL_MS` / `PB_PIPELINE_INSPECT_MS` / `PB_PIPELINE_MAX_FAILS` /
-  `PB_PIPELINE_CLASSIFY` / 五个 `PB_TIMEOUT_*_MS`）。inbox 根目录只认 `BASE_INBOX_FOLDER`
+  （`PB_PIPELINE_WATCH` / `PB_PIPELINE_POLL_MS` / `PB_PIPELINE_INSPECT_MS`（后两个仅 `--watch` 常驻时生效）/
+  `PB_PIPELINE_MAX_FAILS` / `PB_PIPELINE_CLASSIFY` / 五个 `PB_TIMEOUT_*_MS`）。inbox 根目录只认 `BASE_INBOX_FOLDER`
   （留空 = 关闭 inbox，仅做 draft 巡检），不是 `${PB_*}` 旋钮。
   **投递开关是例外**：`auto_publish` / `email` / `wechat` 是步骤节点的 `handler_options`
   （`steps/50-publish.yaml`），不是环境变量——auto 模式默认一路发布到底，改开关改配置。
